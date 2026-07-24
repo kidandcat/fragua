@@ -57,7 +57,7 @@ pub struct OrganicReport {
     pub length_after_mm: f64,
 }
 
-type P2 = [f64; 2];
+pub(crate) type P2 = [f64; 2];
 
 fn sub(a: P2, b: P2) -> P2 {
     [a[0] - b[0], a[1] - b[1]]
@@ -68,7 +68,7 @@ fn dot(a: P2, b: P2) -> f64 {
 fn norm(a: P2) -> f64 {
     dot(a, a).sqrt()
 }
-fn dist(a: P2, b: P2) -> f64 {
+pub(crate) fn dist(a: P2, b: P2) -> f64 {
     norm(sub(a, b))
 }
 
@@ -138,7 +138,7 @@ fn seg_rect_dist(a: P2, b: P2, min: P2, max: P2) -> f64 {
 /// class demands. The final required distance to a chain is
 /// `chain_half_width + max(chain_clearance, self.clearance) + self
 /// copper reach` — computed in `Obstacles::polyline_clear`.
-enum Shape {
+pub(crate) enum Shape {
     /// Pad copper as the DRC sees it: an AABB.
     Rect { min: P2, max: P2 },
     /// Another net's trace segment: centreline + half-width.
@@ -147,24 +147,104 @@ enum Shape {
     Circle { c: P2, r: f64 },
 }
 
-struct Obstacle {
-    shape: Shape,
-    clearance_mm: f64,
+pub(crate) struct Obstacle {
+    pub(crate) shape: Shape,
+    pub(crate) clearance_mm: f64,
+    /// Net owning the copper, when it has one — the topo engine's
+    /// targeted rip-up wants to know WHO is in the way.
+    pub(crate) net: Option<String>,
 }
 
 /// All other-net obstacles a given net's chains must clear on a layer,
 /// plus the outline band the centreline must stay inside.
-struct Obstacles {
-    items: Vec<Obstacle>,
+pub(crate) struct Obstacles {
+    pub(crate) items: Vec<Obstacle>,
     /// Outline shrink for the centreline: half-width + edge clearance.
-    outline_min: P2,
-    outline_max: P2,
+    pub(crate) outline_min: P2,
+    pub(crate) outline_max: P2,
 }
 
 impl Obstacles {
+    /// Debug twin of `polyline_clear`: description of the first
+    /// violation, or `None` when the polyline is clear.
+    pub(crate) fn first_violation(&self, pts: &[P2], hw: f64, clr: f64) -> Option<String> {
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            for p in [a, b] {
+                if p[0] < self.outline_min[0]
+                    || p[1] < self.outline_min[1]
+                    || p[0] > self.outline_max[0]
+                    || p[1] > self.outline_max[1]
+                {
+                    return Some(format!("outline band at ({:.2},{:.2})", p[0], p[1]));
+                }
+            }
+            for ob in &self.items {
+                let need = hw + clr.max(ob.clearance_mm);
+                let (d, what) = match &ob.shape {
+                    Shape::Rect { min, max } => (
+                        seg_rect_dist(a, b, *min, *max),
+                        format!(
+                            "pad rect ({:.2},{:.2})-({:.2},{:.2})",
+                            min[0], min[1], max[0], max[1]
+                        ),
+                    ),
+                    Shape::Capsule {
+                        a: c,
+                        b: d2,
+                        half_w,
+                    } => (
+                        seg_seg_dist(a, b, *c, *d2) - half_w,
+                        format!(
+                            "trace ({:.2},{:.2})->({:.2},{:.2})",
+                            c[0], c[1], d2[0], d2[1]
+                        ),
+                    ),
+                    Shape::Circle { c, r } => (
+                        point_seg_dist(*c, a, b) - r,
+                        format!("via ({:.2},{:.2})", c[0], c[1]),
+                    ),
+                };
+                if d < need {
+                    return Some(format!(
+                        "{what}: d {d:.3} < need {need:.3} on seg ({:.2},{:.2})->({:.2},{:.2})",
+                        a[0], a[1], b[0], b[1]
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Net of the first blocking TRACE/VIA obstacle (pads return None —
+    /// they cannot be ripped up).
+    pub(crate) fn first_blocking_net(&self, pts: &[P2], hw: f64, clr: f64) -> Option<String> {
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            for ob in &self.items {
+                let need = hw + clr.max(ob.clearance_mm);
+                let d = match &ob.shape {
+                    Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
+                    Shape::Capsule {
+                        a: c,
+                        b: d2,
+                        half_w,
+                    } => seg_seg_dist(a, b, *c, *d2) - half_w,
+                    Shape::Circle { c, r } => point_seg_dist(*c, a, b) - r,
+                };
+                if d < need - 1e-6 {
+                    if let Some(n) = &ob.net {
+                        return Some(n.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// True when every segment of `pts` keeps clearance. `hw` is the
     /// chain's half-width, `clr` its net clearance.
-    fn polyline_clear(&self, pts: &[P2], hw: f64, clr: f64) -> bool {
+    pub(crate) fn polyline_clear(&self, pts: &[P2], hw: f64, clr: f64) -> bool {
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             // Stay inside the outline band.
@@ -188,7 +268,10 @@ impl Obstacles {
                     } => seg_seg_dist(a, b, *c, *d2) - half_w,
                     Shape::Circle { c, r } => point_seg_dist(*c, a, b) - r,
                 };
-                if d < need {
+                // Micro-epsilon: an exactly-at-clearance geometry (a
+                // trace laid tangent to the window) must count as
+                // clear, or float noise flips borderline fits.
+                if d < need - 1e-6 {
                     return false;
                 }
             }
@@ -202,11 +285,11 @@ fn key(p: Point) -> (i64, i64) {
     (p.x.0, p.y.0)
 }
 
-fn to_mm(p: Point) -> P2 {
+pub(crate) fn to_mm(p: Point) -> P2 {
     [p.x.to_mm(), p.y.to_mm()]
 }
 
-fn to_point(p: P2) -> Point {
+pub(crate) fn to_point(p: P2) -> Point {
     Point::new(Length::from_mm(p[0]), Length::from_mm(p[1]))
 }
 
@@ -268,7 +351,7 @@ fn polyline_len(pts: &[P2]) -> f64 {
 
 /// Everything on `layer` that does not belong to `net`.
 #[allow(clippy::too_many_arguments)]
-fn collect_obstacles<F>(
+pub(crate) fn collect_obstacles<F>(
     board: &Board,
     net: &str,
     layer: CopperLayer,
@@ -313,6 +396,7 @@ where
                     max: [cm[0] + w.to_mm() / 2.0, cm[1] + h.to_mm() / 2.0],
                 },
                 clearance_mm,
+                net: None, // pads are immovable — never rip-up targets
             });
         }
     }
@@ -328,6 +412,7 @@ where
                 half_w: w_o / 2.0,
             },
             clearance_mm: c_o,
+            net: Some(t.net.clone()),
         });
     }
     for v in &board.vias {
@@ -341,6 +426,7 @@ where
                 r: v.diameter.to_mm() / 2.0,
             },
             clearance_mm: c_o,
+            net: Some(v.net.clone()),
         });
     }
 
@@ -457,7 +543,7 @@ fn point_of(t: &Trace, k: (i64, i64)) -> Point {
 
 /// Greedy rubber-band contraction: repeatedly replace the longest
 /// clear-line-of-sight sub-path with a straight segment.
-fn string_pull(pts: &[P2], obs: &Obstacles, hw: f64, clr: f64) -> Vec<P2> {
+pub(crate) fn string_pull(pts: &[P2], obs: &Obstacles, hw: f64, clr: f64) -> Vec<P2> {
     if pts.len() <= 2 {
         return pts.to_vec();
     }
@@ -659,6 +745,7 @@ mod tests {
                 max: [6.0, 2.0],
             },
             clearance_mm: 0.2,
+            net: None,
         });
         let out = string_pull(&pts, &obs, 0.125, 0.2);
         assert_eq!(out.len(), 3, "blocked path must keep its bend: {out:?}");

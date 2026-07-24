@@ -151,6 +151,7 @@ fn main() {
         // Bench compares raw search cost; the organic pass is a fixed
         // small post-cost, so keep it on to match the `route` verb.
         organic: true,
+        engine: Default::default(),
         organic_fillet_mm: 3.0,
         initial_net_order: None,
         // Greedy-search weight, knob for A/B benchmarking. Default 1.0

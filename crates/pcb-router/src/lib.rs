@@ -19,8 +19,9 @@ mod length_match;
 mod organic;
 mod router;
 mod stitching;
+mod topo;
 
 pub use length_match::{length_match_pass, LengthAdjustment};
 pub use organic::{OrganicOptions, OrganicReport};
-pub use router::{route, NetOverride, Outcome, RouteOptions, RouteReport};
+pub use router::{route, NetOverride, Outcome, RouteEngine, RouteOptions, RouteReport};
 pub use stitching::add_stitching_vias;

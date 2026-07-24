@@ -8,6 +8,18 @@ use pcb_core::{Board, CopperLayer, Length, Point, Rect, Schematic, Trace, Via};
 use crate::astar::search;
 use crate::grid::{CostMap, Grid, GridPoint};
 
+/// Which search engine lays the copper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RouteEngine {
+    /// Theta* over a uniform cell grid (the battle-tested default).
+    #[default]
+    Grid,
+    /// Topological engine: homotopy classes over a Delaunay dual graph,
+    /// rubber-band realisation, exact-geometry validation. 2-layer
+    /// boards only for now — other stackups fall back to Grid.
+    Topo,
+}
+
 #[derive(Debug, Clone)]
 pub struct RouteOptions {
     /// Cell pitch on the routing grid. 0.25 mm is the default sweet
@@ -45,6 +57,9 @@ pub struct RouteOptions {
     /// clone and keeps the router lock-free with respect to the
     /// schematic.
     pub schematic: Option<Arc<Schematic>>,
+    /// Copper search engine. `Topo` is the rubber-band topological
+    /// engine (see `topo.rs`); non-2-layer stackups fall back to Grid.
+    pub engine: RouteEngine,
     /// Run the organic post-pass (string-pulling + arc fillets) on the
     /// routed copper. DRC-neutral by construction — every rewrite is
     /// clearance-checked before being accepted. See `organic.rs`.
@@ -93,6 +108,7 @@ impl Default for RouteOptions {
             via_diameter: Length::from_mm(0.6),
             net_overrides: HashMap::new(),
             schematic: None,
+            engine: RouteEngine::Grid,
             organic: true,
             organic_fillet_mm: 3.0,
             initial_net_order: None,
@@ -302,6 +318,9 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// shortest total wire) wins; if no iteration improves on the first,
 /// the first wins and the board is laid back to its first-pass state.
 pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
+    if opts.engine == RouteEngine::Topo && board.stackup.layer_count() <= 2 {
+        return route_topo(board, opts);
+    }
     let nets = collect_nets(board);
     // Fanout / escape pre-pass: get fine-pitch pads off the congested
     // surface so the coarse router can reach them. The localized fine-grid
@@ -542,10 +561,14 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     for stub in &escape_stubs {
         board.add_trace(stub.clone());
     }
-    // Post-passes: auto-stitching vias for pours with a Grid policy,
-    // then the organic smoothing pass (BEFORE length matching, so the
-    // meander tuner works on — and re-tunes — the final geometry), then
-    // length matching for nets that ask for it.
+    post_passes(board, opts, &mut best_report);
+    best_report
+}
+
+/// Shared tail for both engines: stitching vias, the organic smoothing
+/// pass (BEFORE length matching, so the meander tuner works on — and
+/// re-tunes — the final geometry), then length matching.
+fn post_passes(board: &mut Board, opts: &RouteOptions, report: &mut RouteReport) {
     crate::stitching::add_stitching_vias(board, opts);
     if opts.organic {
         let org_opts = crate::organic::OrganicOptions {
@@ -562,7 +585,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 *net_len.entry(t.net.as_str()).or_default() += (dx * dx + dy * dy).sqrt();
             }
             let mut total = 0.0;
-            for (name, outcome) in &mut best_report.per_net {
+            for (name, outcome) in &mut report.per_net {
                 if let Outcome::Ok { length_mm, .. } = outcome {
                     if let Some(l) = net_len.get(name.as_str()) {
                         *length_mm = *l;
@@ -570,14 +593,57 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                     total += *length_mm;
                 }
             }
-            best_report.total_length_mm = total;
-            best_report.organic = Some(org);
+            report.total_length_mm = total;
+            report.organic = Some(org);
         }
     }
     if let Some(sch) = opts.schematic.as_ref() {
         let _ = crate::length_match::length_match_pass(board, sch.as_ref());
     }
-    best_report
+}
+
+/// Drive the topological engine and shape its outcomes into the same
+/// report the grid driver produces (hints included).
+fn route_topo(board: &mut Board, opts: &RouteOptions) -> RouteReport {
+    let nets = collect_nets(board);
+    let results = crate::topo::route_all(board, opts);
+    let mut per_net: Vec<(String, Outcome)> = Vec::new();
+    let mut total_length_mm = 0.0;
+    let mut total_lower_bound_mm = 0.0;
+    let mut trace_count = 0usize;
+    let mut via_count = 0usize;
+    for r in results {
+        let outcome = if r.ok {
+            total_length_mm += r.length_mm;
+            total_lower_bound_mm += r.lower_bound_mm;
+            trace_count += r.trace_segments;
+            via_count += r.vias;
+            Outcome::Ok {
+                trace_segments: r.trace_segments,
+                vias: r.vias,
+                length_mm: r.length_mm,
+                lower_bound_mm: r.lower_bound_mm,
+            }
+        } else {
+            Outcome::Failed { reason: r.reason }
+        };
+        per_net.push((r.net, outcome));
+    }
+    // Stable order for the report (route_all orders by difficulty).
+    per_net.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut report = RouteReport {
+        per_net,
+        trace_count,
+        via_count,
+        total_length_mm,
+        total_lower_bound_mm,
+        iterations: 1,
+        hints: Vec::new(),
+        organic: None,
+    };
+    report.hints = generate_hints(&report, &nets);
+    post_passes(board, opts, &mut report);
+    report
 }
 
 /// Look at the report and emit human-readable suggestions for the

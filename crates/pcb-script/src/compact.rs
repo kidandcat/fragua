@@ -274,6 +274,7 @@ pub fn compact(
         // and DRC-neutral, so keeping it on makes every feasibility
         // check exercise the same pipeline the final `route` verb runs.
         organic: true,
+        engine: Default::default(),
         organic_fillet_mm: 3.0,
         initial_net_order: None,
         heuristic_weight: 1.0,

@@ -129,6 +129,7 @@ impl Genome {
             via_diameter: baseline.via_diameter,
             net_overrides: HashMap::<String, NetOverride>::new(),
             organic: baseline.organic,
+            engine: Default::default(),
             organic_fillet_mm: baseline.organic_fillet_mm,
             schematic: baseline.schematic.clone(),
             initial_net_order: Some(self.net_order.clone()),
@@ -584,6 +585,7 @@ fn hill_climb_rotations(
         via_diameter: baseline_opts.via_diameter,
         net_overrides: HashMap::<String, NetOverride>::new(),
         organic: baseline_opts.organic,
+        engine: Default::default(),
         organic_fillet_mm: baseline_opts.organic_fillet_mm,
         initial_net_order: if net_order.is_empty() {
             None

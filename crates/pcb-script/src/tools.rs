@@ -322,15 +322,21 @@ PALETTE / PLACEMENT:\n\
 \n\
 ROUTING:\n\
   route [trace_width=N] [clearance=N] [via_drill=N] [via_diameter=N] [via_cost=N] [cell=N]\n\
-        [organic=true|false] [fillet=MM]\n\
+        [organic=true|false] [fillet=MM] [engine=grid|topo]\n\
                                                — auto-route every net (Theta* on 2 layers), then an\n\
                                                  organic post-pass (rubber-band string-pulling +\n\
                                                  arc fillets, TopoR-style flowing traces; clearance\n\
                                                  checked, DRC-neutral). organic=false for raw grid\n\
                                                  geometry; fillet caps the arc radius (default 3).\n\
-                                                 Defaults trace_width=0.25, clearance=0.20,\n\
-                                                 via_drill=0.30, via_diameter=0.60, cell=0.20,\n\
-                                                 via_cost=8\n\
+                                                 engine=topo is the TOPOLOGICAL engine: homotopy\n\
+                                                 search over a Delaunay dual with rubber-band\n\
+                                                 realisation and targeted rip-up — free-angle\n\
+                                                 curved copper, vias planned where the topology\n\
+                                                 needs them (experimental; may leave nets unrouted\n\
+                                                 on very tight boards — rerun with engine=grid to\n\
+                                                 fill in). Defaults trace_width=0.25,\n\
+                                                 clearance=0.20, via_drill=0.30, via_diameter=0.60,\n\
+                                                 cell=0.20, via_cost=8\n\
   clear-route                                  — drop all traces and vias\n\
   clear-net NET                                — clear one net's traces/vias\n\
   trace top|bottom NET X1 Y1 X2 Y2 [width=N]   — manual trace segment\n\
@@ -3420,6 +3426,9 @@ struct RouteRunInput {
     /// Largest fillet radius for the organic pass, mm.
     #[serde(default)]
     organic_fillet_mm: Option<f64>,
+    /// "grid" (default) or "topo" — the rubber-band topological engine.
+    #[serde(default)]
+    engine: Option<String>,
 }
 
 fn de_u32_lenient<'de, D>(d: D) -> Result<u32, D::Error>
@@ -3973,6 +3982,15 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         net_overrides,
         schematic: Some(schematic_arc),
         organic: input.organic.unwrap_or(true),
+        engine: match input.engine.as_deref() {
+            None | Some("grid") => pcb_router::RouteEngine::Grid,
+            Some("topo") => pcb_router::RouteEngine::Topo,
+            Some(other) => {
+                return Err(ToolError::invalid_params(format!(
+                    "route: unknown engine `{other}` (want grid|topo)"
+                )))
+            }
+        },
         organic_fillet_mm: input.organic_fillet_mm.unwrap_or(3.0),
         initial_net_order,
         // Greedy-search weight. 1.0 = admissible/optimal A*. Left at 1.0
