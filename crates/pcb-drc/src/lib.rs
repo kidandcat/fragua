@@ -650,6 +650,19 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             if am.is_zero() && bm.is_zero() {
                 continue;
             }
+            // Overlap depth: a kiss within the 0.5 mm grace stays a
+            // warning; deeper means the parts physically collide (or a
+            // neighbour sits inside a declared keep-out like a screw
+            // terminal's wire bay) — that placement cannot be built,
+            // so it is an ERROR, same family as body-off-board.
+            let ox = (ab.max.x.0.min(bb.max.x.0) - ab.min.x.0.max(bb.min.x.0)) as f64 / 1e6;
+            let oy = (ab.max.y.0.min(bb.max.y.0) - ab.min.y.0.max(bb.min.y.0)) as f64 / 1e6;
+            let depth = ox.min(oy).max(0.0);
+            let severity = if depth > 0.5 {
+                Severity::Error
+            } else {
+                Severity::Warning
+            };
             let mx = f64::midpoint(
                 f64::midpoint(ab.min.x.to_mm(), ab.max.x.to_mm()),
                 f64::midpoint(bb.min.x.to_mm(), bb.max.x.to_mm()),
@@ -660,9 +673,9 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             );
             report.push(Violation {
                 kind: ViolationKind::BodyOverlap,
-                severity: Severity::Warning,
+                severity,
                 message: format!(
-                    "{} body overlaps {} body (placement_margin inflation)",
+                    "{} and {} bodies (margins included) overlap by {depth:.2} mm",
                     a.reference, b.reference
                 ),
                 x_mm: mx,

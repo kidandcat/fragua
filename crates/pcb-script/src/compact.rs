@@ -624,6 +624,15 @@ fn try_feasible(
         .collect();
     place(&mut b, &movable, &place_opts, place_margins).ok()?;
 
+    // Hard feasibility: the finished placement must honour the
+    // solder-access floor on the MARGIN-INFLATED bodies. The SA only
+    // guarantees "never worsen" — a candidate whose scaled starting
+    // layout dropped below the floor can end still below it, and the
+    // DRC gate alone does not model body-to-body access.
+    if pcb_placer::min_pairwise_gap(&b, place_margins) < opts.solder_gap_mm - 0.02 {
+        return None;
+    }
+
     let report = pcb_router::route(&mut b, route_opts);
     let any_failed = report
         .per_net
