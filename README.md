@@ -19,16 +19,33 @@ End-to-end agent loop, schematic → board → fab-ready zip:
   fixed-point geometry, tokio broadcast event bus, JSON persistence
   (`.fragua` files; legacy `.json` still loads).
 - `pcb-script`: line-oriented agent DSL — `lib`, `sym`, `net`, `class`,
-  `palette`, `place`, `auto-place`, `route`, `erc`, `drc`, `auto-pour`,
-  `pack`. The full reference is printed at app launch and served at
-  `GET /`.
-- `pcb-router`: A* on a 2-layer grid + rip-up-and-reroute + negotiated
-  congestion + Steiner-ish multi-source. Honours per-net `NetClass`
-  for trace width / clearance.
-- `pcb-placer`: simulated annealing on HPWL + soft gap penalty +
-  rasterised pad-bbox congestion proxy.
+  `palette`, `place`, `auto-place`, `edge-mount`, `route`, `compact`,
+  `erc`, `drc`, `auto-pour`, `pack`. The full reference is printed at
+  app launch and served at `GET /`.
+- `pcb-router`: two engines. Default: Theta* any-angle search on a
+  2-layer grid + rip-up-and-reroute + negotiated congestion +
+  Steiner-ish multi-source. Experimental (`route engine=topo`): a
+  TOPOLOGICAL engine — homotopy A* over a Delaunay dual with layers as
+  graph moves (vias appear where the topology needs them), rubber-band
+  geometric realisation, targeted rip-up negotiation, and an exact
+  clearance validator as the only committing authority. Both engines
+  finish with an organic post-pass (rubber-band string-pulling + arc
+  fillets, clearance-checked) — traces flow around parts TopoR-style
+  instead of cornering on grid axes. Honours per-net `NetClass` for
+  trace width / clearance.
+- `pcb-placer`: two stages. Electrostatic global placement (ePlace
+  adapted to PCBs: weighted-average wirelength gradient + spectral
+  Poisson density field, per-part trust region, 90° rotation probing,
+  body-aware edge planning for `edge_mounted` parts — including WHICH
+  side must face the outline via `edge-mount KEY top|right|bottom|left`)
+  followed by simulated-annealing legalisation against the hand-solder
+  gap floor, with a rasterised congestion proxy. Deterministic for a
+  fixed seed, global stage RNG-free.
 - `pcb-drc`: pad/trace clearance, drill, edge clearance, narrow trace,
-  routing efficiency. Per-net class overrides supported.
+  routing efficiency, body-off-board and body-overlap on the
+  margin-inflated bodies (edge-side aware: a declared wire-entry /
+  plug side may overhang the outline, nothing else may). Per-net class
+  overrides supported.
 - `pcb-erc`: floating pin/net, duplicate pin, orphan symbol, phantom
   net; role-based: multiple drivers, unpowered power net, undriven
   input. Heuristic: missing decoupling cap, missing I²C pull-up.
