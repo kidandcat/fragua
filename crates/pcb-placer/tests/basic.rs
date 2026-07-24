@@ -28,6 +28,7 @@ fn footprint(reference: &str, x_mm: f64, y_mm: f64, pads: Vec<Pad>) -> Footprint
         key: String::new(),
         description: String::new(),
         edge_mounted: false,
+        edge_side: None,
         silk: Vec::new(),
     }
 }
@@ -415,4 +416,72 @@ fn two_stage_placer_untangles_scattered_iot_board() {
         board.edge_mount_violation(&j1).is_none(),
         "J1 must stay on the outline edge"
     );
+}
+
+/// An edge-mounted screw terminal with a declared wire side (local
+/// top) must end up ON an outline edge with that side facing out —
+/// whatever orientation it started in.
+#[test]
+fn edge_side_forces_orientation_onto_the_outline() {
+    use pcb_core::EdgeSide;
+    let mut board = Board::new();
+    board.outline = Some(Rect::from_corners(
+        Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+        Point::new(Length::from_mm(60.0), Length::from_mm(40.0)),
+    ));
+    // Terminal mid-board, rotated 90° — wire side (local top) points at
+    // world LEFT, and the part floats far from every edge.
+    let mut term = footprint(
+        "J1",
+        30.0,
+        20.0,
+        vec![
+            pad("1", -2.5, 0.0, Some("LOCK_A")),
+            pad("2", 2.5, 0.0, Some("LOCK_B")),
+        ],
+    );
+    term.edge_mounted = true;
+    term.edge_side = Some(EdgeSide::Top);
+    term.rotation = 90.0;
+    board.add_footprint(term);
+    // Partner part pulling the nets somewhere interior.
+    board.add_footprint(footprint(
+        "U1",
+        20.0,
+        20.0,
+        vec![
+            pad("1", -2.0, 0.0, Some("LOCK_A")),
+            pad("2", 2.0, 0.0, Some("LOCK_B")),
+        ],
+    ));
+
+    let opts = PlaceOptions {
+        seed: 11,
+        ..PlaceOptions::default()
+    };
+    place(&mut board, &["J1".to_string()], &opts, &MarginMap::new()).expect("place");
+
+    let j1 = board
+        .footprints_in_order()
+        .find(|f| f.reference == "J1")
+        .unwrap()
+        .clone();
+    // The side-aware violation must be clean: on an edge AND facing it.
+    assert!(
+        board.edge_mount_violation(&j1).is_none(),
+        "J1 must sit on an edge with its wire side out: {:?} rot {}",
+        board.edge_mount_violation(&j1),
+        j1.rotation,
+    );
+    // And the declared local side must map to the edge it touches.
+    let world = EdgeSide::Top.world_side(j1.rotation);
+    let b = j1.bounds().unwrap();
+    let o = board.outline.unwrap();
+    let touches = match world {
+        EdgeSide::Left => (b.min.x.0 - o.min.x.0).abs() <= 500_000,
+        EdgeSide::Right => (o.max.x.0 - b.max.x.0).abs() <= 500_000,
+        EdgeSide::Bottom => (b.min.y.0 - o.min.y.0).abs() <= 500_000,
+        EdgeSide::Top => (o.max.y.0 - b.max.y.0).abs() <= 500_000,
+    };
+    assert!(touches, "wire side {world:?} must be the touching edge");
 }

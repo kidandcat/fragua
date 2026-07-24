@@ -539,6 +539,7 @@ mod tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: Vec::new(),
         }
     }

@@ -26,6 +26,7 @@ fn footprint(reference: &str, x_mm: f64, y_mm: f64) -> Footprint {
         key: String::new(),
         description: String::new(),
         edge_mounted: false,
+        edge_side: None,
         silk: Vec::new(),
     }
 }

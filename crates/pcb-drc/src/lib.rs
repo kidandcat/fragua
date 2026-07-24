@@ -1826,6 +1826,7 @@ mod feature3_tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![],
         }
     }
@@ -1992,6 +1993,7 @@ mod feature3_tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![],
         }
     }

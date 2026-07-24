@@ -1107,25 +1107,35 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
         }
 
         "edge-mount" => {
-            // edge-mount KEY true|false|yes|no|1|0
+            // edge-mount KEY true|false|yes|no|1|0|top|right|bottom|left
             // Marks a library entry as edge-mounted so place / auto-place
             // / compact keep its pads on the board outline (screw
-            // terminals, USB modules, headers…).
-            need_args(line, tokens, 2, "edge-mount KEY true|false")?;
-            let flag = match tokens[2].to_ascii_lowercase().as_str() {
-                "true" | "yes" | "1" | "on" => true,
-                "false" | "no" | "0" | "off" => false,
+            // terminals, USB modules, headers…). Naming a side also pins
+            // WHICH local side must face the outline (wire entry / plug
+            // face), so placement can reject and fix wrong orientations.
+            need_args(
+                line,
+                tokens,
+                2,
+                "edge-mount KEY true|false|top|right|bottom|left",
+            )?;
+            let (flag, side) = match tokens[2].to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" | "on" => (true, None),
+                "false" | "no" | "0" | "off" => (false, None),
+                "top" | "right" | "bottom" | "left" => (true, Some(tokens[2].to_ascii_lowercase())),
                 other => {
                     return Err(ParseError::at(
                         line,
-                        format!("edge-mount: expected true|false, got `{other}`"),
+                        format!(
+                            "edge-mount: expected true|false|top|right|bottom|left, got `{other}`"
+                        ),
                     ));
                 }
             };
             Ok(Cmd {
                 line,
                 tool: "library.set_edge_mounted".into(),
-                args: json!({ "key": tokens[1], "edge_mounted": flag }),
+                args: json!({ "key": tokens[1], "edge_mounted": flag, "side": side }),
             })
         }
 

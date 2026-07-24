@@ -184,8 +184,15 @@ LIBRARY (build first, reuse forever):\n\
                                                  from square is reported — > 2° means the corners or\n\
                                                  their order are wrong). Rectified attachments take\n\
                                                  priority over plain photos in the board overlay.\n\
-  edge-mount KEY true|false                    — library entry must sit on board outline\n\
+  edge-mount KEY true|false|top|right|bottom|left\n\
+                                               — library entry must sit on board outline\n\
                                                  (screw terminals, USB modules, edge headers).\n\
+                                                 A side names WHICH local side (Y-up pad frame)\n\
+                                                 must face the outline — the wire-entry side of a\n\
+                                                 terminal, the plug face of a USB module. Placement\n\
+                                                 then rejects wrong orientations, auto-place rotates\n\
+                                                 the part to honour it, and the DRC allows the body\n\
+                                                 to overhang the cut line on that side only.\n\
                                                  auto-place re-syncs placed footprints from this\n\
                                                  flag and snaps them to the nearest edge.\n\
   body-rect KEY MINX MINY MAXX MAXY            — physical module body in footprint-local mm (Y-up,\n\
@@ -963,6 +970,7 @@ fn tool_placement_add(project: &Project, args: &Value) -> Result<Value, ToolErro
         key: String::new(),
         description: String::new(),
         edge_mounted: false,
+        edge_side: None,
         silk: Vec::new(),
     };
 
@@ -1020,6 +1028,7 @@ fn tool_view_snapshot(project: &Project) -> Result<Value, ToolError> {
                 "key": fp.key,
                 "description": fp.description,
                 "edge_mounted": fp.edge_mounted,
+                "edge_side": fp.edge_side.map(pcb_core::EdgeSide::name),
                 "x_mm": fp.position.x.to_mm(),
                 "y_mm": fp.position.y.to_mm(),
                 "rotation": fp.rotation,
@@ -1104,6 +1113,7 @@ fn tool_view_summary(project: &Project) -> Result<Value, ToolError> {
                 "reference": fp.reference,
                 "key": fp.key,
                 "edge_mounted": fp.edge_mounted,
+                "edge_side": fp.edge_side.map(pcb_core::EdgeSide::name),
                 "bbox_w_mm": bw,
                 "bbox_h_mm": bh,
             })
@@ -1616,6 +1626,7 @@ fn tool_palette_add(project: &Project, args: &Value) -> Result<Value, ToolError>
             key,
             description,
             edge_mounted: plan.edge_mounted.unwrap_or(false),
+            edge_side: None,
             silk: Vec::new(),
         };
         project
@@ -1684,6 +1695,7 @@ fn library_entry_summary(e: &pcb_core::LibraryEntry) -> Value {
         "default_value": e.default_value,
         "default_rotation_deg": e.default_rotation_deg,
         "edge_mounted": e.edge_mounted,
+        "edge_side": e.edge_side.map(pcb_core::EdgeSide::name),
         "pad_count": e.pads.len(),
         "attachment_count": e.attachments.len(),
         "attachments": e.attachments.iter().map(|a| json!({
@@ -1991,6 +2003,7 @@ fn tool_library_create(project: &Project, args: &Value) -> Result<Value, ToolErr
         default_value: input.default_value,
         default_rotation_deg: input.default_rotation_deg,
         edge_mounted: input.edge_mounted,
+        edge_side: None,
         pads,
         silk,
         lcsc_id: input.lcsc_id,
@@ -2366,26 +2379,41 @@ struct LibrarySetBodyRectInput {
 struct LibrarySetEdgeMountedInput {
     key: String,
     edge_mounted: bool,
+    /// Which LOCAL side must face the outline: "top" | "right" |
+    /// "bottom" | "left". Absent = any side (legacy).
+    #[serde(default)]
+    side: Option<String>,
 }
 
 fn tool_library_set_edge_mounted(project: &Project, args: &Value) -> Result<Value, ToolError> {
     let input: LibrarySetEdgeMountedInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolError::invalid_params(format!("edge-mount: {e}")))?;
     ensure_confirmed(project, "edge-mount", &input.key)?;
+    let side = match input.side.as_deref() {
+        None => None,
+        Some(raw) => Some(pcb_core::EdgeSide::parse(raw).ok_or_else(|| {
+            ToolError::invalid_params(format!(
+                "edge-mount: unknown side `{raw}` (want top|right|bottom|left)"
+            ))
+        })?),
+    };
     project
         .library()
-        .set_edge_mounted(&input.key, input.edge_mounted)
+        .set_edge_mount(&input.key, input.edge_mounted, side)
         .map_err(ToolError::invalid_params)?;
     project.notify_library_changed();
     let msg = format!(
-        "edge-mount on {}: {}",
+        "edge-mount on {}: {}{}",
         input.key,
-        if input.edge_mounted { "true" } else { "false" }
+        if input.edge_mounted { "true" } else { "false" },
+        side.map(|s| format!(" (local {} side on the outline)", s.name()))
+            .unwrap_or_default(),
     );
     project.log(ActivityLevel::Info, msg.clone());
     Ok(text_result(msg).with_data(json!({
         "key": input.key,
         "edge_mounted": input.edge_mounted,
+        "edge_side": side.map(pcb_core::EdgeSide::name),
     })))
 }
 
@@ -2614,6 +2642,7 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
         key: key_field,
         description: description_field,
         edge_mounted: edge_from_schematic,
+        edge_side: entry.edge_side,
         silk,
     };
     project
@@ -3533,7 +3562,7 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
     // back onto the live project so compact / DRC see it.
     {
         let lib = project.library();
-        let mut live_updates: Vec<(pcb_core::Id, bool)> = Vec::new();
+        let mut live_updates: Vec<(pcb_core::Id, bool, Option<pcb_core::EdgeSide>)> = Vec::new();
         for fp in work.footprints.values_mut() {
             if fp.key.is_empty() {
                 continue;
@@ -3541,13 +3570,14 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
             let Some(entry) = lib.find(&fp.key) else {
                 continue;
             };
-            if fp.edge_mounted != entry.edge_mounted {
+            if fp.edge_mounted != entry.edge_mounted || fp.edge_side != entry.edge_side {
                 fp.edge_mounted = entry.edge_mounted;
-                live_updates.push((fp.id, entry.edge_mounted));
+                fp.edge_side = entry.edge_side;
+                live_updates.push((fp.id, entry.edge_mounted, entry.edge_side));
             }
         }
-        for (id, flag) in live_updates {
-            project.set_footprint_edge_mounted(id, flag);
+        for (id, flag, side) in live_updates {
+            project.set_footprint_edge_mount(id, flag, side);
         }
     }
     // Build a per-id margin map from the library so footprints linked
@@ -3743,7 +3773,7 @@ fn tool_compact_run(project: &Project, args: &Value) -> Result<Value, ToolError>
     let mut board = project.read().board().clone();
     {
         let lib = project.library();
-        let mut live_updates: Vec<(pcb_core::Id, bool)> = Vec::new();
+        let mut live_updates: Vec<(pcb_core::Id, bool, Option<pcb_core::EdgeSide>)> = Vec::new();
         for fp in board.footprints.values_mut() {
             if fp.key.is_empty() {
                 continue;
@@ -3751,13 +3781,14 @@ fn tool_compact_run(project: &Project, args: &Value) -> Result<Value, ToolError>
             let Some(entry) = lib.find(&fp.key) else {
                 continue;
             };
-            if fp.edge_mounted != entry.edge_mounted {
+            if fp.edge_mounted != entry.edge_mounted || fp.edge_side != entry.edge_side {
                 fp.edge_mounted = entry.edge_mounted;
-                live_updates.push((fp.id, entry.edge_mounted));
+                fp.edge_side = entry.edge_side;
+                live_updates.push((fp.id, entry.edge_mounted, entry.edge_side));
             }
         }
-        for (id, flag) in live_updates {
-            project.set_footprint_edge_mounted(id, flag);
+        for (id, flag, side) in live_updates {
+            project.set_footprint_edge_mount(id, flag, side);
         }
     }
     let schematic = {

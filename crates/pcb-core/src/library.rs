@@ -441,6 +441,11 @@ pub struct LibraryEntry {
     /// screw terminal, antenna). Honoured by placement checks.
     #[serde(default)]
     pub edge_mounted: bool,
+    /// Which LOCAL side of the footprint must face the board edge (wire
+    /// entry of a screw terminal, plug face of a USB module). `None` =
+    /// any side. Implies nothing unless `edge_mounted` is set.
+    #[serde(default)]
+    pub edge_side: Option<crate::board::EdgeSide>,
     pub pads: Vec<LibraryPad>,
     /// Library-authored silkscreen — body outlines, polarity dots,
     /// `{REF}`/`{VAL}` templates. Empty for legacy entries; the
@@ -824,11 +829,24 @@ impl Library {
     /// keep their baked `edge_mounted` flag until re-spawned or the
     /// auto-placer re-syncs from the library.
     pub fn set_edge_mounted(&self, key: &str, edge_mounted: bool) -> Result<bool, String> {
+        self.set_edge_mount(key, edge_mounted, None)
+    }
+
+    /// Like `set_edge_mounted`, but also records WHICH local side must
+    /// face the outline (`None` keeps/clears the side constraint —
+    /// clearing when `edge_mounted` is false).
+    pub fn set_edge_mount(
+        &self,
+        key: &str,
+        edge_mounted: bool,
+        edge_side: Option<crate::board::EdgeSide>,
+    ) -> Result<bool, String> {
         let mut inner = self.inner.write().expect("library lock poisoned");
         let Some(entry) = inner.entries.iter_mut().find(|e| e.key == key) else {
             return Err(format!("library: no entry with key {key}"));
         };
         entry.edge_mounted = edge_mounted;
+        entry.edge_side = if edge_mounted { edge_side } else { None };
         let snapshot = inner.clone();
         drop(inner);
         self.save(&snapshot)?;
@@ -1234,6 +1252,7 @@ mod tests {
             default_value: String::new(),
             default_rotation_deg: 0.0,
             edge_mounted: false,
+            edge_side: None,
             pads,
             silk: Vec::new(),
             lcsc_id: None,

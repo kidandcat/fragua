@@ -88,7 +88,16 @@ pub(crate) fn global_place(
     }
 
     // --- Cache movable bodies -------------------------------------------------
-    let half_gap = opts.min_clearance_mm.max(opts.solder_gap_mm) / 2.0;
+    // Density inflation uses the ROUTING-corridor preference, not just
+    // the hard solder floor: with only solder_gap/2, a converged
+    // density map tiles parts at exactly the hard floor (1.0 mm) and
+    // the router chokes — a 0.25 mm trace with 0.4 mm clearances needs
+    // ~1.05 mm of corridor. min_gap (default 2.0 mm) is the same soft
+    // spacing the SA scores, so the two stages agree.
+    let half_gap = opts
+        .min_gap_mm
+        .max(opts.min_clearance_mm.max(opts.solder_gap_mm))
+        / 2.0;
     let mut bodies: Vec<Body> = Vec::new();
     let mut body_of_id: HashMap<Id, usize> = HashMap::new();
     let mut pos: Vec<[f64; 2]> = Vec::new();
@@ -113,8 +122,9 @@ pub(crate) fn global_place(
         let charge = (inf_max[0] - inf_min[0]).max(0.01) * (inf_max[1] - inf_min[1]).max(0.01);
         let mut pre_q = 0u8;
         let edge_lock = if fp.edge_mounted {
+            let declared = fp.edge_side.map(|side| side.world_side(fp.rotation));
             let (q, axis, value) = edge_plan(
-                px, py, raw_min, raw_max, inf_min, inf_max, ox, oy, w_mm, h_mm,
+                px, py, raw_min, raw_max, inf_min, inf_max, ox, oy, w_mm, h_mm, declared,
             );
             pre_q = q;
             if q != 0 {
@@ -582,6 +592,7 @@ fn project_position(p: &mut [f64; 2], b: &Body, ox: f64, oy: f64, w: f64, h: f64
 /// tolerance so the body overhang shrinks under the 0.5 mm the DRC
 /// allows. Returns `(quarter, axis, lock_value)` where `lock_value` is
 /// the position coordinate on `axis` that realises the plan.
+#[allow(clippy::too_many_arguments)]
 fn edge_plan(
     px: f64,
     py: f64,
@@ -593,6 +604,7 @@ fn edge_plan(
     oy: f64,
     w: f64,
     h: f64,
+    declared: Option<pcb_core::EdgeSide>,
 ) -> (u8, usize, f64) {
     // Matches pcb-core's EDGE_TOUCH_TOLERANCE_MM and the 0.5 mm body
     // overhang the DRC's body_off_board check tolerates.
@@ -609,24 +621,42 @@ fn edge_plan(
         .min_by(|&a, &b| dists[a].total_cmp(&dists[b]))
         .unwrap_or(0);
 
-    let mut chosen = (0u8, 0.0f64, f64::INFINITY); // (q, backoff, residual)
-    for q in 0u8..4 {
-        let (rmin, rmax) = rot_bbox(raw_min, raw_max, q);
-        let (imin, imax) = rot_bbox(inf_min, inf_max, q);
-        // Body margin on the outboard side when the pads touch the edge.
-        let m_out = match edge {
-            0 => rmin[0] - imin[0],
-            1 => imax[0] - rmax[0],
-            2 => rmin[1] - imin[1],
-            _ => imax[1] - rmax[1],
+    let (q, backoff) = if let Some(world0) = declared {
+        // The part's wire/plug side (already mapped to the world frame
+        // at its CURRENT rotation) must face the chosen edge: exactly
+        // one extra rotation does that, and the overhang on that side
+        // is exempt from the body check — pads sit right on the cut.
+        use pcb_core::EdgeSide as E;
+        let target = match edge {
+            0 => E::Left,
+            1 => E::Right,
+            2 => E::Bottom,
+            _ => E::Top,
         };
-        let backoff = (m_out - OVERHANG_TOL).clamp(0.0, TOUCH_TOL);
-        let residual = (m_out - OVERHANG_TOL - backoff).max(0.0);
-        if residual < chosen.2 - 1e-9 {
-            chosen = (q, backoff, residual);
+        let q = (0u8..4)
+            .find(|&q| world0.world_side(90.0 * f32::from(q)) == target)
+            .unwrap_or(0);
+        (q, 0.0)
+    } else {
+        let mut chosen = (0u8, 0.0f64, f64::INFINITY); // (q, backoff, residual)
+        for q in 0u8..4 {
+            let (rmin, rmax) = rot_bbox(raw_min, raw_max, q);
+            let (imin, imax) = rot_bbox(inf_min, inf_max, q);
+            // Body margin on the outboard side when the pads touch the edge.
+            let m_out = match edge {
+                0 => rmin[0] - imin[0],
+                1 => imax[0] - rmax[0],
+                2 => rmin[1] - imin[1],
+                _ => imax[1] - rmax[1],
+            };
+            let backoff = (m_out - OVERHANG_TOL).clamp(0.0, TOUCH_TOL);
+            let residual = (m_out - OVERHANG_TOL - backoff).max(0.0);
+            if residual < chosen.2 - 1e-9 {
+                chosen = (q, backoff, residual);
+            }
         }
-    }
-    let (q, backoff, _) = chosen;
+        (chosen.0, chosen.1)
+    };
     let (rmin, rmax) = rot_bbox(raw_min, raw_max, q);
     match edge {
         0 => (q, 0, ox - rmin[0] + backoff),

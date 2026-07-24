@@ -286,11 +286,39 @@ impl Grid {
     /// cells overwrite the obstacle inside the bbox. For TH footprints
     /// (any pad with `drill`) the body is stamped on both layers
     /// because the package physically straddles both.
-    pub fn stamp_bodies(&mut self, board: &Board) {
+    /// `clearance` is the same pad clearance `stamp_pads` uses: body
+    /// cells within `pad + clearance + ESCAPE_MOAT_MM` of one of the
+    /// footprint's OWN pads are left free. Without the moat, a part
+    /// whose pads do not fill its pad-hull entombs them: an 0.96" OLED
+    /// is a pin row plus four mounting holes at the far corners, so the
+    /// hull is the whole module and the pins end up sealed inside a
+    /// 23x27 mm obstacle slab with no exit ("no path to pad DS1.x").
+    /// The moat only frees THIS footprint's stamp - other parts' body
+    /// stamps and `stamp_pads` (which re-covers every pad plus
+    /// clearance, mounting holes included) still apply.
+    pub fn stamp_bodies(&mut self, board: &Board, clearance: Length) {
+        /// Escape corridor width around a pad, mm.
+        const ESCAPE_MOAT_MM: f64 = 1.0;
+        let moat = clearance + Length::from_mm(ESCAPE_MOAT_MM);
         let bottom = self.layer_count - 1;
         for fp in board.footprints_in_order() {
             let Some(bounds) = fp.bounds() else { continue };
             let is_th = fp.pads.iter().any(|p| p.drill.is_some());
+            // Pad rects inflated by the moat, world frame, nm.
+            let moats: Vec<(i64, i64, i64, i64)> = fp
+                .pads
+                .iter()
+                .map(|pad| {
+                    let c = fp.pad_world_center(pad);
+                    let (pw, ph) = fp.pad_world_size(pad);
+                    (
+                        (c.x - pw / 2 - moat).0,
+                        (c.y - ph / 2 - moat).0,
+                        (c.x + pw / 2 + moat).0,
+                        (c.y + ph / 2 + moat).0,
+                    )
+                })
+                .collect();
             // Map the model layer to a grid-layer index. Pre-Phase-4
             // boards only use Top/Bottom; on a 4-layer grid Bottom
             // still means "the very bottom".
@@ -321,6 +349,15 @@ impl Grid {
                         };
                         if !self.in_bounds(gp) {
                             continue;
+                        }
+                        let centre = self.unsnap(gp);
+                        if moats.iter().any(|&(x0, y0, x1, y1)| {
+                            centre.x.0 >= x0
+                                && centre.x.0 <= x1
+                                && centre.y.0 >= y0
+                                && centre.y.0 <= y1
+                        }) {
+                            continue; // escape moat around an own pad
                         }
                         if matches!(self.get(gp), Cell::Free) {
                             self.set(gp, Cell::Obstacle);

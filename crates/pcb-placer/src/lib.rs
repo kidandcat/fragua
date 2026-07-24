@@ -235,7 +235,11 @@ impl Default for PlaceOptions {
             density_bins: 64,
             target_density: 1.0,
             target_overflow: 0.08,
-            edge_clearance_mm: 0.3,
+            // 0.8 keeps auto-placed pads inside the ROUTER's reachable
+            // region too (outline inset ≈ clearance 0.4 + half trace
+            // width), not just outside the DRC edge check. A pad the
+            // DRC accepts at 0.3 mm can still be unreachable copper.
+            edge_clearance_mm: 0.8,
         }
     }
 }

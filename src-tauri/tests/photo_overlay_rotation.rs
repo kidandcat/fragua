@@ -146,6 +146,7 @@ fn renderer_uses_the_assumed_footprint_transform() {
         key: String::new(),
         description: String::new(),
         edge_mounted: false,
+        edge_side: None,
         silk: Vec::new(),
     };
     board.add_footprint(fp);

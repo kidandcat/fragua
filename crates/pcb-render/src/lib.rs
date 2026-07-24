@@ -1986,6 +1986,7 @@ mod tests {
             default_value: String::new(),
             default_rotation_deg: 0.0,
             edge_mounted: false,
+            edge_side: None,
             pads: vec![
                 pcb_core::LibraryPad {
                     number: "1".into(),
@@ -2036,6 +2037,7 @@ mod tests {
             default_value: String::new(),
             default_rotation_deg: 0.0,
             edge_mounted: false,
+            edge_side: None,
             pads: Vec::new(),
             silk: Vec::new(),
             lcsc_id: None,

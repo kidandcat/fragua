@@ -389,6 +389,16 @@ pub struct Footprint {
     /// screw terminals, antennas). Honoured by `placement` checks.
     #[serde(default)]
     pub edge_mounted: bool,
+    /// Which side of the footprint (LOCAL frame, Y-up: the same frame
+    /// pads are authored in) must FACE the board edge — the wire-entry
+    /// side of a screw terminal, the plug side of a USB module. Only
+    /// meaningful when `edge_mounted`; `None` = any edge, any
+    /// orientation (legacy behaviour). Placement checks reject
+    /// orientations that point this side inboard, and the DRC's
+    /// body-off-board check exempts overhang on this side (connectors
+    /// legitimately hang past the cut line).
+    #[serde(default)]
+    pub edge_side: Option<EdgeSide>,
     /// Silkscreen primitives drawn relative to this footprint's
     /// origin. Empty for now — library-authored silk is V2; the
     /// field exists so the renderer can decide whether to
@@ -539,6 +549,69 @@ pub struct Trace {
     pub end: Point,
     pub width: Length,
     pub net: String,
+}
+
+/// A footprint side in its LOCAL frame (Y-up), or a board side in the
+/// world frame — the same enum serves both, related by `world_side`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+impl EdgeSide {
+    /// CCW index used by the rotation math: Top=0, Left=1, Bottom=2,
+    /// Right=3 (a +90 deg CCW rotation advances a side by one step).
+    fn ccw_index(self) -> u32 {
+        match self {
+            Self::Top => 0,
+            Self::Left => 1,
+            Self::Bottom => 2,
+            Self::Right => 3,
+        }
+    }
+
+    fn from_ccw_index(i: u32) -> Self {
+        match i % 4 {
+            0 => Self::Top,
+            1 => Self::Left,
+            2 => Self::Bottom,
+            _ => Self::Right,
+        }
+    }
+
+    /// The world side this LOCAL side faces after rotating the
+    /// footprint `rotation_deg` CCW (quantized to the nearest 90 deg,
+    /// same convention as `rotate_margin_trbl`).
+    #[must_use]
+    pub fn world_side(self, rotation_deg: f32) -> Self {
+        let q = (f64::from(rotation_deg).rem_euclid(360.0) / 90.0).round() as u32 % 4;
+        Self::from_ccw_index(self.ccw_index() + q)
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "top" => Some(Self::Top),
+            "right" => Some(Self::Right),
+            "bottom" => Some(Self::Bottom),
+            "left" => Some(Self::Left),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Right => "right",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+        }
+    }
 }
 
 /// A through-hole via that joins both copper layers. Phase 5 only models
@@ -1309,14 +1382,46 @@ impl Board {
         } else {
             (false, false, false, false)
         };
+        // Exemption rules, by intent:
+        //  - NON edge-mounted parts may hang their body off an edge
+        //    their pads already touch (an OLED / breakout sitting
+        //    header-on-board, glass off-edge). Deliberate layouts only
+        //    ever do this with the pads ON the edge.
+        //  - Edge-mounted parts get NO pads-touch exemption: they are
+        //    at an edge by definition, so it would swallow every
+        //    mistake. They must declare WHICH side hangs over
+        //    (`edge_side` — wire entry, plug face); only that side is
+        //    exempt, and only in the orientation that faces it out.
+        let declared = if probe.edge_mounted {
+            probe.edge_side.map(|s| s.world_side(probe.rotation))
+        } else {
+            None
+        };
+        let pads_exempt = !probe.edge_mounted;
 
         let mut worst = 0i64;
         let mut side = "";
         for (over, allowed, name) in [
-            (over_left, pad_left, "left"),
-            (over_right, pad_right, "right"),
-            (over_bottom, pad_bottom, "bottom"),
-            (over_top, pad_top, "top"),
+            (
+                over_left,
+                (pad_left && pads_exempt) || declared == Some(EdgeSide::Left),
+                "left",
+            ),
+            (
+                over_right,
+                (pad_right && pads_exempt) || declared == Some(EdgeSide::Right),
+                "right",
+            ),
+            (
+                over_bottom,
+                (pad_bottom && pads_exempt) || declared == Some(EdgeSide::Bottom),
+                "bottom",
+            ),
+            (
+                over_top,
+                (pad_top && pads_exempt) || declared == Some(EdgeSide::Top),
+                "top",
+            ),
         ] {
             if over > tol_nm && !allowed && over > worst {
                 worst = over;
@@ -1345,11 +1450,53 @@ impl Board {
         let outline = self.outline?;
         let bbox = probe.bounds()?;
         let tol_nm = (EDGE_TOUCH_TOLERANCE_MM * 1_000_000.0) as i64;
-        let touches_left = (bbox.min.x.0 - outline.min.x.0).abs() <= tol_nm;
-        let touches_right = (outline.max.x.0 - bbox.max.x.0).abs() <= tol_nm;
-        let touches_top = (bbox.min.y.0 - outline.min.y.0).abs() <= tol_nm;
-        let touches_bottom = (outline.max.y.0 - bbox.max.y.0).abs() <= tol_nm;
-        if touches_left || touches_right || touches_top || touches_bottom {
+        // World sides, Y-up: Left = min.x, Right = max.x, Bottom =
+        // min.y, Top = max.y.
+        let touch = |side: EdgeSide| -> bool {
+            match side {
+                EdgeSide::Left => (bbox.min.x.0 - outline.min.x.0).abs() <= tol_nm,
+                EdgeSide::Right => (outline.max.x.0 - bbox.max.x.0).abs() <= tol_nm,
+                EdgeSide::Bottom => (bbox.min.y.0 - outline.min.y.0).abs() <= tol_nm,
+                EdgeSide::Top => (outline.max.y.0 - bbox.max.y.0).abs() <= tol_nm,
+            }
+        };
+        if let Some(local) = probe.edge_side {
+            // Orientation-aware: the DECLARED side (wire entry, plug
+            // face) must be the one on the outline, in its current
+            // rotation.
+            let world = local.world_side(probe.rotation);
+            if touch(world) {
+                return None;
+            }
+            let touching_other = [
+                EdgeSide::Top,
+                EdgeSide::Right,
+                EdgeSide::Bottom,
+                EdgeSide::Left,
+            ]
+            .into_iter()
+            .find(|s| touch(*s));
+            return Some(match touching_other {
+                Some(other) => format!(
+                    "its {} side (local {}) faces {} but the part sits on the {} edge — rotate it so the {} side meets the outline",
+                    world.name(),
+                    local.name(),
+                    world.name(),
+                    other.name(),
+                    local.name(),
+                ),
+                None => format!(
+                    "its {} side (local {}) must sit on a board edge; the bbox is off-edge",
+                    world.name(),
+                    local.name(),
+                ),
+            });
+        }
+        if touch(EdgeSide::Left)
+            || touch(EdgeSide::Right)
+            || touch(EdgeSide::Top)
+            || touch(EdgeSide::Bottom)
+        {
             return None;
         }
         let dx_left = (bbox.min.x.0 - outline.min.x.0).abs() as f64 / 1_000_000.0;
@@ -1639,6 +1786,7 @@ mod tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![],
         });
 
@@ -1664,6 +1812,7 @@ mod tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![],
         });
 
@@ -1727,6 +1876,7 @@ mod tests {
             key: String::new(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![FootprintSilk::Line {
                 layer: SilkLayer::Top,
                 start: Point::ORIGIN,
@@ -1775,6 +1925,7 @@ mod tests {
             key: "test_part".into(),
             description: String::new(),
             edge_mounted: false,
+            edge_side: None,
             silk: vec![],
         }
     }

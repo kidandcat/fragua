@@ -63,6 +63,7 @@ fn board_with_phantom_pad(net: &str) -> Board {
         key: String::new(),
         description: String::new(),
         edge_mounted: false,
+        edge_side: None,
         silk: Vec::new(),
     });
     board

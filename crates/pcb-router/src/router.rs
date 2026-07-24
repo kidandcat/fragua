@@ -743,7 +743,7 @@ fn route_pass(
     // Layered stamping, broad-to-narrow: bodies block the area each
     // footprint occupies, keepouts block any user-marked region, pads
     // overwrite the cells they actually own so they stay reachable.
-    grid.stamp_bodies(board);
+    grid.stamp_bodies(board, opts.clearance);
     grid.stamp_keepouts(board);
     // Stamp pads BARE (no clearance inflation): a pad cell holds its true
     // copper extent only. Edge-to-edge clearance to a pad is enforced at
