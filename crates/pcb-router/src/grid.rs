@@ -16,7 +16,38 @@
 //! consistently across visibility, cost accumulation, and obstacle
 //! stamping.
 
-use pcb_core::{Board, CopperLayer, Keepout, Layer, Length, Point, Rect};
+use pcb_core::{Board, CopperLayer, Footprint, Keepout, Layer, Length, Point, Rect};
+
+/// Pad pitch (mm) at or below which a package counts as "fine pitch":
+/// QFN/QFP/BGA territory, where every pin is modelled and the package
+/// carries no un-modelled copper under its body. 0.5 mm is the usual
+/// industry line between hand-solderable and fine-pitch.
+pub(crate) const FINE_PITCH_MM: f64 = 0.5;
+
+/// Smallest centre-to-centre distance (mm) between any two pads of a
+/// footprint. `None` for footprints with fewer than two pads.
+pub(crate) fn min_pad_pitch_mm(fp: &Footprint) -> Option<f64> {
+    let centres: Vec<(f64, f64)> = fp
+        .pads
+        .iter()
+        .map(|p| {
+            let c = fp.pad_world_center(p);
+            (c.x.to_mm(), c.y.to_mm())
+        })
+        .collect();
+    let mut best = f64::INFINITY;
+    for i in 0..centres.len() {
+        for j in (i + 1)..centres.len() {
+            let d = ((centres[i].0 - centres[j].0).powi(2)
+                + (centres[i].1 - centres[j].1).powi(2))
+            .sqrt();
+            if d < best {
+                best = d;
+            }
+        }
+    }
+    best.is_finite().then_some(best)
+}
 
 /// Per-cell extra cost layered on top of the grid for negotiated
 /// congestion. A* adds `at(p)` to the step cost when entering `p`, so
@@ -304,6 +335,17 @@ impl Grid {
         for fp in board.footprints_in_order() {
             let Some(bounds) = fp.bounds() else { continue };
             let is_th = fp.pads.iter().any(|p| p.drill.is_some());
+            // Fine-pitch SMD packages (0.5 mm pitch and below: QFN, QFP,
+            // BGA) are fully modelled — every pin AND the thermal pad is a
+            // declared pad, so `stamp_pads` already blocks all the copper
+            // that exists. The extra body slab only buys us a keep-out for
+            // un-modelled copper, which these parts do not have, while it
+            // does close the under-package escape channels the dogbone
+            // fanout depends on. Coarse-pitch parts (modules with hidden
+            // slugs, castellated boards) keep the conservative stamp.
+            if !is_th && min_pad_pitch_mm(fp).is_some_and(|p| p < FINE_PITCH_MM) {
+                continue;
+            }
             // Pad rects inflated by the moat, world frame, nm.
             let moats: Vec<(i64, i64, i64, i64)> = fp
                 .pads
