@@ -28,7 +28,7 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 - **~1544 traces**, **~57 vias** (25 fanout, 24 dogbones with copper stubs)  
 - **14/39 nets fully connected @ `max_seconds=90`; 21/39 @ 180 s**, reproducible run-to-run on an idle machine (see O9: the one-off 13/39 was budget starvation under load, not board state)  
 - **Plateau:** `max_seconds=600` → same 21/39, same 18 failed nets → algorithmic wall, not compute  
-- **4-layer probe REGRESSES:** `layer add In1/In2` + route → 1/39, budget overrun (see O8)  
+- **Multi-layer now helps (barely):** `layer add In1/In2` + route @180 s → **22/39** (3L and 4L alike) vs 21/39 on 2L, inside budget — was 1/39 with a 34 s overrun (O8, fixed 2026-07-27)  
 - DRC **7 errors** (all marginal 0.125–0.175 mm clearance at the QFN), ~70 warnings  
 
 **Commits (first batch already on `origin/master`, v4 batch local at time of writing):**
@@ -309,7 +309,7 @@ See §5.
 | O1 | **Cannot fully route bare QFN-56 on 2L** — now **21/39** (was 5/39) but **plateaued** | Same 18 nets fail at 180 s and 600 s (QSPI, USB, SWD, XIN/RUN, GPIOs on U1 left/top/bottom, +1V1, VBUS, CC2); hints blame U1 pads as outliers | Escape congestion, not search time: the +3V3 ring and early-routed nets hog the corridors. Try reduced clearance class near fine-pitch, targeted rip-up of fat power nets, more dogbone depth slots |
 | O2 | ~~Report vs board copper counts diverge~~ **FIXED** (`489c1af`, `8448a2d`) | route/drc text now reports final board copper, per-net failures, hints, budget flag | — |
 | O3 | ~~Body stamp moat fights fine-pitch escape~~ **FIXED** (`71cf4ef`) | No body stamp for SMD packages with pad pitch < 0.5 mm; modules/TH keep it | — |
-| O8 | **≥3-layer path regresses instead of helping** | `layer add In1.Cu/In2.Cu signal` + `route max_seconds=180` → **1/39**, search laid 0 segments, elapsed 214 s (budget overrun); a 3-layer board reproduces the same collapse | Fine-escape (≥3L) + bigger grid starves A*; pop caps/budget fractions were tuned for 2L. Needs its own campaign before extra layers can be the fine-pitch answer. Gotcha: `clear-route` BEFORE `layer remove`, else copper left on the inner layer blocks the removal |
+| O8 | ~~**≥3-layer path regresses instead of helping**~~ **FIXED** (2026-07-27, commits `8d9fc9e` / `a14c26a` / `62726aa`) | Was: `layer add In1.Cu/In2.Cu signal` + `route max_seconds=180` → **1/39**, search laid 0 segments, elapsed 214 s. Now (same board, same budget, back-to-back on one machine): **2L 21/39 in 4 passes, 3L 22/39, 4L 22/39 in 3 passes**, elapsed 180.0–180.2 s. Root cause was **not** grid size or pop caps: `plan_escapes` swapped strategy at 3 layers and ran the fine-grid stub escape **instead of** the VIP/dogbone fanout. On a 0.4 mm QFN-56 the fan cannot fit (one 14-pin row would need ~13 mm of perpendicular room at the 1.0 mm breakout spread), so it spent **24 s of a 90 s budget to free 5 pads** where the fanout frees **25 in 10 ms** — the coarse router then had nothing to land on. The 34 s overrun was a second bug: the budget was only checked BETWEEN nets, so one long A* ran past it. Fix: the fanout is the baseline on **every** stackup (`fanout::plan_footprint` per footprint); fine escape is an optional per-footprint improvement, kept only when the fanout left pads stranded AND the fan fits AND it frees ≥ as many pads, bounded by a per-footprint time slice and a per-search pop cap — and, since it did not earn its keep on any board we measure, it is now **opt-in** (`route fine_escape=true` / `RouteOptions::fine_escape`, default off). A* searches now also carry the pass deadline (`astar::Limits`), so `max_seconds` is honoured to the second. Pinned by `crates/pcb-router/tests/layer_count_monotonic.rs`. Gotcha still applies: `clear-route` BEFORE `layer remove`, else copper left on the inner layer blocks the removal |
 | O9 | ~~`layer add`+`remove` round-trip changes routing results~~ **FIXED / not a state bug** | Root cause: the round-trip mutates **nothing** (project serialisation is byte-identical before/after — pinned by `crates/pcb-script/tests/layer_roundtrip.rs`); the 21/39 → 13/39 drop was the **wall-clock `max_seconds` budget** — under machine load fewer RR&R passes finish inside 180 s, so the best-so-far result is worse. Live re-check: route/round-trip/route on the same board gave **21/39, 18 failed nets, 4 passes** three times in a row (before, control repeat, after the round-trip). Hardened as part of the fix: `layer remove` now also refuses when a **pour or keepout** still references the layer (it only checked footprints/pads/traces), which was a real path to a dangling `Layer{index}` surviving the round-trip | Read the route text: `N pass(es)` + `BUDGET HIT` explain a result change; compare runs at the same pass count, or raise `max_seconds`, before blaming board state |
 | O4 | Progress lines not always in `/script` reply | Logged via activity bus; HTTP reply is only final tool text | Optionally append last N progress lines to `route.run` text |
 | O5 | Chirality / pin-1 of agent-authored QFN | RP2040 sides authored from secondary docs | Verify against datasheet before any fab; photo-calibrate if possible |
@@ -399,9 +399,16 @@ Defaults in script layer: cell 0.20, clearance 0.20, max_seconds 90.
 3. **Reduced clearance class near fine-pitch.** The 7 DRC errors are 0.125–0.175 mm vs 0.2 — real boards use a finer rule (0.1 mm) inside the QFN escape zone. Support per-area or per-class clearance so escape lanes are legal instead of near-miss.
 4. **More dogbone depth slots.** 24 dogbones landed; U1 alone has ~34 signal pads. Widen `dogbone_via_candidates` depth ladder so a full QFN row fans out.
 
-### Priority A2 — Fix the 4-layer path (O8)
+### Priority A2 — Fix the 4-layer path (O8) — **DONE 2026-07-27**
 
-- 4L route collapses to 1/39 and overruns the budget: fine-escape triggers with cell=0.20, the 4-layer grid doubles cells, and the A* pop caps / per-stage budget fractions tuned for 2L starve every pass. Re-tune caps by layer count, or gate fine-escape behind an explicit opt-in until it earns its keep.
+Result: 2L **21/39**, 3L **22/39**, 4L **22/39** at `max_seconds=180`, all inside budget (180.0–180.2 s). Extra layers now help slightly instead of collapsing the board. What was actually wrong, and what to remember:
+
+1. **It was strategy, not compute.** The pop caps and the doubled grid were *not* the cause — forcing the fanout path on a 4-layer board (with the caps untouched) already recovered 22/39. The cause was `plan_escapes` replacing the proven VIP/dogbone fanout with the fine-grid stub escape as soon as `layer_count >= 3`.
+2. **Fanout is now the baseline on every stackup**, planned per footprint (`fanout::plan_footprint`). Fine escape may only *add* escapes for a footprint the fanout left stranded, and only when its fan geometrically fits and it frees at least as many pads; it is opt-in (`route fine_escape=true`) until some board shows it winning.
+3. **Budgets are enforced inside a search** (`astar::Limits { max_pops, deadline }`), not just between nets — that is what removed the 34 s overrun.
+4. **A 4-layer pass costs ~1.5× a 2-layer pass** (68 s vs 44 s for pass 1 on the stress board), so 4L completes 3 RR&R passes where 2L completes 4. That is why 4L only edges ahead. The next win on multi-layer is making a pass cheaper (the per-expansion all-layer scans were deduped in `8d9fc9e`; the remaining cost is the doubled state space itself), or spending inner layers deliberately rather than letting A* explore all of them.
+
+**Remaining multi-layer wart (not a router bug):** `layer add In1.Cu signal` appends at the BOTTOM of the stack, so the stackup ends up `[F.Cu, B.Cu, In1.Cu, In2.Cu]` — the layer *named* `B.Cu` is now an inner layer and the physical bottom is named `In2.Cu`. Harmless to the router (it only counts layers) but wrong for fab output; fix `layer.add` to insert before the bottom layer before anyone exports a 4-layer board.
 
 ### Priority B — Placement quality
 
@@ -439,6 +446,15 @@ curl -s http://127.0.0.1:7878/script \
   -H 'content-type: application/json' \
   -d '{"script":"status\nview\nclear-route\nroute max_seconds=90\nscreenshot stress/rp2040-out.png width=2000\nview\nsave stress/rp2040-minimal.fragua"}'
 ```
+
+**No-server measurements** (how the O8 numbers were taken — no autosave, no client timeout, time-stamped progress):
+
+```bash
+O8_LAYERS=4 O8_SECS=180 cargo test --release -p pcb-router \
+    --test stress_board_probe -- --ignored --nocapture
+```
+
+`O8_LAYERS` appends inner signal layers exactly like `layer add In1.Cu signal`. Connectivity is printed as `failed/routable`; `39 - failed` is the same number the script reports as `N/39 net(s) fully connected`. Numbers are **load-sensitive** (see O9) — take the stackups you are comparing back-to-back on an idle machine, and compare runs at the same pass count.
 
 **Rebuild schematic from scratch** (destroys placement): run contents of `stress/01_schematic.fragua.txt` via POST `/script` (long), then re-place using `edge-place` + clustered place script (see session logs `05_edgeplace_result.txt` patterns).
 
@@ -482,7 +498,7 @@ Suggested acceptance criteria an agent can optimize toward:
 
 ## 11. Quick “if you only read one section”
 
-Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The **hard open problem** is **2-layer fine-pitch QFN routing**, not the script API. The v4 pass (true dogbone stubs, rank-staggered fanout, no body stamp under fine-pitch, board-truthful reports) took connectivity **5/39 → 21/39 @ 180 s**, but it **plateaus**: 600 s returns the identical 18 failed nets, and the 4-layer probe *regresses* to 1/39 (O8). The wall is **escape-corridor congestion around U1** — attack rip-up of fat routed nets, reduced clearance near fine-pitch, and more dogbone depth slots (§7) before inventing a new product surface.
+Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The **hard open problem** is **2-layer fine-pitch QFN routing**, not the script API. The v4 pass (true dogbone stubs, rank-staggered fanout, no body stamp under fine-pitch, board-truthful reports) took connectivity **5/39 → 21/39 @ 180 s**, but it **plateaus**: 600 s returns the identical 18 failed nets, and 4 layers only buy one more net (22/39, O8 — the collapse to 1/39 is fixed, but extra copper layers are not the answer either). The wall is **escape-corridor congestion around U1** — attack rip-up of fat routed nets, reduced clearance near fine-pitch, and more dogbone depth slots (§7) before inventing a new product surface.
 
 ---
 
