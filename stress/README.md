@@ -44,13 +44,40 @@ curl -s http://127.0.0.1:7878/script \
 | Route wall | **~6 min**, no budget | **~90 s** with `max_seconds=90` | budget honoured (90/180 s) |
 | Copper | 62 traces / 3 vias | 402 traces / 41 vias | **1544 traces / 57 vias** (24 dogbones + stubs) |
 | Fully connected nets | ~6/39 | ~5/39 | **14/39 @ 90 s, best 21/39 @ 180 s** (plateau: 600 s adds nothing; saved file 13/39 after the layer round-trip, handoff O9) |
-| DRC | 3E | 2E | 7E (marginal clearance at the QFN, 0.125–0.175 vs 0.2 mm) |
+| DRC | 3E | 2E | 7E (marginal clearance at the QFN, 0.125–0.175 vs 0.2 mm) — **0 clearance errors in v5, see below** |
+
+### v5 (2026-07-27) — clearance rule areas + honest per-net clearance
+
+| Run (2-layer, `route max_seconds=180`, idle machine) | Copper | Fully connected | DRC |
+|------------------------------------------------------|--------|-----------------|-----|
+| Baseline, no rule area | 1544 traces / 57 vias (24 dogbones) | **21/39** | **7E** / 70W — every error a 0.125–0.175 mm clearance at the QFN |
+| `fab-rules jlcpcb-2l` + `rule-area-around U1 fine margin=1.5 clearance=0.12 via_drill=0.20 via_dia=0.45` | 951 traces / 46 vias (25 dogbones) | **20/39** | **4E** / 74W — **zero clearance errors**; the 4 are `NetSplit` |
+
+What the rule area bought and what it did not:
+
+- **Clearance errors: 7 → 0.** The near-miss geometry at the QFN is now
+  *legal by declaration* instead of a violation, and the router, the fanout
+  and DRC all read that declaration from one resolver.
+- **Fab honesty:** with `fab-rules jlcpcb-2l` adopted, the fanout drops the
+  smallest via the fab can actually build (0.45 mm pad / 0.20 mm drill,
+  ring 0.13 mm), so the 25 `SmallDrill` warnings of the 0.15 mm barrels are
+  gone. The one `RuleBelowFabLimit` warning is the area's 0.12 mm clearance,
+  5 µm under JLCPCB's standard tier — deliberate, and reported every time.
+- **Connectivity did not improve** (20/39 vs 21/39, one net inside run-to-run
+  noise). At the default 0.20 mm cell the tighter rule quantises to the same
+  3-cell search radius for signal nets, so the escape-corridor wall (O1) is
+  untouched. The remaining 4 errors are `NetSplit`: a fanned-out pad whose net
+  the router still fails to finish leaves an isolated island. That is the same
+  O1 wall wearing a different hat — it needs PathFinder / negotiated
+  congestion, not a rule.
+- A finer route cell (`cell=0.15`) does exploit the tighter rule
+  geometrically but starves the budget (2 passes instead of 4) → 19/39.
 
 **Plateau evidence:** `max_seconds=600` returns the exact same 18 failed nets as
 180 s — the remaining wall is algorithmic (escape congestion around U1), not
-compute time. **4-layer probe:** adding In1/In2 currently *regresses* to 1/39
-and overruns the budget (fine-escape path + 4-layer grid starve the search) —
-the 4L path needs its own fix before it can be the answer.
+compute time. **4-layer probe:** fixed in the O8 pass — `layer add In1/In2`
+now gives 22/39 at 180 s (was a 1/39 collapse), so extra copper layers help,
+barely; they are not the answer either.
 
 ### What works
 
@@ -64,13 +91,14 @@ the 4L path needs its own fix before it can be the answer.
 ### Still hard
 
 1. **QFN-56 full connectivity on 2 layers** — dogbone stubs + no fine-pitch
-   body moat took us 5→21/39, but 18 nets (QSPI, USB, SWD, XIN/RUN, some
-   GPIOs, +1V1, VBUS) plateau regardless of budget. Next levers: reduced
-   clearance class around fine-pitch, smarter rip-up of the +3V3 ring that
-   hogs the escape corridors, more dogbone depth slots.
-2. **4-layer path** — `layer add` works, but routing on 4L currently
-   regresses badly (1/39) and blows the time budget; fine-escape + 4-layer
-   grid interaction needs work before 4L can rescue fine-pitch.
+   body moat took us 5→21/39, and it plateaus there regardless of budget.
+   Rule areas (v5) made the escape *legal* but not *routable*: the wall is
+   escape-corridor congestion, so the next levers are PathFinder-style
+   negotiated congestion and rip-up that can evict the fat +3V3 ring, not
+   another rule.
+2. **4-layer path** — fixed (O8): 3L/4L now reach 22/39 inside budget, one
+   net better than 2L. Extra layers cost ~1.5× per pass, so they buy far
+   less than the fine-pitch wall costs.
 3. **Passive clustering** — auto-place pulls 2–4 pad parts toward fixed IC
    pads; still not as tight as a human decoupling ring.
 
@@ -82,6 +110,14 @@ the 4L path needs its own fix before it can be the answer.
 - **Router:** 2-layer dogbone fanout; `max_seconds` + progress; scaled A*
   pop cap; skip organic when budget hit
 - **Placer:** pull passives toward net anchors after SA
+- **v5 pass:** `RuleArea` + one shared clearance resolver in `pcb-core`
+  (router grid, fanout, organic and DRC all read it); pairwise per-net
+  clearance in the search (a net now honours its neighbour's stricter
+  class, and a rule area overrides both); `rule-area` /
+  `rule-area-around` / `list-rule-areas` / `rule-area-remove` /
+  `fab-rules jlcpcb-2l|jlcpcb-4l` script verbs; `RuleBelowFabLimit`
+  warning; a via-in-pad must fit inside its pad; fanout barrels satisfy
+  the fab's annular ring
 - **v4 pass:** true dogbones (copper stub laid with the via, depth+stub
   chosen together); rank-staggered fanout along each package side; no body
   keep-out under fine-pitch SMD (< 0.5 mm pitch); board-truthful route/drc

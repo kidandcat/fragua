@@ -22,7 +22,15 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 | Router on **bare 0.4 mm QFN-56, 2-layer** | **Still the wall** — partial copper only |
 | Wall-clock / agent hang risk | **Fixed** with `max_seconds` + A* caps (was 6–10+ min silent hangs) |
 
-**Latest board metrics** (`stress/rp2040-minimal.fragua`, v4 pass — dogbone stubs + stagger + no fine-pitch moat):
+**Latest board metrics** (`stress/rp2040-minimal.fragua`, **v5 pass — clearance rule areas**; the saved file now carries `fab-rules jlcpcb-2l` + the `fine` rule area around U1 as design intent):
+
+- Outline **80 × 45 mm**, 36 footprints, 39 nets, 36 symbols
+- Saved state: **951 traces**, **46 vias** (25 fanout, 25 dogbones with copper stubs), **20/39 nets fully connected** @ `max_seconds=180`
+- DRC **4 errors / 74 warnings** — **zero clearance errors** (was 7, all 0.125–0.175 mm at the QFN). The 4 are `NetSplit`: a fanned-out pad whose net the router still fails to finish is an isolated copper island. Same O1 wall, different symptom.
+- One `RuleBelowFabLimit` warning: the area's 0.12 mm clearance is 5 µm under JLCPCB's 0.127 standard tier. Deliberate, and re-reported by every `drc` / `view`.
+- **Back-to-back baseline on the same binary with the area removed: 1544 traces / 57 vias, 21/39, 7E / 70W** — i.e. the rule area traded one net of connectivity for legality. See §5 O10.
+
+**Previous metrics** (v4 pass — dogbone stubs + stagger + no fine-pitch moat):
 
 - Outline **80 × 45 mm**, 36 footprints, 39 nets, 36 symbols  
 - **~1544 traces**, **~57 vias** (25 fanout, 24 dogbones with copper stubs)  
@@ -42,7 +50,15 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 7. `6af669f` — honour the escape budget inside a single footprint  
 8. `cc207dc` — choose the dogbone depth and its stub together  
 9. `474c7a8` — no panic when the budget dies before the first pass  
-10. `c0552ea` — fine-pitch QFN fanout, budget and board-truth regression tests  
+10. `c0552ea` — fine-pitch QFN fanout, budget and board-truth regression tests
+
+**v5 commits (clearance rule areas, 2026-07-27):**
+
+11. `757d9bd` — `RuleArea` + the single clearance/width resolver (pcb-core)
+12. `e537360` — DRC resolves clearance through areas; `RuleBelowFabLimit`
+13. `f00bb55` — pairwise, area-aware clearance in the grid search and fanout
+14. `130a1a9` — `rule-area*` / `fab-rules` script verbs, area-aware reports
+15. `d5babaf` — via-in-pad must fit its pad; areas own the fab floor inside them  
 
 **Related pre-existing product TODO** (not finished here): PCB compaction for fecha-gateway-v3 — see root `TODO.md`.
 
@@ -301,12 +317,17 @@ See §5.
 | P8 | Route hangs 6–10+ min, no progress | `max_seconds` (default 90), progress callback → activity log, skip organic if budget hit | `RouteOptions`, `route()`, `tool_route_run` |
 | P9 | A* 50M pop guard → multi-minute fails | Scaled pop cap ~`grid_cells*8` clamped 250k–4M | `astar.rs` |
 | P10 | Decoupling scattered by SA | Post-SA pull of 2–4 pad passives toward fixed net anchors | `pcb-placer` `pull_passives_to_anchors` |
+| P11 | **Per-net clearance was a lie** — each search checked only its OWN net's clearance, so a fine net could hug a stricter neighbour, and `RouteOptions.clearance` documented a max-inflation the code no longer did | Pairwise rule (strictest of the two nets) resolved per foreign net id AND per cell, via `pcb_core::RuleResolver` + `grid::ClearanceModel` | `pcb-core/src/rules.rs`, `grid.rs`, `router.rs`, `astar.rs` |
+| P12 | No way to make a fine-pitch escape LEGAL — the 7 DRC errors were all near-misses of a flat 0.2 mm rule | `RuleArea` (rect, layer filter, clearance/width/via overrides, priority) read by router, fanout, organic, topo and DRC through the one resolver; `rule-area*` / `fab-rules` verbs | `pcb-core`, `pcb-drc`, `pcb-router`, `pcb-script` |
+| P13 | A via-in-pad was accepted on a pad narrower than the barrel as soon as a tight rule let it clear the neighbours (32 dogbones → 1, connectivity 16/39) | A VIP must fit inside the pad copper; otherwise the dogbone path takes over as it always assumed | `fanout.rs` `plan_footprint` |
+| P14 | Fanout barrels sized from the fab's headline via diameter alone — 0.45 mm on a 0.20 mm drill is a 0.125 mm ring, under JLCPCB's own 0.13 mm | Barrel also satisfies `drill + 2 × annular` | `fanout.rs` `PadRules::at_pad` |
 
 ### 5.2 OPEN — product / router correctness
 
 | ID | Problem | Evidence | Suggested direction |
 |----|---------|----------|---------------------|
-| O1 | **Cannot fully route bare QFN-56 on 2L** — now **21/39** (was 5/39) but **plateaued** | Same 18 nets fail at 180 s and 600 s (QSPI, USB, SWD, XIN/RUN, GPIOs on U1 left/top/bottom, +1V1, VBUS, CC2); hints blame U1 pads as outliers | Escape congestion, not search time: the +3V3 ring and early-routed nets hog the corridors. Try reduced clearance class near fine-pitch, targeted rip-up of fat power nets, more dogbone depth slots |
+| O10 | **Rule areas make fine pitch legal, not routable** | With `fab-rules jlcpcb-2l` + `rule-area-around U1 fine margin=1.5 clearance=0.12 via_drill=0.20 via_dia=0.45`: clearance errors **7 → 0**, connectivity **21 → 20/39**, and 4 new `NetSplit` errors (a fanned pad whose net still fails is an isolated island). At the default 0.20 mm cell a 0.12 mm rule quantises to the SAME 3-cell search radius as 0.20 mm for a 0.25 mm signal (`ceil((clr + w/2)/cell) + 1` guard cell), so the search sees no extra room; only 0.5 mm power nets drop a cell. `cell=0.15` does exploit it geometrically but starves the budget (2 passes instead of 4) → 19/39 | The rule was never the binding constraint — escape-corridor congestion is. Next: PathFinder / negotiated congestion and rip-up that can evict routed fat nets (O1). A cheaper follow-up: drop fanout copper for pads the router never lands on, which would delete the `NetSplit` class outright (deliberately NOT done here — it would change the no-rule-area baseline) |
+| O1 | **Cannot fully route bare QFN-56 on 2L** — now **21/39** (was 5/39) but **plateaued**; v5 confirmed the wall is congestion, not the clearance rule (see O10) | Same 18 nets fail at 180 s and 600 s (QSPI, USB, SWD, XIN/RUN, GPIOs on U1 left/top/bottom, +1V1, VBUS, CC2); hints blame U1 pads as outliers | Escape congestion, not search time: the +3V3 ring and early-routed nets hog the corridors. Try reduced clearance class near fine-pitch, targeted rip-up of fat power nets, more dogbone depth slots |
 | O2 | ~~Report vs board copper counts diverge~~ **FIXED** (`489c1af`, `8448a2d`) | route/drc text now reports final board copper, per-net failures, hints, budget flag | — |
 | O3 | ~~Body stamp moat fights fine-pitch escape~~ **FIXED** (`71cf4ef`) | No body stamp for SMD packages with pad pitch < 0.5 mm; modules/TH keep it | — |
 | O8 | ~~**≥3-layer path regresses instead of helping**~~ **FIXED** (2026-07-27, commits `8d9fc9e` / `a14c26a` / `62726aa`) | Was: `layer add In1.Cu/In2.Cu signal` + `route max_seconds=180` → **1/39**, search laid 0 segments, elapsed 214 s. Now (same board, same budget, back-to-back on one machine): **2L 21/39 in 4 passes, 3L 22/39, 4L 22/39 in 3 passes**, elapsed 180.0–180.2 s. Root cause was **not** grid size or pop caps: `plan_escapes` swapped strategy at 3 layers and ran the fine-grid stub escape **instead of** the VIP/dogbone fanout. On a 0.4 mm QFN-56 the fan cannot fit (one 14-pin row would need ~13 mm of perpendicular room at the 1.0 mm breakout spread), so it spent **24 s of a 90 s budget to free 5 pads** where the fanout frees **25 in 10 ms** — the coarse router then had nothing to land on. The 34 s overrun was a second bug: the budget was only checked BETWEEN nets, so one long A* ran past it. Fix: the fanout is the baseline on **every** stackup (`fanout::plan_footprint` per footprint); fine escape is an optional per-footprint improvement, kept only when the fanout left pads stranded AND the fan fits AND it frees ≥ as many pads, bounded by a per-footprint time slice and a per-search pop cap — and, since it did not earn its keep on any board we measure, it is now **opt-in** (`route fine_escape=true` / `RouteOptions::fine_escape`, default off). A* searches now also carry the pass deadline (`astar::Limits`), so `max_seconds` is honoured to the second. Pinned by `crates/pcb-router/tests/layer_count_monotonic.rs`. Gotcha still applies: `clear-route` BEFORE `layer remove`, else copper left on the inner layer blocks the removal |
@@ -364,7 +385,8 @@ See §5.
 | `crates/pcb-router/src/fanout.rs` | VIP + **dogbone**, cluster detection |
 | `crates/pcb-router/src/escape.rs` | Fine-grid stubs (3L+); budget fraction for escape |
 | `crates/pcb-router/src/astar.rs` | Search + pop cap |
-| `crates/pcb-router/src/grid.rs` | `stamp_bodies` / pads / drilled disks — **moat knobs** |
+| `crates/pcb-router/src/grid.rs` | `stamp_bodies` / pads / drilled disks — **moat knobs**; `ClearanceModel` + `AreaField` (per-net, per-cell clearance) |
+| `crates/pcb-core/src/rules.rs` | **`RuleArea` + `RuleResolver`** — the ONLY place the clearance rule is derived. Router, fanout, organic, topo and DRC all go through it; never re-derive it |
 | `crates/pcb-placer/src/lib.rs` | SA + **pull_passives_to_anchors** |
 | `crates/pcb-script/src/tools.rs` | HTTP-facing tool text, route wiring |
 | `crates/pcb-script/src/script.rs` | DSL parse |
@@ -384,6 +406,12 @@ route
 ```
 
 Defaults in script layer: cell 0.20, clearance 0.20, max_seconds 90.  
+`clearance` is the board DEFAULT; the gap actually enforced between two nets is
+`max(default, class A, class B)` unless a `RuleArea` covering the point overrides
+it outright (`rule-area` / `rule-area-around`, `list-rule-areas`). Watch the
+quantization: the search radius is `ceil((clearance + width/2) / cell) + 1`
+cells, so at `cell=0.20` a 0.12 and a 0.20 rule are the same 3 cells for a
+0.25 mm trace — lower the cell too if you want a fine rule to buy real room.  
 `RouteOptions::default()` in the router crate still has clearance 0.40 if you call Rust directly — beware.
 
 ---
@@ -396,7 +424,7 @@ Defaults in script layer: cell 0.20, clearance 0.20, max_seconds 90.
 
 1. **Corridor autopsy.** The same 18 nets fail at any budget. Dump which cells around U1 are blocked per layer after fanout (debug render or grid stats) and identify what owns the corridors — hypothesis: the +3V3 ring (11 pads, routed early, wide class) plus GND stubs wall off the QFN quadrants. The route hints already name U1 outlier pads.
 2. **Rip-up that can evict fat nets.** RR&R currently biases by congestion but the failing fine-pitch nets never get the corridor back. Let late passes rip *routed* wide-class nets crossing a failing net's bounding corridor, not only failed ones.
-3. **Reduced clearance class near fine-pitch.** The 7 DRC errors are 0.125–0.175 mm vs 0.2 — real boards use a finer rule (0.1 mm) inside the QFN escape zone. Support per-area or per-class clearance so escape lanes are legal instead of near-miss.
+3. ~~**Reduced clearance class near fine-pitch.**~~ **DONE (v5, see O10).** `rule-area` + `fab-rules` shipped and the 7 clearance errors are gone, but connectivity did not move: the tighter rule quantises away at a 0.20 mm cell, so it removes the *legality* problem and leaves the *congestion* problem. Do 1/2 (corridor autopsy, evicting rip-up) next.
 4. **More dogbone depth slots.** 24 dogbones landed; U1 alone has ~34 signal pads. Widen `dogbone_via_candidates` depth ladder so a full QFN row fans out.
 
 ### Priority A2 — Fix the 4-layer path (O8) — **DONE 2026-07-27**
