@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use pcb_core::{
     Board, CopperLayer, Footprint, LayerStackup, Length, Pad, PlacementMargin, Point, Pour, Rect,
-    Schematic, Trace,
+    RuleDefaults, RuleResolver, Schematic, Trace,
 };
 
 #[derive(Debug, Clone)]
@@ -193,25 +193,54 @@ pub fn suggest_trace_width_for_impedance(z_target: f64, stackup: &LayerStackup) 
     f64::midpoint(lo, hi)
 }
 
-/// Effective clearance required between two nets: the strictest of the
-/// global default and either net's class override. Used by every
-/// pair-wise clearance check (pad-pad, trace-trace, trace-pad).
-fn effective_clearance_mm(opts: &DrcOptions, net_a: Option<&str>, net_b: Option<&str>) -> f64 {
-    let mut c = opts.min_clearance.to_mm();
-    for n in [net_a, net_b].into_iter().flatten() {
-        if let Some(o) = opts.net_overrides.get(n) {
-            if let Some(over) = o.clearance {
-                c = c.max(over.to_mm());
-            }
-        }
-        if let Some(sch) = opts.schematic.as_ref() {
-            let class = sch.class_for(n);
-            if let Some(mm) = class.clearance_mm {
-                c = c.max(mm);
-            }
-        }
-    }
-    c
+/// Effective clearance required between two nets **at the point where
+/// the gap is measured**: a rule area containing that point overrides
+/// outright, otherwise the strictest of the global default and either
+/// net's class override wins.
+///
+/// This is a thin wrapper over `pcb_core::RuleResolver` — the same
+/// resolver the router and the fanout pass consult — so DRC can never
+/// disagree with the copper the router just laid.
+fn effective_clearance_mm(
+    resolver: &RuleResolver<'_>,
+    net_a: Option<&str>,
+    net_b: Option<&str>,
+    site: (f64, f64),
+    layer: Option<CopperLayer>,
+) -> f64 {
+    resolver
+        .clearance(net_a, net_b, mm_point(site), layer)
+        .to_mm()
+}
+
+fn mm_point(p: (f64, f64)) -> Point {
+    Point::new(Length::from_mm(p.0), Length::from_mm(p.1))
+}
+
+/// Build the resolver for a DRC run: board rule areas + net classes +
+/// the legacy per-net override map, over this run's defaults.
+fn build_resolver<'a>(
+    board: &'a Board,
+    opts: &'a DrcOptions,
+    overrides: &'a HashMap<String, Length>,
+) -> RuleResolver<'a> {
+    RuleResolver::new(
+        &board.rule_areas,
+        RuleDefaults {
+            clearance: opts.min_clearance,
+            trace_width: opts.min_trace_width,
+            ..RuleDefaults::default()
+        },
+    )
+    .with_schematic(opts.schematic.as_deref())
+    .with_net_clearance(Some(overrides))
+}
+
+fn override_clearance_map(opts: &DrcOptions) -> HashMap<String, Length> {
+    opts.net_overrides
+        .iter()
+        .filter_map(|(k, v)| v.clearance.map(|c| (k.clone(), c)))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -266,6 +295,12 @@ pub enum ViolationKind {
     /// `SmallDrill` so the agent can see which limit fired — the
     /// project's own DRC defaults or the fab profile.
     FabProfileMin,
+    /// A `RuleArea` declares a value the adopted fab cannot build
+    /// (clearance / trace width / via drill / via diameter below the
+    /// preset's minimum). Warning, not an error: relaxing a rule inside
+    /// an area is a deliberate design decision, but every trace the
+    /// area legalises would be rejected at the fab's intake review.
+    RuleBelowFabLimit,
     /// A net's pads do not all reside on one continuous copper island —
     /// the routed copper splits the net into two or more electrically
     /// isolated groups (an *open*). This is the exhaustive form of the
@@ -319,17 +354,19 @@ impl DrcReport {
 #[must_use]
 pub fn run(board: &Board, opts: &DrcOptions) -> DrcReport {
     let mut report = DrcReport::default();
+    let overrides = override_clearance_map(opts);
+    let resolver = build_resolver(board, opts, &overrides);
     let pads = collect_pad_geometry(board);
-    check_pad_pad(&pads, opts, &mut report);
-    check_trace_trace(board, opts, &mut report);
-    check_trace_pad(board, &pads, opts, &mut report);
+    check_pad_pad(&pads, &resolver, &mut report);
+    check_trace_trace(board, &resolver, &mut report);
+    check_trace_pad(board, &pads, &resolver, &mut report);
     if let Some(outline) = board.outline {
         check_edge(board, &pads, outline, opts, &mut report);
     }
     check_unconnected_pads(board, &pads, &mut report);
     check_small_component_dangling(board, &pads, &mut report);
     check_net_continuity(board, &pads, &mut report);
-    check_narrow_traces(board, opts, &mut report);
+    check_narrow_traces(board, &resolver, &mut report);
     check_small_drills(board, opts, &mut report);
     check_routing_inefficient(board, opts, &mut report);
     check_body_overlap(board, opts, &mut report);
@@ -338,10 +375,78 @@ pub fn run(board: &Board, opts: &DrcOptions) -> DrcReport {
     }
     check_keepouts(board, &mut report);
     check_impedance(board, opts, &mut report);
-    if let Some(profile) = opts.fab_profile.as_ref() {
+    // The adopted in-memory profile wins; otherwise the board's own
+    // persisted `fab-rules` preset drives the same checks, so a saved
+    // project keeps its fab gate without the agent re-adopting one.
+    let profile = opts
+        .fab_profile
+        .clone()
+        .or_else(|| board.fab_rules.as_ref().map(profile_from_fab_rules));
+    if let Some(profile) = profile.as_ref() {
         check_fab_profile(board, profile, &mut report);
+        check_rule_areas_vs_fab(board, profile, &mut report);
     }
     report
+}
+
+/// A board-persisted `FabRules` preset expressed as the `FabProfile`
+/// every minimum-style check already understands.
+fn profile_from_fab_rules(r: &pcb_core::FabRules) -> FabProfile {
+    FabProfile {
+        name: r.preset.clone(),
+        min_trace_width_mm: r.min_trace_width_mm,
+        min_clearance_mm: r.min_clearance_mm,
+        min_drill_mm: r.min_via_drill_mm,
+        min_annular_ring_mm: r.min_annular_ring_mm,
+        min_via_diameter_mm: r.min_via_diameter_mm,
+        min_edge_clearance_mm: r.min_edge_clearance_mm,
+        max_board_size_mm: r.max_board_size_mm,
+    }
+}
+
+/// A rule area may legitimately ask for less than the fab can build —
+/// that is a design decision, not a geometry error — but the agent has
+/// to be told, because every piece of copper the area legalises will be
+/// rejected at the fab's intake review. Warning, one per offending
+/// field, so the message names the number to fix.
+fn check_rule_areas_vs_fab(board: &Board, profile: &FabProfile, report: &mut DrcReport) {
+    for area in &board.rule_areas {
+        let center = Rect::from_corners(area.rect.min, area.rect.max);
+        let (x_mm, y_mm) = pad_center(center);
+        let mut warn = |what: &str, got: f64, min: f64| {
+            report.push(Violation {
+                kind: ViolationKind::RuleBelowFabLimit,
+                severity: Severity::Warning,
+                message: format!(
+                    "rule area `{}` {what} {got:.3} mm < {} min {min:.3} mm",
+                    area.name, profile.name,
+                ),
+                x_mm,
+                y_mm,
+                involved: vec![area.name.clone()],
+            });
+        };
+        if let Some(v) = area.clearance_mm {
+            if v + 1e-9 < profile.min_clearance_mm {
+                warn("clearance", v, profile.min_clearance_mm);
+            }
+        }
+        if let Some(v) = area.trace_width_mm {
+            if v + 1e-9 < profile.min_trace_width_mm {
+                warn("trace width", v, profile.min_trace_width_mm);
+            }
+        }
+        if let Some(v) = area.via_drill_mm {
+            if v + 1e-9 < profile.min_drill_mm {
+                warn("via drill", v, profile.min_drill_mm);
+            }
+        }
+        if let Some(v) = area.via_diameter_mm {
+            if v + 1e-9 < profile.min_via_diameter_mm {
+                warn("via diameter", v, profile.min_via_diameter_mm);
+            }
+        }
+    }
 }
 
 /// For every net whose class declares `target_impedance_ohms`, compute
@@ -784,7 +889,7 @@ fn pad_world_rect(fp: &Footprint, pad: &Pad) -> Rect {
     Rect::from_center(center, w, h)
 }
 
-fn check_pad_pad(pads: &[PadGeom], opts: &DrcOptions, report: &mut DrcReport) {
+fn check_pad_pad(pads: &[PadGeom], resolver: &RuleResolver<'_>, report: &mut DrcReport) {
     for i in 0..pads.len() {
         for j in (i + 1)..pads.len() {
             let a = &pads[i];
@@ -796,7 +901,11 @@ fn check_pad_pad(pads: &[PadGeom], opts: &DrcOptions, report: &mut DrcReport) {
             if a.net == b.net && a.net.is_some() {
                 continue;
             }
-            let clr = effective_clearance_mm(opts, a.net, b.net);
+            // The rule is resolved where the copper actually comes
+            // close, not at either pad's centre — that is what makes an
+            // area border unambiguous for pads that straddle it.
+            let site = rect_rect_closest_site(a.rect, b.rect);
+            let clr = effective_clearance_mm(resolver, a.net, b.net, site, Some(a.layer));
             let gap = aabb_gap_mm(a.rect, b.rect);
             if gap + 1e-6 < clr {
                 let mid = midpoint(a.rect, b.rect);
@@ -817,7 +926,7 @@ fn check_pad_pad(pads: &[PadGeom], opts: &DrcOptions, report: &mut DrcReport) {
     }
 }
 
-fn check_trace_trace(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
+fn check_trace_trace(board: &Board, resolver: &RuleResolver<'_>, report: &mut DrcReport) {
     let traces: Vec<&Trace> = board.traces.iter().collect();
     for i in 0..traces.len() {
         for j in (i + 1)..traces.len() {
@@ -829,15 +938,25 @@ fn check_trace_trace(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
             if a.net == b.net {
                 continue;
             }
-            let clr = effective_clearance_mm(opts, Some(a.net.as_str()), Some(b.net.as_str()));
-            let half_a = a.width.to_mm() / 2.0;
-            let half_b = b.width.to_mm() / 2.0;
-            let centerline_dist = segment_segment_distance(
+            let seg_a = (
                 (a.start.x.to_mm(), a.start.y.to_mm()),
                 (a.end.x.to_mm(), a.end.y.to_mm()),
+            );
+            let seg_b = (
                 (b.start.x.to_mm(), b.start.y.to_mm()),
                 (b.end.x.to_mm(), b.end.y.to_mm()),
             );
+            let site = seg_seg_closest_site(seg_a.0, seg_a.1, seg_b.0, seg_b.1);
+            let clr = effective_clearance_mm(
+                resolver,
+                Some(a.net.as_str()),
+                Some(b.net.as_str()),
+                site,
+                Some(a.layer),
+            );
+            let half_a = a.width.to_mm() / 2.0;
+            let half_b = b.width.to_mm() / 2.0;
+            let centerline_dist = segment_segment_distance(seg_a.0, seg_a.1, seg_b.0, seg_b.1);
             let gap = centerline_dist - half_a - half_b;
             if gap + 1e-6 < clr {
                 let pa_mid = (
@@ -864,9 +983,18 @@ fn check_trace_trace(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
     }
 }
 
-fn check_trace_pad(board: &Board, pads: &[PadGeom], opts: &DrcOptions, report: &mut DrcReport) {
+fn check_trace_pad(
+    board: &Board,
+    pads: &[PadGeom],
+    resolver: &RuleResolver<'_>,
+    report: &mut DrcReport,
+) {
     for trace in &board.traces {
         let half = trace.width.to_mm() / 2.0;
+        let seg = (
+            (trace.start.x.to_mm(), trace.start.y.to_mm()),
+            (trace.end.x.to_mm(), trace.end.y.to_mm()),
+        );
         for pad in pads {
             if !pad.occupies_layer(trace.layer) {
                 continue;
@@ -874,12 +1002,15 @@ fn check_trace_pad(board: &Board, pads: &[PadGeom], opts: &DrcOptions, report: &
             if pad.net == Some(trace.net.as_str()) {
                 continue;
             }
-            let clr = effective_clearance_mm(opts, Some(trace.net.as_str()), pad.net);
-            let centerline_dist = segment_aabb_distance(
-                (trace.start.x.to_mm(), trace.start.y.to_mm()),
-                (trace.end.x.to_mm(), trace.end.y.to_mm()),
-                pad.rect,
+            let site = seg_rect_closest_site(seg.0, seg.1, pad.rect);
+            let clr = effective_clearance_mm(
+                resolver,
+                Some(trace.net.as_str()),
+                pad.net,
+                site,
+                Some(trace.layer),
             );
+            let centerline_dist = segment_aabb_distance(seg.0, seg.1, pad.rect);
             let gap = centerline_dist - half;
             if gap + 1e-6 < clr {
                 let mid_p = pad_center(pad.rect);
@@ -1141,13 +1272,19 @@ fn via_touches_pad(board: &Board, pad: &PadGeom, net: &str) -> bool {
     false
 }
 
-fn check_narrow_traces(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
-    let min_w = opts.min_trace_width.to_mm();
+fn check_narrow_traces(board: &Board, resolver: &RuleResolver<'_>, report: &mut DrcReport) {
     for trace in &board.traces {
         let w = trace.width.to_mm();
+        let mx = f64::midpoint(trace.start.x.to_mm(), trace.end.x.to_mm());
+        let my = f64::midpoint(trace.start.y.to_mm(), trace.end.y.to_mm());
+        // A rule area's `width` is the minimum width *there*, so a
+        // fine-pitch escape zone can legalise thinner copper (or a
+        // power area can demand fatter) without re-ruling the board.
+        let min_w = resolver
+            .area_trace_width(mm_point((mx, my)), Some(trace.layer))
+            .unwrap_or(resolver.defaults().trace_width)
+            .to_mm();
         if w + 1e-6 < min_w {
-            let mx = f64::midpoint(trace.start.x.to_mm(), trace.end.x.to_mm());
-            let my = f64::midpoint(trace.start.y.to_mm(), trace.end.y.to_mm());
             report.push(Violation {
                 kind: ViolationKind::NarrowTrace,
                 severity: Severity::Warning,
@@ -1308,6 +1445,76 @@ fn pad_center(r: Rect) -> (f64, f64) {
 fn midpoint(a: Rect, b: Rect) -> (f64, f64) {
     let pa = pad_center(a);
     let pb = pad_center(b);
+    (f64::midpoint(pa.0, pb.0), f64::midpoint(pa.1, pb.1))
+}
+
+/// Point on segment `a→b` closest to `p`.
+fn closest_point_on_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-12 {
+        return a;
+    }
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
+    (a.0 + t * dx, a.1 + t * dy)
+}
+
+fn clamp_point_to_rect(p: (f64, f64), r: Rect) -> (f64, f64) {
+    (
+        p.0.clamp(r.min.x.to_mm(), r.max.x.to_mm()),
+        p.1.clamp(r.min.y.to_mm(), r.max.y.to_mm()),
+    )
+}
+
+/// Midpoint of the closest approach between two segments — the point a
+/// clearance rule is resolved at. Mirrors the candidate set of
+/// `segment_segment_distance` so site and distance always agree.
+fn seg_seg_closest_site(
+    a0: (f64, f64),
+    a1: (f64, f64),
+    b0: (f64, f64),
+    b1: (f64, f64),
+) -> (f64, f64) {
+    let cands = [
+        (a0, closest_point_on_segment(a0, b0, b1)),
+        (a1, closest_point_on_segment(a1, b0, b1)),
+        (closest_point_on_segment(b0, a0, a1), b0),
+        (closest_point_on_segment(b1, a0, a1), b1),
+    ];
+    let mut best = cands[0];
+    let mut best_d = f64::INFINITY;
+    for (p, q) in cands {
+        let d = (p.0 - q.0).powi(2) + (p.1 - q.1).powi(2);
+        if d < best_d {
+            best_d = d;
+            best = (p, q);
+        }
+    }
+    (
+        f64::midpoint(best.0 .0, best.1 .0),
+        f64::midpoint(best.0 .1, best.1 .1),
+    )
+}
+
+/// Midpoint of the closest approach between a segment and a rect.
+fn seg_rect_closest_site(a: (f64, f64), b: (f64, f64), rect: Rect) -> (f64, f64) {
+    let c = pad_center(rect);
+    let on_seg = closest_point_on_segment(c, a, b);
+    let on_rect = clamp_point_to_rect(on_seg, rect);
+    // One refinement step: the rect point pulls the segment point, which
+    // is enough for the axis-aligned pads DRC deals with.
+    let on_seg = closest_point_on_segment(on_rect, a, b);
+    (
+        f64::midpoint(on_seg.0, on_rect.0),
+        f64::midpoint(on_seg.1, on_rect.1),
+    )
+}
+
+/// Midpoint of the closest approach between two rects.
+fn rect_rect_closest_site(a: Rect, b: Rect) -> (f64, f64) {
+    let pa = clamp_point_to_rect(pad_center(b), a);
+    let pb = clamp_point_to_rect(pad_center(a), b);
     (f64::midpoint(pa.0, pb.0), f64::midpoint(pa.1, pb.1))
 }
 

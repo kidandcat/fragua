@@ -329,6 +329,33 @@ impl<'a> RuleResolver<'a> {
         best
     }
 
+    /// Area-only overrides at `p`, ignoring classes and defaults. DRC's
+    /// minimum-style checks want exactly this: a class's *preferred*
+    /// trace width is not a minimum, but an area's is.
+    #[must_use]
+    pub fn area_clearance(&self, p: Point, layer: Option<CopperLayer>) -> Option<Length> {
+        self.area_with(p, layer, |a| a.clearance_mm)
+            .map(|(_, mm)| Length::from_mm(mm))
+    }
+
+    #[must_use]
+    pub fn area_trace_width(&self, p: Point, layer: Option<CopperLayer>) -> Option<Length> {
+        self.area_with(p, layer, |a| a.trace_width_mm)
+            .map(|(_, mm)| Length::from_mm(mm))
+    }
+
+    #[must_use]
+    pub fn area_via_drill(&self, p: Point, layer: Option<CopperLayer>) -> Option<Length> {
+        self.area_with(p, layer, |a| a.via_drill_mm)
+            .map(|(_, mm)| Length::from_mm(mm))
+    }
+
+    #[must_use]
+    pub fn area_via_diameter(&self, p: Point, layer: Option<CopperLayer>) -> Option<Length> {
+        self.area_with(p, layer, |a| a.via_diameter_mm)
+            .map(|(_, mm)| Length::from_mm(mm))
+    }
+
     /// Clearance a net's class demands, if any (schematic class first,
     /// then the legacy override map — strictest of the two).
     #[must_use]

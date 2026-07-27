@@ -253,3 +253,104 @@ fn keepout_visible_in_drc_report() {
         report.violations,
     );
 }
+
+// ── Rule areas ────────────────────────────────────────────────────────
+//
+// The area is an ABSOLUTE clearance override at the point where the gap
+// is measured: the same two pads are a violation outside it and legal
+// inside it. Everything else about DRC stays put.
+
+fn two_close_pads(x_mm: f64) -> Board {
+    let mut board = Board::new();
+    board.outline = Some(Rect::from_corners(
+        Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+        Point::new(Length::from_mm(50.0), Length::from_mm(20.0)),
+    ));
+    // Pads are 1.0 mm wide, so their edges sit 0.15 mm apart — under the
+    // 0.2 mm default, over a 0.13 mm area rule.
+    board.add_footprint(fp("R1", x_mm, 10.0, vec![pad("1", 0.0, 0.0, Some("A"))]));
+    board.add_footprint(fp(
+        "R2",
+        x_mm + 1.15,
+        10.0,
+        vec![pad("1", 0.0, 0.0, Some("B"))],
+    ));
+    board
+}
+
+fn clearance_errors(board: &Board) -> usize {
+    run(board, &DrcOptions::default())
+        .violations
+        .iter()
+        .filter(|v| v.kind == ViolationKind::PadPadClearance)
+        .count()
+}
+
+#[test]
+fn rule_area_relaxes_clearance_only_inside_it() {
+    let board = two_close_pads(10.0);
+    assert_eq!(clearance_errors(&board), 1, "0.15 mm < 0.2 mm default");
+
+    // Area over the pads → legal.
+    let mut with_area = board.clone();
+    let mut area = pcb_core::RuleArea::new(
+        "fine",
+        Rect::from_corners(
+            Point::new(Length::from_mm(5.0), Length::from_mm(5.0)),
+            Point::new(Length::from_mm(15.0), Length::from_mm(15.0)),
+        ),
+    );
+    area.clearance_mm = Some(0.13);
+    with_area.set_rule_area(area.clone());
+    assert_eq!(clearance_errors(&with_area), 0, "0.15 mm ≥ 0.13 mm in area");
+
+    // Same area, pads moved out of it → violation again. Membership is
+    // positional, not per-item.
+    let mut elsewhere = two_close_pads(30.0);
+    elsewhere.set_rule_area(area.clone());
+    assert_eq!(clearance_errors(&elsewhere), 1);
+
+    // An area can tighten as well as relax.
+    let mut tight = board.clone();
+    let mut hv = area;
+    hv.name = "hv".into();
+    hv.clearance_mm = Some(0.5);
+    tight.set_rule_area(hv);
+    assert_eq!(clearance_errors(&tight), 1);
+}
+
+#[test]
+fn rule_area_below_fab_limit_warns_but_does_not_error() {
+    let mut board = two_close_pads(10.0);
+    let mut area = pcb_core::RuleArea::new(
+        "fine",
+        Rect::from_corners(
+            Point::new(Length::from_mm(5.0), Length::from_mm(5.0)),
+            Point::new(Length::from_mm(15.0), Length::from_mm(15.0)),
+        ),
+    );
+    area.clearance_mm = Some(0.10); // below JLCPCB's 0.127 mm
+    area.via_diameter_mm = Some(0.45); // exactly at the limit — no warning
+    board.set_rule_area(area);
+    board.fab_rules = pcb_core::FabRules::preset("jlcpcb-2l");
+
+    let report = run(&board, &DrcOptions::default());
+    let warns: Vec<&pcb_drc::Violation> = report
+        .violations
+        .iter()
+        .filter(|v| v.kind == ViolationKind::RuleBelowFabLimit)
+        .collect();
+    assert_eq!(warns.len(), 1, "{:?}", report.violations);
+    assert_eq!(warns[0].severity, Severity::Warning);
+    assert!(
+        warns[0].message.contains("clearance"),
+        "{}",
+        warns[0].message
+    );
+    // The board's own preset also drives the fab minimum checks even
+    // without an explicitly adopted in-memory profile.
+    assert!(report
+        .violations
+        .iter()
+        .all(|v| v.kind != ViolationKind::PadPadClearance));
+}
