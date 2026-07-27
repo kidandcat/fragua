@@ -463,32 +463,27 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
                 None => {
                     let (dirx, diry) = inward_axis(cx, cy, hw, hh, fp_cx, fp_cy);
                     let rank = pad_rank.get(&pad.number).copied().unwrap_or(0);
-                    match dogbone_via_position(
+                    // A dogbone barrel the pad cannot reach with legal copper
+                    // is worse than no dogbone at all: the coarse router would
+                    // treat the pad as escaped while DRC (rightly) reports it
+                    // unconnected. So depth slot and stub are chosen TOGETHER —
+                    // walk the candidate depths and keep the first whose stub
+                    // is layable, instead of committing to the first fitting
+                    // barrel and then discovering its stub is boxed in.
+                    let max_stub_w = tw.min(2.0 * hw.min(hh));
+                    dogbone_via_candidates(
                         cx, cy, hw, hh, dirx, diry, rank, net, via_r, clearance, &foreign, &work,
-                    ) {
-                        // A dogbone barrel the pad cannot reach with legal
-                        // copper is worse than no dogbone at all: the coarse
-                        // router would treat the pad as escaped while DRC
-                        // (rightly) reports it unconnected. Only keep the
-                        // via when its stub is layable.
-                        Some((vx, vy)) => dogbone_stub(
-                            pad.layer,
-                            cx,
-                            cy,
-                            vx,
-                            vy,
-                            net,
-                            tw.min(2.0 * hw.min(hh)),
-                            clearance,
-                            &foreign,
-                            &work,
+                    )
+                    .into_iter()
+                    .find_map(|(vx, vy)| {
+                        dogbone_stub(
+                            pad.layer, cx, cy, vx, vy, net, max_stub_w, clearance, &foreign, &work,
                         )
                         .map(|t| {
                             stub = Some(t);
                             (vx, vy)
-                        }),
-                        None => None,
-                    }
+                        })
+                    })
                 }
             };
             let Some((vx, vy)) = via_xy else {
@@ -548,9 +543,15 @@ pub(crate) fn inward_axis(
 /// drops its barrels at alternating distances from the row instead of all
 /// piling onto one arc — at 0.4 mm pitch a single-depth row cannot even
 /// satisfy via-to-via clearance, so without the stagger most pins get no
-/// escape at all. Returns `None` if no candidate clears neighbours.
+/// escape at all.
+///
+/// Returns EVERY candidate that clears its neighbours, in preference
+/// order, because via feasibility alone is not enough: the caller also
+/// has to lay the pad → via copper stub, and a barrel sitting beside a
+/// shallower slot can veto that slot's stub while a deeper one still
+/// works. Empty when nothing fits.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn dogbone_via_position(
+pub(crate) fn dogbone_via_candidates(
     cx: f64,
     cy: f64,
     hw: f64,
@@ -563,7 +564,7 @@ pub(crate) fn dogbone_via_position(
     clearance: f64,
     foreign: &[&PadRect],
     work: &Board,
-) -> Option<(f64, f64)> {
+) -> Vec<(f64, f64)> {
     let (dx, dy) = if dirx.abs() < 1e-9 && diry.abs() < 1e-9 {
         if hw >= hh {
             (1.0, 0.0)
@@ -597,6 +598,7 @@ pub(crate) fn dogbone_via_position(
         base + 0.2,
         base - 0.05,
     ]);
+    let mut out = Vec::new();
     for dist in depths {
         if dist < base - 0.1 {
             continue;
@@ -604,7 +606,7 @@ pub(crate) fn dogbone_via_position(
         let vx = cx + dx * dist;
         let vy = cy + dy * dist;
         if fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
-            return Some((vx, vy));
+            out.push((vx, vy));
         }
     }
     // Last resort: allow a perpendicular nudge. It bends the stub, so it
@@ -616,11 +618,11 @@ pub(crate) fn dogbone_via_position(
             let vx = cx + dx * dist + px * nudge;
             let vy = cy + dy * dist + py * nudge;
             if fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
-                return Some((vx, vy));
+                out.push((vx, vy));
             }
         }
     }
-    None
+    out
 }
 
 /// Build the short pad → dogbone-via copper stub, if one fits.
