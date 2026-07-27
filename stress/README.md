@@ -36,15 +36,21 @@ curl -s http://127.0.0.1:7878/script \
 
 ## Results (2026-07-27)
 
-| Stage | v1 (first pass) | v3 (after router/placer fixes) |
-|-------|-----------------|--------------------------------|
-| Library | OK via `confirm-lib` | same |
-| Schematic | ERC 0 | same |
-| Placement | 36 fps, `edge-place` | same + passive pull-to-anchor |
-| Route wall | **~6 min**, no budget | **~90 s** with `max_seconds=90` |
-| Copper | 62 traces / 3 vias | **402 traces / 41 vias** (dogbone fanout) |
-| Fully connected nets | ~6/39 | ~5/39 (still the QFN wall) |
-| DRC | 3E | 2E |
+| Stage | v1 (first pass) | v3 (router/placer fixes) | v4 (stubs, stagger, no fine-pitch moat) |
+|-------|-----------------|--------------------------|------------------------------------------|
+| Library | OK via `confirm-lib` | same | same |
+| Schematic | ERC 0 | same | same |
+| Placement | 36 fps, `edge-place` | same + passive pull-to-anchor | same |
+| Route wall | **~6 min**, no budget | **~90 s** with `max_seconds=90` | budget honoured (90/180 s) |
+| Copper | 62 traces / 3 vias | 402 traces / 41 vias | **1544 traces / 57 vias** (24 dogbones + stubs) |
+| Fully connected nets | ~6/39 | ~5/39 | **14/39 @ 90 s, best 21/39 @ 180 s** (plateau: 600 s adds nothing; saved file 13/39 after the layer round-trip, handoff O9) |
+| DRC | 3E | 2E | 7E (marginal clearance at the QFN, 0.125–0.175 vs 0.2 mm) |
+
+**Plateau evidence:** `max_seconds=600` returns the exact same 18 failed nets as
+180 s — the remaining wall is algorithmic (escape congestion around U1), not
+compute time. **4-layer probe:** adding In1/In2 currently *regresses* to 1/39
+and overruns the budget (fine-escape path + 4-layer grid starve the search) —
+the 4L path needs its own fix before it can be the answer.
 
 ### What works
 
@@ -57,11 +63,15 @@ curl -s http://127.0.0.1:7878/script \
 
 ### Still hard
 
-1. **QFN-56 full connectivity on 2 layers** — dogbones open Bottom, but
-   escape density + body keep-out still leave QSPI / USB / many GPIOs
-   unrouted. Next levers: thinner body keep-out moat, 4-layer default for
-   fine-pitch, or module-style RP2040 footprint.
-2. **Passive clustering** — auto-place pulls 2–4 pad parts toward fixed IC
+1. **QFN-56 full connectivity on 2 layers** — dogbone stubs + no fine-pitch
+   body moat took us 5→21/39, but 18 nets (QSPI, USB, SWD, XIN/RUN, some
+   GPIOs, +1V1, VBUS) plateau regardless of budget. Next levers: reduced
+   clearance class around fine-pitch, smarter rip-up of the +3V3 ring that
+   hogs the escape corridors, more dogbone depth slots.
+2. **4-layer path** — `layer add` works, but routing on 4L currently
+   regresses badly (1/39) and blows the time budget; fine-escape + 4-layer
+   grid interaction needs work before 4L can rescue fine-pitch.
+3. **Passive clustering** — auto-place pulls 2–4 pad parts toward fixed IC
    pads; still not as tight as a human decoupling ring.
 
 ## Code changes from this stress pass
@@ -72,3 +82,9 @@ curl -s http://127.0.0.1:7878/script \
 - **Router:** 2-layer dogbone fanout; `max_seconds` + progress; scaled A*
   pop cap; skip organic when budget hit
 - **Placer:** pull passives toward net anchors after SA
+- **v4 pass:** true dogbones (copper stub laid with the via, depth+stub
+  chosen together); rank-staggered fanout along each package side; no body
+  keep-out under fine-pitch SMD (< 0.5 mm pitch); board-truthful route/drc
+  text (final copper counts, per-net failures, hints, budget flag); no
+  panic when the budget expires before the first pass; regression tests
+  (`pcb-router/tests/fine_pitch_fanout.rs`)

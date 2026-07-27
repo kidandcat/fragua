@@ -22,19 +22,27 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 | Router on **bare 0.4 mm QFN-56, 2-layer** | **Still the wall** — partial copper only |
 | Wall-clock / agent hang risk | **Fixed** with `max_seconds` + A* caps (was 6–10+ min silent hangs) |
 
-**Latest board metrics** (`stress/rp2040-minimal.fragua`, after dogbone + budget):
+**Latest board metrics** (`stress/rp2040-minimal.fragua`, v4 pass — dogbone stubs + stagger + no fine-pitch moat):
 
 - Outline **80 × 45 mm**, 36 footprints, 39 nets, 36 symbols  
-- **402 traces**, **41 vias**  
-- ~**5/39 nets fully connected** (view summary)  
-- Route completes in **~90 s** with `route max_seconds=90`  
-- DRC ~**2 errors**, ~133 warnings  
+- **~1544 traces**, **~57 vias** (25 fanout, 24 dogbones with copper stubs)  
+- **14/39 nets fully connected @ `max_seconds=90`; best observed 21/39 @ 180 s** (saved file state: 13/39 — see O9)  
+- **Plateau:** `max_seconds=600` → same 21/39, same 18 failed nets → algorithmic wall, not compute  
+- **4-layer probe REGRESSES:** `layer add In1/In2` + route → 1/39, budget overrun (see O8)  
+- DRC **7 errors** (all marginal 0.125–0.175 mm clearance at the QFN), ~70 warnings  
 
-**Commits this session (already on `origin/master`):**
+**Commits (first batch already on `origin/master`, v4 batch local at time of writing):**
 
 1. `adaa48e` — agent library confirm, edge-place, clearer text replies  
 2. `15726e5` — 2-layer dogbone fanout, route time budget, passive pull  
 3. `534a9b4` — stress README refresh  
+4. `8448a2d` — dogbone copper stubs, rank-staggered fanout, board-truthful report  
+5. `489c1af` — route/drc text reports the final board (incl. DRC errors)  
+6. `71cf4ef` — no body keep-out under fine-pitch SMD packages  
+7. `6af669f` — honour the escape budget inside a single footprint  
+8. `cc207dc` — choose the dogbone depth and its stub together  
+9. `474c7a8` — no panic when the budget dies before the first pass  
+10. `c0552ea` — fine-pitch QFN fanout, budget and board-truth regression tests  
 
 **Related pre-existing product TODO** (not finished here): PCB compaction for fecha-gateway-v3 — see root `TODO.md`.
 
@@ -298,9 +306,11 @@ See §5.
 
 | ID | Problem | Evidence | Suggested direction |
 |----|---------|----------|---------------------|
-| O1 | **Cannot fully route bare QFN-56 on 2L** | ~5/39 nets full; QSPI/USB/GPIO/SWD still fail | See §7 |
-| O2 | Report vs board copper counts diverge | `route.run` said 18 traces/7 vias while file had 402/41 | Report tallies coarse pass; fanout/organic/stitch add copper after — make report totals match final board |
-| O3 | Body stamp moat fights fine-pitch escape | `stamp_bodies` uses ~1.0 mm escape moat + clearance around every pad | Reduce moat for dense packages; or don't stamp body under dogbone channel |
+| O1 | **Cannot fully route bare QFN-56 on 2L** — now **21/39** (was 5/39) but **plateaued** | Same 18 nets fail at 180 s and 600 s (QSPI, USB, SWD, XIN/RUN, GPIOs on U1 left/top/bottom, +1V1, VBUS, CC2); hints blame U1 pads as outliers | Escape congestion, not search time: the +3V3 ring and early-routed nets hog the corridors. Try reduced clearance class near fine-pitch, targeted rip-up of fat power nets, more dogbone depth slots |
+| O2 | ~~Report vs board copper counts diverge~~ **FIXED** (`489c1af`, `8448a2d`) | route/drc text now reports final board copper, per-net failures, hints, budget flag | — |
+| O3 | ~~Body stamp moat fights fine-pitch escape~~ **FIXED** (`71cf4ef`) | No body stamp for SMD packages with pad pitch < 0.5 mm; modules/TH keep it | — |
+| O8 | **≥3-layer path regresses instead of helping** | `layer add In1.Cu/In2.Cu signal` + `route max_seconds=180` → **1/39**, search laid 0 segments, elapsed 214 s (budget overrun); a 3-layer board reproduces the same collapse | Fine-escape (≥3L) + bigger grid starves A*; pop caps/budget fractions were tuned for 2L. Needs its own campaign before extra layers can be the fine-pitch answer. Gotcha: `clear-route` BEFORE `layer remove`, else copper left on the inner layer blocks the removal |
+| O9 | **`layer add`+`remove` round-trip changes routing results** | Before the 4L probe the same board+budget gave 21/39 (3 passes); after add In1/In2 → remove, identical 180 s runs give a deterministic 13/39 (different failed set, +3V3 now fails, fewer passes) even across server restarts | The round-trip mutates something the router keys off (net/pad ordering? pour/class state? stackup dielectrics?). Diff a board serialization before/after the cycle to find it — routing should be invariant to a no-op stackup round-trip |
 | O4 | Progress lines not always in `/script` reply | Logged via activity bus; HTTP reply is only final tool text | Optionally append last N progress lines to `route.run` text |
 | O5 | Chirality / pin-1 of agent-authored QFN | RP2040 sides authored from secondary docs | Verify against datasheet before any fab; photo-calibrate if possible |
 | O6 | `*.fragua` in `.gitignore` | Stress project needs `git add -f` | Consider `!stress/*.fragua` exception |
@@ -380,22 +390,18 @@ Defaults in script layer: cell 0.20, clearance 0.20, max_seconds 90.
 
 ## 7. Recommended next work (prioritized)
 
-### Priority A — Make QFN progress measurable (router)
+*(2026-07-27 v4 update: items 1–3 of the old Priority A are DONE — instrumentation, no fine-pitch body stamp, dogbone stubs + stagger. Result 5→21/39 with a hard plateau. Item 4 was probed and REGRESSES — see O8.)*
 
-1. **Instrument connectivity**  
-   - Ensure `route.run` text reports: fanout via count, dogbone count, fully-connected net count, elapsed seconds, budget-hit flag.  
-   - Align `trace_count`/`via_count` with final board (include fanout + organic).
+### Priority A — Break the 21/39 plateau (router)
 
-2. **Body keep-out experiment**  
-   - In `grid.rs` `stamp_bodies`, reduce `ESCAPE_MOAT_MM` (1.0 → 0.4?) for footprints with pad pitch < 0.5 mm, or only stamp body on Top for SMD (Bottom free under package).  
-   - Re-run `stress/rp2040-minimal.fragua` with `route max_seconds=90` and compare full-net count.
+1. **Corridor autopsy.** The same 18 nets fail at any budget. Dump which cells around U1 are blocked per layer after fanout (debug render or grid stats) and identify what owns the corridors — hypothesis: the +3V3 ring (11 pads, routed early, wide class) plus GND stubs wall off the QFN quadrants. The route hints already name U1 outlier pads.
+2. **Rip-up that can evict fat nets.** RR&R currently biases by congestion but the failing fine-pitch nets never get the corridor back. Let late passes rip *routed* wide-class nets crossing a failing net's bounding corridor, not only failed ones.
+3. **Reduced clearance class near fine-pitch.** The 7 DRC errors are 0.125–0.175 mm vs 0.2 — real boards use a finer rule (0.1 mm) inside the QFN escape zone. Support per-area or per-class clearance so escape lanes are legal instead of near-miss.
+4. **More dogbone depth slots.** 24 dogbones landed; U1 alone has ~34 signal pads. Widen `dogbone_via_candidates` depth ladder so a full QFN row fans out.
 
-3. **Dogbone quality**  
-   - Current dogbones aim at footprint centroid; may pile vias. Stagger more aggressively along the side (rank-based offsets like fine-escape fan).  
-   - Optionally lay a **short copper stub** pad→dogbone via (true dogbone) so Top connectivity is explicit before via.
+### Priority A2 — Fix the 4-layer path (O8)
 
-4. **4-layer path**  
-   - Script `stackup` / layer APIs exist. Try `LayerStackup::fr4(4)` on the stress board and enable fine-escape; compare.
+- 4L route collapses to 1/39 and overruns the budget: fine-escape triggers with cell=0.20, the 4-layer grid doubles cells, and the A* pop caps / per-stage budget fractions tuned for 2L starve every pass. Re-tune caps by layer count, or gate fine-escape behind an explicit opt-in until it earns its keep.
 
 ### Priority B — Placement quality
 
@@ -476,7 +482,7 @@ Suggested acceptance criteria an agent can optimize toward:
 
 ## 11. Quick “if you only read one section”
 
-Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The **hard open problem** is **2-layer fine-pitch QFN fanout/routing**, not the script API. We unblocked agents (`confirm-lib`, `edge-place`, text errors, `max_seconds`) and added **dogbone fanout** so Bottom is reachable; full connectivity is still **~5/39 nets**. Continue from **`stress/rp2040-minimal.fragua`**, measure full-net count, and attack **body keep-out / dogbone stagger / 4-layer** before inventing a new product surface.
+Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The **hard open problem** is **2-layer fine-pitch QFN routing**, not the script API. The v4 pass (true dogbone stubs, rank-staggered fanout, no body stamp under fine-pitch, board-truthful reports) took connectivity **5/39 → 21/39 @ 180 s**, but it **plateaus**: 600 s returns the identical 18 failed nets, and the 4-layer probe *regresses* to 1/39 (O8). The wall is **escape-corridor congestion around U1** — attack rip-up of fat routed nets, reduced clearance near fine-pitch, and more dogbone depth slots (§7) before inventing a new product surface.
 
 ---
 
