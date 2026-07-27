@@ -12,6 +12,8 @@
 //! here is ours. `KiCad` and `FreeRouting` are reference material only.
 
 mod astar;
+#[cfg(test)]
+mod diag;
 mod escape;
 mod fanout;
 mod grid;

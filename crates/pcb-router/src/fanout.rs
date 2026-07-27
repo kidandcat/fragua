@@ -284,10 +284,36 @@ fn seg_rect_dist(ax: f64, ay: f64, bx: f64, by: f64, r: &PadRect) -> f64 {
     best
 }
 
+/// The gap a pad's surface escape needs before the planner believes it.
+///
+/// Exact geometry, deliberately. The router measures on a `cell`-pitch
+/// grid and rounds its clearance radius up, so it is stricter than this —
+/// but MEASURED (RP2040 stress board, 180 s): charging the planner the
+/// full quantisation escapes 46 pads instead of 32, packs the extra
+/// barrels into the QFN ring, and the copper the router then lays through
+/// its own landing exemption is illegal (a short and eleven sub-rule gaps
+/// — see `Grid::stamp_drilled_disk`). Half a cell was no better on
+/// connectivity. The honest cost of exact geometry is that a pad whose
+/// only lane exists below the grid pitch gets neither an escape nor a
+/// route; the honest alternative is a finer `cell`, not a barrel wedged
+/// against its neighbour.
+fn escape_gap(need: f64, cell: f64) -> f64 {
+    let _ = cell;
+    need
+}
+
 /// Can a trace of width `tw` leave this pad on its own layer in *some*
 /// direction without coming within `clearance` of a foreign-net pad for
 /// `ESCAPE_LEN_MM`? We probe the four cardinal and four diagonal
 /// directions from the pad centre.
+///
+/// `outline` is the board edge: a ray that leaves the board is not an
+/// escape. Without it an edge-mounted connector (USB-C, castellated
+/// header) reads as trivially escapable — its outward ray meets no pad
+/// because there is no board out there — and the fanout then skips the
+/// very pins that need it most, leaving them entombed by their
+/// neighbours' copper. That was the whole USB group on the RP2040 stress
+/// board.
 pub(crate) fn can_escape_surface(
     cx: f64,
     cy: f64,
@@ -297,6 +323,8 @@ pub(crate) fn can_escape_surface(
     foreign: &[&PadRect],
     tw: f64,
     rules: &PadRules<'_>,
+    cell: f64,
+    outline: Option<pcb_core::Rect>,
 ) -> bool {
     let dirs = [
         (1.0, 0.0),
@@ -317,11 +345,23 @@ pub(crate) fn can_escape_surface(
         while d <= end {
             let px = cx + dx * d;
             let py = cy + dy * d;
+            if let Some(o) = outline {
+                let edge = (px - o.min.x.to_mm())
+                    .min(o.max.x.to_mm() - px)
+                    .min(py - o.min.y.to_mm())
+                    .min(o.max.y.to_mm() - py);
+                if edge < tw / 2.0 + EDGE_CLEARANCE_MM {
+                    blocked = true;
+                    break;
+                }
+            }
             for r in foreign {
                 if r.net.as_deref() == Some(net) {
                     continue;
                 }
-                if point_rect_dist(px, py, r) < tw / 2.0 + rules.to(r.net.as_deref()) {
+                if point_rect_dist(px, py, r)
+                    < escape_gap(tw / 2.0 + rules.to(r.net.as_deref()), cell)
+                {
                     blocked = true;
                     break;
                 }
@@ -498,6 +538,66 @@ pub(crate) fn merge_plan(plan: &mut FanoutPlan, sub: FanoutPlan) {
     plan.stranded_pads.extend(sub.stranded_pads);
 }
 
+/// Centroid of a footprint's pads — the interior reference the escape
+/// geometry is oriented against.
+pub(crate) fn pad_centroid(fp: &pcb_core::Footprint) -> (f64, f64) {
+    let (mut sx, mut sy, mut n) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for pad in &fp.pads {
+        let c = fp.pad_world_center(pad);
+        sx += c.x.to_mm();
+        sy += c.y.to_mm();
+        n += 1.0;
+    }
+    if n > 0.0 {
+        (sx / n, sy / n)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Build the escape-slot request for ONE pad — the same description
+/// `plan_footprint_inner` defers to the global assignment. Shared so the
+/// driver can re-request a slot for a pad whose barrel it ripped
+/// (`escape::reassign_escapes`) without duplicating the geometry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn slot_target_of(
+    fp: &pcb_core::Footprint,
+    pad: &pcb_core::Pad,
+    opts: &RouteOptions,
+    resolver: &RuleResolver<'_>,
+    fab: Option<&pcb_core::FabRules>,
+    net_targets: &HashMap<String, (f64, f64)>,
+    fp_cx: f64,
+    fp_cy: f64,
+    outline: Option<pcb_core::Rect>,
+) -> Option<crate::slots::SlotTarget> {
+    let net = pad.net.as_deref()?;
+    let c = fp.pad_world_center(pad);
+    let (w, h) = fp.pad_world_size(pad);
+    let (cx, cy) = (c.x.to_mm(), c.y.to_mm());
+    let (hw, hh) = (w.to_mm() / 2.0, h.to_mm() / 2.0);
+    let rules = PadRules::at_pad(resolver, net, c, pad.layer, fab);
+    let via_r = rules.via_diameter / 2.0;
+    let (dirx, diry) = escape_axis(cx, cy, hw, hh, fp_cx, fp_cy, via_r, outline);
+    let (tx, ty) = net_targets
+        .get(net)
+        .copied()
+        .unwrap_or((cx - dirx * 5.0, cy - diry * 5.0));
+    Some(crate::slots::SlotTarget {
+        pad_ref: format!("{}.{}", fp.reference, pad.number),
+        pad_number: pad.number.clone(),
+        net: net.to_string(),
+        layer: pad.layer,
+        cx,
+        cy,
+        hw,
+        hh,
+        tx,
+        ty,
+        max_stub_w: opts.trace_width.to_mm().min(2.0 * hw.min(hh)),
+    })
+}
+
 /// Plan the VIP / dogbone fanout of ONE footprint against the copper
 /// already committed in `work` (previous footprints' barrels and stubs),
 /// appending its own vias and stubs to `work` as it goes.
@@ -548,6 +648,9 @@ fn plan_footprint_inner(
 ) -> FanoutPlan {
     let mut plan = FanoutPlan::default();
     let tw = opts.trace_width.to_mm();
+    // Board edge: an escape ray that leaves the board is not an escape,
+    // and a barrel outside it never fits. Read once for the footprint.
+    let outline = work.outline;
     {
         // Footprint centre (pad centroid) — the interior reference the via
         // staggering slides toward, so escapes head into the part's central
@@ -575,7 +678,25 @@ fn plan_footprint_inner(
             let c = fp.pad_world_center(pad);
             let (w, h) = fp.pad_world_size(pad);
             let (cx, cy) = (c.x.to_mm(), c.y.to_mm());
-            let (dx, dy) = inward_axis(cx, cy, w.to_mm() / 2.0, h.to_mm() / 2.0, fp_cx, fp_cy);
+            let via_r = PadRules::at_pad(
+                resolver,
+                pad.net.as_deref().unwrap_or(""),
+                c,
+                pad.layer,
+                fab,
+            )
+            .via_diameter
+                / 2.0;
+            let (dx, dy) = escape_axis(
+                cx,
+                cy,
+                w.to_mm() / 2.0,
+                h.to_mm() / 2.0,
+                fp_cx,
+                fp_cy,
+                via_r,
+                outline,
+            );
             let along = if dx.abs() > 0.0 { cy } else { cx };
             sides
                 .entry((dx as i8, dy as i8))
@@ -615,7 +736,18 @@ fn plan_footprint_inner(
                     return false; // a true via-in-pad fits: no slot contest
                 }
                 in_fine_cluster(cx, cy, net, foreign)
-                    || !can_escape_surface(cx, cy, hw, hh, net, foreign, tw, &rules)
+                    || !can_escape_surface(
+                        cx,
+                        cy,
+                        hw,
+                        hh,
+                        net,
+                        foreign,
+                        tw,
+                        &rules,
+                        opts.cell.to_mm(),
+                        outline,
+                    )
             })
             .count();
         let use_slots = !force_greedy && dogbone_needed >= crate::slots::SLOT_ASSIGN_MIN_PADS;
@@ -648,7 +780,20 @@ fn plan_footprint_inner(
             let in_cluster = in_fine_cluster(cx, cy, net, foreign);
             // Fan out if the pad is in a fine-pitch cluster (parallel
             // escape impossible) OR simply can't escape in any direction.
-            if !in_cluster && can_escape_surface(cx, cy, hw, hh, net, foreign, tw, &rules) {
+            if !in_cluster
+                && can_escape_surface(
+                    cx,
+                    cy,
+                    hw,
+                    hh,
+                    net,
+                    foreign,
+                    tw,
+                    &rules,
+                    opts.cell.to_mm(),
+                    outline,
+                )
+            {
                 continue;
             }
             // Pick the via-in-pad position. A via-in-pad may sit anywhere
@@ -684,7 +829,7 @@ fn plan_footprint_inner(
             if vip.is_none() && use_slots {
                 // Defer: this pad's barrel site is chosen by the global
                 // assignment once every competing pad is known.
-                let (dirx, diry) = inward_axis(cx, cy, hw, hh, fp_cx, fp_cy);
+                let (dirx, diry) = escape_axis(cx, cy, hw, hh, fp_cx, fp_cy, via_r, outline);
                 let (tx, ty) = net_targets
                     .get(net)
                     .copied()
@@ -707,7 +852,7 @@ fn plan_footprint_inner(
             let via_xy = match vip {
                 Some(p) => Some(p),
                 None => {
-                    let (dirx, diry) = inward_axis(cx, cy, hw, hh, fp_cx, fp_cy);
+                    let (dirx, diry) = escape_axis(cx, cy, hw, hh, fp_cx, fp_cy, via_r, outline);
                     let rank = pad_rank.get(&pad.number).copied().unwrap_or(0);
                     // A dogbone barrel the pad cannot reach with legal copper
                     // is worse than no dogbone at all: the coarse router would
@@ -767,6 +912,7 @@ fn plan_footprint_inner(
                 fab,
                 fp_cx,
                 fp_cy,
+                &[],
                 &mut plan,
             );
             plan.stranded_pads.extend(outcome.stranded);
@@ -779,7 +925,7 @@ fn plan_footprint_inner(
 /// where a pad of `fp_ref` on that net actually has to travel. Used to aim
 /// the escape: a barrel on the far side of the package is a legal escape
 /// and a terrible one.
-fn net_partner_centroids(board: &Board, fp_ref: &str) -> HashMap<String, (f64, f64)> {
+pub(crate) fn net_partner_centroids(board: &Board, fp_ref: &str) -> HashMap<String, (f64, f64)> {
     let mut acc: HashMap<String, (f64, f64, f64)> = HashMap::new();
     for fp in board.footprints_in_order() {
         if fp.reference == fp_ref {
@@ -820,6 +966,46 @@ pub(crate) fn inward_axis(
     } else {
         (0.0, if fp_cy >= cy { 1.0 } else { -1.0 })
     }
+}
+
+/// The direction a pad's escape copper should actually grow in: the
+/// pad's long axis (as [`inward_axis`] picks it), flipped when that
+/// direction runs off the board and the opposite one does not.
+///
+/// [`inward_axis`] aims at the footprint's own pad centroid, which is the
+/// right answer for a package sitting in open board — the interior
+/// channel is where the room is. For an EDGE-MOUNTED part it is exactly
+/// backwards: a USB-C receptacle's signal pins sit outboard of its
+/// mounting pads, so the centroid points at the board edge, every barrel
+/// site fails edge clearance, and the pin gets no escape at all while the
+/// open board 1 mm inboard goes unused.
+pub(crate) fn escape_axis(
+    cx: f64,
+    cy: f64,
+    hw: f64,
+    hh: f64,
+    fp_cx: f64,
+    fp_cy: f64,
+    via_r: f64,
+    outline: Option<pcb_core::Rect>,
+) -> (f64, f64) {
+    let (dx, dy) = inward_axis(cx, cy, hw, hh, fp_cx, fp_cy);
+    let Some(o) = outline else {
+        return (dx, dy);
+    };
+    // Where this pad's shallowest barrel would land, on either side.
+    let reach = (dx.abs() * hw + dy.abs() * hh).max(hw.min(hh)) + via_r + 0.05;
+    let fits = |sx: f64, sy: f64| -> bool {
+        let edge = (sx - o.min.x.to_mm())
+            .min(o.max.x.to_mm() - sx)
+            .min(sy - o.min.y.to_mm())
+            .min(o.max.y.to_mm() - sy);
+        edge >= via_r + EDGE_CLEARANCE_MM
+    };
+    if !fits(cx + dx * reach, cy + dy * reach) && fits(cx - dx * reach, cy - dy * reach) {
+        return (-dx, -dy);
+    }
+    (dx, dy)
 }
 
 /// Place a via just outside a fine-pitch pad, along the pad's inward axis

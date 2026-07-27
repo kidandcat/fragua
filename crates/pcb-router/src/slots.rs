@@ -169,6 +169,10 @@ pub(crate) fn assign_escape_slots(
     fab: Option<&pcb_core::FabRules>,
     fp_cx: f64,
     fp_cy: f64,
+    // Barrel sites this assignment may NOT use, in mm. The driver fills
+    // this when it rips a barrel whose net kept failing: handing the same
+    // site straight back would reproduce the board we just gave up on.
+    banned: &[(f64, f64)],
     plan: &mut FanoutPlan,
 ) -> SlotOutcome {
     let mut stranded = Vec::new();
@@ -198,7 +202,15 @@ pub(crate) fn assign_escape_slots(
             if pending.is_empty() {
                 break;
             }
-            let taken = collect_taken(&slots, work, resolver, opts);
+            let mut taken = collect_taken(&slots, work, resolver, opts);
+            for (i, s) in slots.iter().enumerate() {
+                if banned
+                    .iter()
+                    .any(|&(bx, by)| (s.x - bx).abs() < 1e-6 && (s.y - by).abs() < 1e-6)
+                {
+                    taken[i] = true;
+                }
+            }
             let edges = build_edges(
                 targets, &pending, &slots, &taken, foreign, work, opts, resolver, fab,
             );
