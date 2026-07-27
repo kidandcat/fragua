@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use pcb_core::{Board, CopperLayer, Length, Point, Rect, Schematic, Trace, Via};
 
-use crate::astar::search;
+use crate::astar::{search, Limits};
 use crate::grid::{CostMap, Grid, GridPoint};
 
 /// Which search engine lays the copper.
@@ -90,6 +90,16 @@ pub struct RouteOptions {
     /// (legacy behaviour). Agents should pass e.g. `60` so a stuck fine-
     /// pitch board cannot hang the HTTP session for 10+ minutes.
     pub max_seconds: Option<f64>,
+    /// Opt in to the localized fine-grid escape (`escape.rs`) on stackups
+    /// with three or more copper layers.
+    ///
+    /// OFF by default. The pass was built for a fine-pitch connector row
+    /// on a roomy multi-layer board, but measured against the VIP/dogbone
+    /// fanout on the RP2040 stress board it bought one extra escaped pad
+    /// for seconds of the route budget and ended up one net WORSE — the
+    /// 4-layer regression of issue O8. Until it demonstrably pays for
+    /// itself, callers who want it have to ask for it.
+    pub fine_escape: bool,
     /// Optional progress callback — one short human-readable line per
     /// RR pass / net batch. Wired by the script API into the activity
     /// log so the UI and agents see routing progress without polling.
@@ -111,6 +121,7 @@ impl std::fmt::Debug for RouteOptions {
             .field("organic_fillet_mm", &self.organic_fillet_mm)
             .field("heuristic_weight", &self.heuristic_weight)
             .field("max_seconds", &self.max_seconds)
+            .field("fine_escape", &self.fine_escape)
             .field(
                 "on_progress",
                 &self.on_progress.as_ref().map(|_| "<callback>"),
@@ -151,6 +162,7 @@ impl Default for RouteOptions {
             // sessions from hanging. Heavy boards can raise via
             // `route max_seconds=N`.
             max_seconds: Some(90.0),
+            fine_escape: false,
             on_progress: None,
         }
     }
@@ -532,7 +544,10 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     for _ in 1..=MAX_RR_ITERATIONS {
         if timed_out(deadline) {
             hit_deadline = true;
-            progress(opts, "route: max_seconds budget exhausted — keeping best so far");
+            progress(
+                opts,
+                "route: max_seconds budget exhausted — keeping best so far",
+            );
             break;
         }
         // Stop early if reordering produced nothing new — no point
@@ -997,6 +1012,12 @@ fn route_pass(
     allow_ripup: bool,
     deadline: Option<Instant>,
 ) -> RouteReport {
+    // Every A* in this pass inherits the pass deadline, so a single
+    // pathological search can no longer run past the caller's budget.
+    let limits = Limits {
+        deadline,
+        ..Limits::default()
+    };
     let net_id_of: HashMap<String, u32> = order
         .iter()
         .enumerate()
@@ -1101,9 +1122,7 @@ fn route_pass(
             }
             progress(
                 opts,
-                format!(
-                    "route: timeout after {nets_done}/{total_nets} net(s) this pass"
-                ),
+                format!("route: timeout after {nets_done}/{total_nets} net(s) this pass"),
             );
             break;
         }
@@ -1133,6 +1152,7 @@ fn route_pass(
             fanout,
             via_copper_cells,
             &pour_nets,
+            limits,
         );
         if allow_ripup {
             if let NetRoute::Failed {
@@ -1162,6 +1182,7 @@ fn route_pass(
                     &mut taboo,
                     &mut outcomes,
                     0,
+                    limits,
                 );
             }
         }
@@ -1265,6 +1286,7 @@ fn route_one_net(
     fanout: &crate::fanout::FanoutPlan,
     via_copper_cells: i32,
     pour_nets: &std::collections::HashSet<String>,
+    limits: Limits,
 ) -> NetRoute {
     if pour_nets.contains(net_name) {
         return NetRoute::Ok {
@@ -1313,6 +1335,7 @@ fn route_one_net(
                 opts,
                 via_copper_cells,
                 cost_map,
+                limits,
             ) {
                 Ok((segs, vias, length_mm)) => {
                     return NetRoute::Ok {
@@ -1446,6 +1469,7 @@ fn route_one_net(
             cost_map,
             &net_trace_cells,
             opts.heuristic_weight,
+            limits,
         ) else {
             return NetRoute::Failed {
                 reason: format!(
@@ -1572,6 +1596,7 @@ fn try_ripup_route(
     taboo: &mut HashSet<u32>,
     outcomes: &mut BTreeMap<String, NetRoute>,
     depth: usize,
+    limits: Limits,
 ) -> NetRoute {
     let (seed_g, spoke_g, clr) = corridor;
     let id_to_name: HashMap<u32, &String> = net_id_of.iter().map(|(n, i)| (*i, n)).collect();
@@ -1621,6 +1646,7 @@ fn try_ripup_route(
             fanout,
             via_copper_cells,
             pour_nets,
+            limits,
         );
         let NetRoute::Ok { .. } = a_res else {
             // A still boxed: keep this blocker ripped and add the next.
@@ -1646,6 +1672,7 @@ fn try_ripup_route(
                 fanout,
                 via_copper_cells,
                 pour_nets,
+                limits,
             );
             if let NetRoute::Failed {
                 corridor: Some((rs, rsp, rc)),
@@ -1675,6 +1702,7 @@ fn try_ripup_route(
                         taboo,
                         outcomes,
                         depth + 1,
+                        limits,
                     );
                 }
             }
@@ -1714,6 +1742,7 @@ fn try_ripup_route(
         fanout,
         via_copper_cells,
         pour_nets,
+        limits,
     )
 }
 
@@ -2079,6 +2108,7 @@ fn try_diff_pair_follow(
     opts: &RouteOptions,
     via_copper_cells: i32,
     cost_map: &crate::grid::CostMap,
+    limits: Limits,
 ) -> Result<(usize, usize, f64), String> {
     use crate::astar::search;
     if b_pads.len() < 2 {
@@ -2258,6 +2288,7 @@ fn try_diff_pair_follow(
             cost_map,
             &db_sources,
             opts.heuristic_weight,
+            limits,
         ) else {
             return Err(format!("no end-cap to pad {}", pad.pad_ref));
         };

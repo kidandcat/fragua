@@ -9,6 +9,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
+use std::time::Instant;
 
 use crate::grid::{self, Cell, CostMap, Grid, GridPoint};
 
@@ -33,6 +34,20 @@ impl PartialOrd for Node {
 #[derive(Debug, Clone)]
 pub struct AStarResult {
     pub path: Vec<GridPoint>,
+}
+
+/// Hard bounds on ONE search. Both are "give up and report no path"
+/// limits, never correctness knobs: whatever the search returns was found
+/// under the full clearance model.
+#[derive(Copy, Clone, Default)]
+pub struct Limits {
+    /// Cap on heap pops. `None` derives one from the grid size.
+    pub max_pops: Option<u64>,
+    /// Wall-clock deadline for this single search. A route-level budget
+    /// that is only checked BETWEEN nets cannot bound a pathological
+    /// search (issue O8: a 180 s budget returning at 214 s), so the
+    /// deadline is also enforced inside the expansion loop.
+    pub deadline: Option<Instant>,
 }
 
 /// One unit cell = `SCALE` cost units. Lets us keep `u32` arithmetic
@@ -99,6 +114,7 @@ pub fn search(
     // start→target straight-line distance is `>= WEIGHT_MIN_DIST_CELLS`
     // (see below) so short, tight searches stay optimal regardless of `W`.
     weight: f64,
+    limits: Limits,
 ) -> Option<AStarResult> {
     /// Floor for the seed pad's g-penalty when at least one trace cell
     /// exists. ~6 mm at default 0.25 mm pitch — kicks in only when every
@@ -269,11 +285,22 @@ pub fn search(
         .saturating_mul(grid.rows as u64)
         .saturating_mul(u64::from(grid.layer_count))
         .max(1);
-    let max_pops = (grid_cells.saturating_mul(8)).clamp(250_000, 4_000_000);
+    let max_pops = limits
+        .max_pops
+        .unwrap_or_else(|| (grid_cells.saturating_mul(8)).clamp(250_000, 4_000_000));
+    /// How often (in pops) the wall-clock deadline is re-read. `Instant::now`
+    /// is far too costly to call per expansion; every 4096 pops bounds the
+    /// overshoot to milliseconds.
+    const DEADLINE_CHECK_POPS: u64 = 4096;
     let mut _pop_guard: u64 = 0;
     while let Some(Node { p, g, .. }) = open.pop() {
         _pop_guard += 1;
         if _pop_guard > max_pops {
+            return None;
+        }
+        if _pop_guard % DEADLINE_CHECK_POPS == 0
+            && limits.deadline.is_some_and(|d| Instant::now() >= d)
+        {
             return None;
         }
         // Termination: same column/row as target, AND either same
@@ -310,6 +337,16 @@ pub fn search(
             continue;
         }
 
+        // Everything a via move is judged on — the through-hole collision
+        // test, `via_safe`, and the via-in-pad surcharge — depends only on
+        // the (col, row) the barrel is punched at, never on which layer it
+        // lands on. `neighbours` offers one via move PER other layer, so on
+        // a 4-layer stackup the identical all-layer scans used to run three
+        // times per expansion (and each scan is itself O(layers · r²)).
+        // Evaluate them once, lazily, and share the verdict — this is what
+        // keeps a 4-layer pass from costing several times a 2-layer one
+        // (issue O8).
+        let mut via_verdict: Option<Option<u32>> = None; // None = not computed; Some(None) = rejected
         for (next_p, kind) in neighbours(p, grid.layer_count) {
             if !grid.in_bounds(next_p) || !in_window(next_p) {
                 continue;
@@ -319,26 +356,36 @@ pub fn search(
                 continue;
             }
             let is_via = matches!(kind, Move::Via);
-            // Hard reject: a via landing inside a through-hole pad
-            // collides with the existing PTH drill. No score penalty
-            // is high enough to make that legal, so refuse outright.
-            if is_via
-                && (0..grid.layer_count).any(|l| {
-                    matches!(
-                        grid.get(GridPoint {
+            let mut via_penalty = 0u32;
+            if is_via {
+                let verdict = *via_verdict.get_or_insert_with(|| {
+                    let mut on_smd_pad = false;
+                    for l in 0..grid.layer_count {
+                        match grid.get(GridPoint {
                             layer: l,
                             col: next_p.col,
-                            row: next_p.row
-                        }),
-                        Cell::DrilledPad(_)
-                    )
-                })
-            {
-                continue;
-            }
-            if is_via && via_safe_radius > 0 && !via_safe(grid, next_p, target_net, via_safe_radius)
-            {
-                continue;
+                            row: next_p.row,
+                        }) {
+                            // Hard reject: a via landing inside a
+                            // through-hole pad collides with the existing
+                            // PTH drill. No score penalty is high enough to
+                            // make that legal, so refuse outright.
+                            Cell::DrilledPad(_) => return None,
+                            // Soft penalty for landing on an SMD pad (legal
+                            // but requires via-in-pad fill at the fab).
+                            Cell::NetPad(_) => on_smd_pad = true,
+                            _ => {}
+                        }
+                    }
+                    if via_safe_radius > 0 && !via_safe(grid, next_p, target_net, via_safe_radius) {
+                        return None;
+                    }
+                    Some(if on_smd_pad { VIA_IN_PAD_PENALTY } else { 0 })
+                });
+                match verdict {
+                    None => continue,
+                    Some(pen) => via_penalty = pen,
+                }
             }
             // Per-trace clearance for a planar move: the candidate
             // centreline cell must keep its clearance disk free of foreign
@@ -391,24 +438,7 @@ pub fn search(
                 }
             }
 
-            if is_via {
-                // Soft penalty for landing on an SMD pad (legal but
-                // requires via-in-pad fill at the fab — extra cost).
-                // DrilledPad cases are already hard-rejected above.
-                let on_pad = (0..grid.layer_count).any(|l| {
-                    matches!(
-                        grid.get(GridPoint {
-                            layer: l,
-                            col: next_p.col,
-                            row: next_p.row
-                        }),
-                        Cell::NetPad(_)
-                    )
-                });
-                if on_pad {
-                    best_g = best_g.saturating_add(VIA_IN_PAD_PENALTY);
-                }
-            }
+            best_g = best_g.saturating_add(via_penalty);
 
             if best_g < *g_score.get(&next_p).unwrap_or(&u32::MAX) {
                 g_score.insert(next_p, best_g);
