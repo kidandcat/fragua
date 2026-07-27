@@ -41,6 +41,10 @@ fn opts(sch: &Schematic, secs: f64) -> RouteOptions {
         organic: true,
         organic_fillet_mm: 3.0,
         max_seconds: Some(secs),
+        // `O8_NEG=1` turns on PathFinder negotiation, whose corridor
+        // autopsy prints "blocked even when allowed to share" — the direct
+        // measure of escape-slot progress (see AGENT-HANDOFF §6.5).
+        negotiate: std::env::var("O8_NEG").is_ok(),
         on_progress: Some(Arc::new(move |m: &str| {
             println!("[{:7.2}s] {m}", started.elapsed().as_secs_f64());
         })),

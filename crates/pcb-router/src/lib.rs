@@ -19,6 +19,7 @@ mod length_match;
 mod negotiate;
 mod organic;
 mod router;
+mod slots;
 mod stitching;
 mod topo;
 

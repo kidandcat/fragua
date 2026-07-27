@@ -501,6 +501,16 @@ pub struct RouteReport {
     pub dogbone_via_count: usize,
     /// Pre-laid escape/dogbone stub segments committed to the board.
     pub escape_stub_count: usize,
+    /// Pads the escape pass gave a barrel site to (via-in-pad or dogbone).
+    /// With `stranded_pads`, this is the escape-stage metric that predicts
+    /// what the search can possibly finish: a net whose pad never got a
+    /// slot cannot be routed no matter how long the search runs.
+    pub escaped_pad_count: usize,
+    /// Pads that NEEDED an escape and got none — no barrel site clears
+    /// their neighbours, or none that does can be reached by legal copper.
+    /// Geometrically stranded; reported before routing rather than
+    /// discovered as a mysterious failed net afterwards.
+    pub stranded_pads: Vec<String>,
     /// Nets the router actually attempted (pour-only nets are skipped by
     /// design and are not counted here).
     pub routable_net_count: usize,
@@ -627,9 +637,16 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     progress(
         opts,
         format!(
-            "route: escape ready — {} via(s), {} stub segment(s)",
+            "route: escape ready — {} via(s), {} stub segment(s), {} pad(s) escaped, {} stranded{}",
             fanout.vias.len(),
-            escape_stubs.len()
+            escape_stubs.len(),
+            fanout.through_pads.len(),
+            fanout.stranded_pads.len(),
+            if fanout.stranded_pads.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", fanout.stranded_pads.join(", "))
+            }
         ),
     );
     if nets.is_empty() {
@@ -637,6 +654,8 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         return RouteReport {
             fanout_via_count: fanout.vias.len(),
             dogbone_via_count: fanout.dogbone_pads.len(),
+            escaped_pad_count: fanout.through_pads.len(),
+            stranded_pads: fanout.stranded_pads.clone(),
             elapsed_seconds: started.elapsed().as_secs_f64(),
             ..RouteReport::default()
         };
@@ -955,6 +974,20 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     best_report.iterations = iterations_run;
     best_report.hints = generate_hints(&best_report, &nets);
     best_report.hints.extend(extra_hints);
+    if !fanout.stranded_pads.is_empty() {
+        // The escape-stage truth: these pads have no legal barrel site at
+        // all, so their nets are unroutable by construction. Say so up
+        // front — no amount of `max_seconds` changes it, only geometry
+        // (pitch, rule area, via size, exposed-pad shrink) does.
+        best_report.hints.insert(
+            0,
+            format!(
+                "escape: {} pad(s) stranded — no legal escape slot at the resolved rules: {}",
+                fanout.stranded_pads.len(),
+                fanout.stranded_pads.join(", ")
+            ),
+        );
+    }
     // Stamp the winning routing onto the caller's board.
     board.clear_routing();
     for trace in best_work.traces {
@@ -990,6 +1023,8 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     best_report.fanout_via_count = fanout.vias.len();
     best_report.dogbone_via_count = fanout.dogbone_pads.len();
     best_report.escape_stub_count = escape_stubs.len();
+    best_report.escaped_pad_count = fanout.through_pads.len();
+    best_report.stranded_pads = fanout.stranded_pads.clone();
     best_report.routable_net_count = best_report.per_net.len();
     best_report.elapsed_seconds = started.elapsed().as_secs_f64();
     best_report.budget_hit = hit_deadline;

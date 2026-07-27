@@ -4382,6 +4382,7 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
     };
     Ok(text_result(format!(
         "Routed: {} traces, {} vias on board ({} fanout via(s), {} dogbone, {} escape stub(s)); \
+         escape: {} pad(s) got a slot, {} stranded{}; \
          search laid {} trace segment(s) + {} via(s); {:.1} mm wire, {} of {} routable net(s) failed \
          (detour {:.2}× over {:.1} mm lower bound), {} pass(es); connectivity: {}/{} net(s) fully connected; \
          {:.1}s elapsed{}{}{}; DRC: {} error(s), {} warning(s){}",
@@ -4390,6 +4391,13 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         report.fanout_via_count,
         report.dogbone_via_count,
         report.escape_stub_count,
+        report.escaped_pad_count,
+        report.stranded_pads.len(),
+        if report.stranded_pads.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", report.stranded_pads.join(", "))
+        },
         report.trace_count,
         report.via_count,
         report.total_length_mm,
@@ -4424,6 +4432,9 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         "fanout_via_count": report.fanout_via_count,
         "dogbone_via_count": report.dogbone_via_count,
         "escape_stub_count": report.escape_stub_count,
+        "escaped_pad_count": report.escaped_pad_count,
+        "stranded_pad_count": report.stranded_pads.len(),
+        "stranded_pads": report.stranded_pads,
         "routable_net_count": report.routable_net_count,
         "nets_total": nets_total,
         "nets_fully_connected": nets_full,
