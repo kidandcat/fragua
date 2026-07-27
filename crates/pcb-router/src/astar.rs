@@ -261,11 +261,19 @@ pub fn search(
         }
     }
 
+    // Hard cap on expansions. The historical 50M let a single failed
+    // fine-pitch net burn minutes of wall clock. Scale with the grid so
+    // board-spanning nets still solve, while pathological dead-ends bail
+    // early enough for max_seconds budgets to mean something.
+    let grid_cells = (grid.cols as u64)
+        .saturating_mul(grid.rows as u64)
+        .saturating_mul(u64::from(grid.layer_count))
+        .max(1);
+    let max_pops = (grid_cells.saturating_mul(8)).clamp(250_000, 4_000_000);
     let mut _pop_guard: u64 = 0;
     while let Some(Node { p, g, .. }) = open.pop() {
         _pop_guard += 1;
-        if _pop_guard > 50_000_000 {
-            eprintln!("ASTAR_GUARD: 50M pops, bailing (sources={})", sources.len());
+        if _pop_guard > max_pops {
             return None;
         }
         // Termination: same column/row as target, AND either same

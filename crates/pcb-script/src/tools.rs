@@ -338,7 +338,7 @@ PALETTE / PLACEMENT:\n\
 \n\
 ROUTING:\n\
   route [trace_width=N] [clearance=N] [via_drill=N] [via_diameter=N] [via_cost=N] [cell=N]\n\
-        [organic=true|false] [fillet=MM] [engine=grid|topo]\n\
+            [max_seconds=N] [organic=true|false] [fillet=MM] [engine=grid|topo]\n\
                                                — auto-route every net (Theta* on 2 layers), then an\n\
                                                  organic post-pass (rubber-band string-pulling +\n\
                                                  arc fillets, TopoR-style flowing traces; clearance\n\
@@ -350,7 +350,9 @@ ROUTING:\n\
                                                  curved copper, vias planned where the topology\n\
                                                  needs them (experimental; may leave nets unrouted\n\
                                                  on very tight boards — rerun with engine=grid to\n\
-                                                 fill in). Defaults trace_width=0.25,\n\
+                                                 fill in). max_seconds caps wall-clock (default 90;\n\
+                                                 0 = unlimited) and streams progress into the\n\
+                                                 activity log. Defaults trace_width=0.25,\n\
                                                  clearance=0.20, via_drill=0.30, via_diameter=0.60,\n\
                                                  cell=0.20, via_cost=8\n\
   clear-route                                  — drop all traces and vias\n\
@@ -3590,6 +3592,9 @@ struct RouteRunInput {
     /// "grid" (default) or "topo" — the rubber-band topological engine.
     #[serde(default)]
     engine: Option<String>,
+    /// Soft wall-clock budget in seconds. Default 90. Pass 0 for unlimited.
+    #[serde(default)]
+    max_seconds: Option<f64>,
 }
 
 fn de_u32_lenient<'de, D>(d: D) -> Result<u32, D::Error>
@@ -4133,6 +4138,12 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
             .collect::<Vec<String>>()
     });
 
+    let max_seconds = match input.max_seconds {
+        None => Some(90.0),
+        Some(s) if s <= 0.0 => None, // 0 / negative = unlimited
+        Some(s) => Some(s),
+    };
+    let progress_project = project.clone();
     let opts = pcb_router::RouteOptions {
         cell: Length::from_mm(input.cell_mm),
         trace_width: Length::from_mm(input.trace_width_mm),
@@ -4160,8 +4171,10 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         // re-expand, and weighted detours trip the RR&R inefficiency
         // threshold). The knob exists for future open-board experiments.
         heuristic_weight: 1.0,
-        // Localized fine-grid escape stays opt-in; the default fanout path
-        // is unchanged for the interactive tool.
+        max_seconds,
+        on_progress: Some(std::sync::Arc::new(move |msg: &str| {
+            progress_project.log(ActivityLevel::Info, msg);
+        })),
     };
 
     // Route on a clone so the lock is released quickly; then push the

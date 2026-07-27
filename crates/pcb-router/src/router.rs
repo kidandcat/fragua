@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use pcb_core::{Board, CopperLayer, Length, Point, Rect, Schematic, Trace, Via};
 
@@ -20,7 +21,7 @@ pub enum RouteEngine {
     Topo,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RouteOptions {
     /// Cell pitch on the routing grid. 0.25 mm is the default sweet
     /// spot for SMD-only boards: fine enough for 0.5 mm pin pitch,
@@ -83,6 +84,39 @@ pub struct RouteOptions {
     /// small detour for the big speed win. Orthogonal to clearance
     /// stamping, so it never changes the DRC/CLEAN outcome, only latency.
     pub heuristic_weight: f64,
+    /// Soft wall-clock budget for the whole `route()` call. When elapsed,
+    /// the driver keeps the best report so far, marks remaining nets as
+    /// failed with a timeout reason, and returns. `None` = no budget
+    /// (legacy behaviour). Agents should pass e.g. `60` so a stuck fine-
+    /// pitch board cannot hang the HTTP session for 10+ minutes.
+    pub max_seconds: Option<f64>,
+    /// Optional progress callback — one short human-readable line per
+    /// RR pass / net batch. Wired by the script API into the activity
+    /// log so the UI and agents see routing progress without polling.
+    #[allow(clippy::type_complexity)]
+    pub on_progress: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RouteOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouteOptions")
+            .field("cell", &self.cell)
+            .field("trace_width", &self.trace_width)
+            .field("clearance", &self.clearance)
+            .field("via_cost", &self.via_cost)
+            .field("via_drill", &self.via_drill)
+            .field("via_diameter", &self.via_diameter)
+            .field("engine", &self.engine)
+            .field("organic", &self.organic)
+            .field("organic_fillet_mm", &self.organic_fillet_mm)
+            .field("heuristic_weight", &self.heuristic_weight)
+            .field("max_seconds", &self.max_seconds)
+            .field(
+                "on_progress",
+                &self.on_progress.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
 }
 
 /// Per-net rule overrides — fields default to "use the global
@@ -113,8 +147,29 @@ impl Default for RouteOptions {
             organic_fillet_mm: 3.0,
             initial_net_order: None,
             heuristic_weight: 1.0,
+            // 90 s is enough for typical boards and keeps agent HTTP
+            // sessions from hanging. Heavy boards can raise via
+            // `route max_seconds=N`.
+            max_seconds: Some(90.0),
+            on_progress: None,
         }
     }
+}
+
+fn progress(opts: &RouteOptions, msg: impl AsRef<str>) {
+    if let Some(cb) = opts.on_progress.as_ref() {
+        cb(msg.as_ref());
+    }
+}
+
+fn deadline_of(opts: &RouteOptions) -> Option<Instant> {
+    opts.max_seconds
+        .filter(|s| *s > 0.0 && s.is_finite())
+        .map(|s| Instant::now() + Duration::from_secs_f64(s))
+}
+
+fn timed_out(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
 }
 
 /// Minimum trace width (mm) the router lays on a *power* net when the
@@ -317,7 +372,22 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// claim the obvious paths. The "best" report (fewest failures, then
 /// shortest total wire) wins; if no iteration improves on the first,
 /// the first wins and the board is laid back to its first-pass state.
+///
+/// Honours `RouteOptions::max_seconds`: when the budget is exhausted the
+/// best-so-far board is committed and remaining unrouted nets are reported
+/// as failed with a timeout reason.
 pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
+    let started = Instant::now();
+    let deadline = deadline_of(opts);
+    progress(
+        opts,
+        format!(
+            "route: start (max_seconds={})",
+            opts.max_seconds
+                .map(|s| format!("{s:.0}"))
+                .unwrap_or_else(|| "unlimited".into())
+        ),
+    );
     if opts.engine == RouteEngine::Topo && board.stackup.layer_count() <= 2 {
         return route_topo(board, opts);
     }
@@ -327,9 +397,26 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // escape (short surface stub → fanned-out breakout via) is the standard
     // path; it internally falls back to a plain via-in-pad fanout for parts
     // that don't need a fine escape (and for coarse cell pitches where the
-    // breakout spread can't fit). No-op on 2-layer boards.
+    // breakout spread can't fit). Runs on 2+ layer stackups (bottom is the
+    // escape layer on classic 2-layer boards).
+    progress(
+        opts,
+        format!(
+            "route: planning escapes ({} net(s), stackup {} layer(s))",
+            nets.len(),
+            board.stackup.layer_count()
+        ),
+    );
     let plan = crate::escape::plan_escapes(board, opts);
     let (fanout, escape_stubs) = (plan.fanout, plan.stubs);
+    progress(
+        opts,
+        format!(
+            "route: escape ready — {} via(s), {} stub segment(s)",
+            fanout.vias.len(),
+            escape_stubs.len()
+        ),
+    );
     if nets.is_empty() {
         board.clear_routing();
         return RouteReport {
@@ -417,7 +504,13 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let mut best: Option<(Board, RouteReport)> = None;
     let mut last_order: Option<Vec<String>> = None;
     let mut iterations_run = 0;
+    let mut hit_deadline = false;
     for _ in 1..=MAX_RR_ITERATIONS {
+        if timed_out(deadline) {
+            hit_deadline = true;
+            progress(opts, "route: max_seconds budget exhausted — keeping best so far");
+            break;
+        }
         // Stop early if reordering produced nothing new — no point
         // re-running the exact same sequence twice.
         if last_order.as_ref() == Some(&order) {
@@ -425,6 +518,13 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         }
         last_order = Some(order.clone());
         iterations_run += 1;
+        progress(
+            opts,
+            format!(
+                "route: pass {iterations_run}/{MAX_RR_ITERATIONS} ({} net(s))",
+                order.len()
+            ),
+        );
 
         let mut work = board.clone();
         work.clear_routing();
@@ -441,6 +541,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             &fanout,
             &escape_stubs,
             false,
+            deadline,
         );
 
         let take_it = match &best {
@@ -449,6 +550,10 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         };
         if take_it {
             best = Some((work, report.clone()));
+        }
+        if timed_out(deadline) {
+            hit_deadline = true;
+            break;
         }
 
         // Identify bad nets for next iteration. Failed nets always go
@@ -516,28 +621,35 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // rip-up resolves them surgically; doing it here (rather than inside the
     // reordered/bumped loop) avoids the global degradation greedy rip-up
     // causes on a churned board. Kept only when strictly better, so it can
-    // never regress below baseline.
-    if best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
-        let mut work = board.clone();
-        work.clear_routing();
-        let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
-        let report = route_pass(
-            &mut work,
-            &nets,
-            &original_order,
-            opts,
-            &clean_cost,
-            &fanout,
-            &escape_stubs,
-            true,
-        );
-        iterations_run += 1;
-        let take_it = match &best {
-            None => true,
-            Some((_, prev)) => report_is_better(&report, prev),
-        };
-        if take_it {
-            best = Some((work, report));
+    // never regress below baseline. Skipped when the wall-clock budget is
+    // already exhausted.
+    if !hit_deadline && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
+        if timed_out(deadline) {
+            hit_deadline = true;
+        } else {
+            progress(opts, "route: clean-board rip-up pass");
+            let mut work = board.clone();
+            work.clear_routing();
+            let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
+            let report = route_pass(
+                &mut work,
+                &nets,
+                &original_order,
+                opts,
+                &clean_cost,
+                &fanout,
+                &escape_stubs,
+                true,
+                deadline,
+            );
+            iterations_run += 1;
+            let take_it = match &best {
+                None => true,
+                Some((_, prev)) => report_is_better(&report, prev),
+            };
+            if take_it {
+                best = Some((work, report));
+            }
         }
     }
 
@@ -561,7 +673,26 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     for stub in &escape_stubs {
         board.add_trace(stub.clone());
     }
-    post_passes(board, opts, &mut best_report);
+    // Organic post-pass can also be expensive — skip it when the budget
+    // is already exhausted so agents get a timely reply.
+    if !hit_deadline && !timed_out(deadline) {
+        post_passes(board, opts, &mut best_report);
+    } else {
+        // Still do cheap stitching so power pours stay connected.
+        crate::stitching::add_stitching_vias(board, opts);
+        hit_deadline = true;
+    }
+    progress(
+        opts,
+        format!(
+            "route: done in {:.1}s — {} traces, {} vias, {} failed net(s){}",
+            started.elapsed().as_secs_f64(),
+            best_report.trace_count,
+            best_report.via_count,
+            count_failed(&best_report),
+            if hit_deadline { " (budget hit)" } else { "" }
+        ),
+    );
     best_report
 }
 
@@ -785,6 +916,9 @@ fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
 /// One full routing pass: lay every net (in `order`) onto a freshly
 /// cleared `board` and return the per-net outcomes. The board's
 /// routing must already be cleared by the caller.
+///
+/// When `deadline` is hit mid-pass, remaining nets are recorded as
+/// failed (`timeout`) and the partial copper already laid is kept.
 #[allow(clippy::too_many_arguments)]
 fn route_pass(
     board: &mut Board,
@@ -795,6 +929,7 @@ fn route_pass(
     fanout: &crate::fanout::FanoutPlan,
     escape_stubs: &[Trace],
     allow_ripup: bool,
+    deadline: Option<Instant>,
 ) -> RouteReport {
     let net_id_of: HashMap<String, u32> = order
         .iter()
@@ -880,8 +1015,34 @@ fn route_pass(
     let mut routed_ids: HashSet<u32> = HashSet::new();
     let mut taboo: HashSet<u32> = HashSet::new();
 
+    let mut nets_done = 0usize;
+    let total_nets = order.len();
     for net_name in order {
+        if timed_out(deadline) {
+            // Mark every remaining net (including this one) as timed out
+            // so the report still has a complete per-net list.
+            for rest in order.iter().skip(nets_done) {
+                if outcomes.contains_key(rest) {
+                    continue;
+                }
+                outcomes.insert(
+                    rest.clone(),
+                    NetRoute::Failed {
+                        reason: "timeout (route max_seconds budget)".into(),
+                        corridor: None,
+                    },
+                );
+            }
+            progress(
+                opts,
+                format!(
+                    "route: timeout after {nets_done}/{total_nets} net(s) this pass"
+                ),
+            );
+            break;
+        }
         let Some(pad_points) = nets.get(net_name) else {
+            nets_done += 1;
             continue;
         };
         let net_id = net_id_of[net_name];
@@ -940,6 +1101,19 @@ fn route_pass(
         }
         routed_ids.insert(net_id);
         outcomes.insert(net_name.clone(), nr);
+        nets_done += 1;
+        // Progress every few nets (or last) so agents see forward motion
+        // without drowning the activity log.
+        if nets_done == total_nets || nets_done % 5 == 0 {
+            let ok_so_far = outcomes
+                .values()
+                .filter(|o| matches!(o, NetRoute::Ok { .. }))
+                .count();
+            progress(
+                opts,
+                format!("route: {nets_done}/{total_nets} net(s), {ok_so_far} ok this pass"),
+            );
+        }
     }
 
     // Fold outcomes into report totals, emitting `per_net` in `order`

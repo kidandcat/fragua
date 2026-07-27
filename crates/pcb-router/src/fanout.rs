@@ -288,11 +288,15 @@ pub(crate) fn pick_via_position(
 }
 
 /// Plan the fanout: for every pad that can't escape on the surface, drop
-/// a via-in-pad if it fits. A 2-layer board has nowhere to fan out to, so
-/// the pass is a no-op there.
+/// a via-in-pad (or dogbone fallback via the escape pass) if it fits.
+///
+/// On 2-layer boards the "other" layer is Bottom — vias still open a
+/// corridor under the package body. Via-in-pad only lands when the pad is
+/// large enough to host the 0.30 mm barrel; finer pads rely on the
+/// localized escape stubs in `escape.rs`.
 pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
     let mut plan = FanoutPlan::default();
-    if board.stackup.layer_count() < 3 {
+    if board.stackup.layer_count() < 2 {
         return plan;
     }
     let rects = pad_rects(board);
@@ -354,12 +358,22 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
             // the coarse router has no lane to approach any of them and the
             // pins fail to land. Staggering adjacent pins to opposite ends of
             // their pads opens a clear approach lane down the pad's long axis.
-            let Some((vx, vy)) = pick_via_position(
+            let via_xy = pick_via_position(
                 cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, clearance, &foreign, &work,
-            ) else {
-                // Too tight even for the minimum via at any offset — leave it
-                // for the router to attempt on the surface (it will likely
-                // fail, and the report will flag it).
+            )
+            .or_else(|| {
+                // Dogbone fallback: pad too small for a true via-in-pad
+                // (typical 0.4 mm-pitch QFN pads are ~0.20 mm wide — a
+                // 0.30 mm barrel does not fit). Place the via just past
+                // the pad tip toward the package interior so the coarse
+                // router can pick the net up on Bottom under the body.
+                dogbone_via_position(
+                    cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, clearance, &foreign, &work,
+                )
+            });
+            let Some((vx, vy)) = via_xy else {
+                // No VIP and no dogbone fits — leave it for the surface
+                // router (it will likely fail; the report will flag it).
                 continue;
             };
             let via_pos = Point::new(Length::from_mm(vx), Length::from_mm(vy));
@@ -378,4 +392,62 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
         }
     }
     plan
+}
+
+/// Place a via just outside a fine-pitch pad, toward the package interior
+/// (dogbone fanout). Used when the pad copper is too small to host a
+/// via-in-pad barrel. Returns `None` if no candidate clears neighbours.
+#[allow(clippy::too_many_arguments)]
+fn dogbone_via_position(
+    cx: f64,
+    cy: f64,
+    hw: f64,
+    hh: f64,
+    fp_cx: f64,
+    fp_cy: f64,
+    net: &str,
+    via_r: f64,
+    clearance: f64,
+    foreign: &[&PadRect],
+    work: &Board,
+) -> Option<(f64, f64)> {
+    // Direction: from pad toward footprint centroid (under the body).
+    let mut dx = fp_cx - cx;
+    let mut dy = fp_cy - cy;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        // Pad is the centroid itself (thermal) — push along the long axis.
+        if hw >= hh {
+            dx = 1.0;
+            dy = 0.0;
+        } else {
+            dx = 0.0;
+            dy = 1.0;
+        }
+    } else {
+        dx /= len;
+        dy /= len;
+    }
+    // Half-extent of the pad along the dogbone direction + via radius +
+    // a hair so the barrel sits fully outside the pad copper (DRC would
+    // otherwise see via-on-foreign-pad if we clip the edge).
+    let pad_extent = (dx.abs() * hw + dy.abs() * hh).max(hw.min(hh));
+    let base = pad_extent + via_r + 0.05;
+    // Try a few depths so a blocked first choice still has options.
+    for extra in [0.0_f64, 0.2, 0.4, 0.6, 0.15, -0.1] {
+        // Also try a small perpendicular nudge for stagger between
+        // neighbouring dogbones in a QFN row.
+        for perp_sign in [0.0_f64, 1.0, -1.0] {
+            let px = -dy;
+            let py = dx;
+            let dist = base + extra;
+            let nudge = perp_sign * (via_r + clearance * 0.5);
+            let vx = cx + dx * dist + px * nudge;
+            let vy = cy + dy * dist + py * nudge;
+            if fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
+                return Some((vx, vy));
+            }
+        }
+    }
+    None
 }

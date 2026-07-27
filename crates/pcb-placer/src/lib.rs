@@ -409,8 +409,6 @@ pub fn place(
         + opts.congestion_penalty_factor * sa_start_congestion;
     let mut current_score = initial_score;
     let mut best_score = initial_score;
-    let mut best_hpwl = sa_start_hpwl;
-    let mut best_congestion = sa_start_congestion;
     let mut best_positions: HashMap<Id, Point> = movable_ids
         .iter()
         .map(|id| (*id, board.footprints[id].position))
@@ -556,12 +554,6 @@ pub fn place(
             accepted += 1;
             if current_score < best_score {
                 best_score = current_score;
-                best_hpwl = total_hpwl(board);
-                best_congestion = if opts.congestion_resolution > 0 {
-                    congestion_overflow(board, outline, opts.congestion_resolution)
-                } else {
-                    0.0
-                };
                 for id in &movable_ids {
                     if let Some(fp) = board.footprints.get(id) {
                         best_positions.insert(*id, fp.position);
@@ -587,6 +579,21 @@ pub fn place(
         }
     }
 
+    // Net-affinity pull for small passives (caps/resistors/LEDs): walk
+    // each movable 2-pad part toward the centroid of FIXED pads on its
+    // nets (typically the IC pin it decouples). SA minimises global
+    // HPWL but freely scatters 0603s; this one-shot snap recovers the
+    // "cap next to the power pin" layout humans expect without fighting
+    // the global stage.
+    pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
+
+    let final_hpwl = total_hpwl(board);
+    let final_congestion = if opts.congestion_resolution > 0 {
+        congestion_overflow(board, outline, opts.congestion_resolution)
+    } else {
+        0.0
+    };
+
     let mut moved: Vec<String> = Vec::new();
     for id in &movable_ids {
         let Some(fp) = board.footprints.get(id) else {
@@ -602,15 +609,142 @@ pub fn place(
 
     Ok(PlaceReport {
         initial_hpwl_mm: initial_hpwl,
-        final_hpwl_mm: best_hpwl,
+        final_hpwl_mm: final_hpwl,
         global: global_report,
         initial_congestion,
-        final_congestion: best_congestion,
+        final_congestion,
         iterations: opts.max_iterations,
         accepted,
         moved,
         skipped,
     })
+}
+
+/// Pull small multi-pin passives toward the centroid of non-passive pads
+/// on the same nets. Skips edge-mounted parts and anything with more than
+/// 4 pads (ICs / connectors stay where SA left them).
+fn pull_passives_to_anchors(
+    board: &mut Board,
+    movable_ids: &[Id],
+    outline: Rect,
+    margins: &MarginMap,
+    opts: &PlaceOptions,
+) {
+    let movable_set: std::collections::HashSet<Id> = movable_ids.iter().copied().collect();
+    let hard_clearance = opts.min_clearance_mm.max(opts.solder_gap_mm);
+
+    // Snapshot passive candidates first (refs + nets) so we don't borrow
+    // board while mutating.
+    let mut candidates: Vec<(Id, Vec<String>)> = Vec::new();
+    for id in movable_ids {
+        let Some(fp) = board.footprints.get(id) else {
+            continue;
+        };
+        if fp.edge_mounted || fp.pads.len() > 4 || fp.pads.len() < 2 {
+            continue;
+        }
+        let nets: Vec<String> = fp
+            .pads
+            .iter()
+            .filter_map(|p| p.net.clone())
+            .collect();
+        if nets.is_empty() {
+            continue;
+        }
+        candidates.push((*id, nets));
+    }
+
+    for (id, nets) in candidates {
+        // Anchor pads: prefer FIXED / multi-pin footprints (ICs), not
+        // other passives that would just chase each other.
+        let mut ax = 0.0_f64;
+        let mut ay = 0.0_f64;
+        let mut n = 0.0_f64;
+        for fp in board.footprints_in_order() {
+            if fp.id == id {
+                continue;
+            }
+            let is_passive = movable_set.contains(&fp.id) && fp.pads.len() <= 4;
+            if is_passive {
+                continue;
+            }
+            for pad in &fp.pads {
+                let Some(net) = pad.net.as_deref() else {
+                    continue;
+                };
+                if !nets.iter().any(|n| n == net) {
+                    continue;
+                }
+                let c = fp.pad_world_center(pad);
+                ax += c.x.to_mm();
+                ay += c.y.to_mm();
+                n += 1.0;
+            }
+        }
+        if n < 1.0 {
+            continue;
+        }
+        let target = Point::new(Length::from_mm(ax / n), Length::from_mm(ay / n));
+
+        // Try the target, then a few radial offsets if the exact spot is
+        // blocked (common next to a dense QFN pad ring).
+        let offsets: [(f64, f64); 9] = [
+            (0.0, 0.0),
+            (1.5, 0.0),
+            (-1.5, 0.0),
+            (0.0, 1.5),
+            (0.0, -1.5),
+            (1.2, 1.2),
+            (1.2, -1.2),
+            (-1.2, 1.2),
+            (-1.2, -1.2),
+        ];
+        let original = board.footprints.get(&id).map(|f| f.position);
+        let Some(original) = original else {
+            continue;
+        };
+        for (dx, dy) in offsets {
+            let candidate = Point::new(
+                Length::from_mm(target.x.to_mm() + dx),
+                Length::from_mm(target.y.to_mm() + dy),
+            );
+            // Apply tentatively.
+            if let Some(fp) = board.footprints.get_mut(&id) {
+                fp.position = candidate;
+            }
+            let Some(probe) = board.footprints.get(&id).cloned() else {
+                continue;
+            };
+            if !pads_inside_outline(&probe, outline, opts.edge_clearance_mm) {
+                if let Some(fp) = board.footprints.get_mut(&id) {
+                    fp.position = original;
+                }
+                continue;
+            }
+            let margin = margin_for_fp(&probe, margins);
+            if board.body_outline_violation(&probe, margin).is_some() {
+                if let Some(fp) = board.footprints.get_mut(&id) {
+                    fp.position = original;
+                }
+                continue;
+            }
+            let gap = probe_min_gap(board, &probe, margins);
+            if gap < hard_clearance {
+                if let Some(fp) = board.footprints.get_mut(&id) {
+                    fp.position = original;
+                }
+                continue;
+            }
+            if board.edge_mount_violation(&probe).is_some() {
+                if let Some(fp) = board.footprints.get_mut(&id) {
+                    fp.position = original;
+                }
+                continue;
+            }
+            // Accepted — leave position as candidate.
+            break;
+        }
+    }
 }
 
 /// Sum of **raw** (unweighted) HPWL across every multi-pad net, mm —

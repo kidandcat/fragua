@@ -278,6 +278,10 @@ pub fn compact(
         organic_fillet_mm: 3.0,
         initial_net_order: None,
         heuristic_weight: 1.0,
+        // Compaction probes many candidates — keep each route bounded so
+        // a single bad candidate cannot burn the whole time budget.
+        max_seconds: Some(30.0),
+        on_progress: None,
     };
     let base_min_gap = opts
         .min_gap_mm

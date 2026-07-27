@@ -23,6 +23,7 @@
 //! pass is never worse than the fanout it replaces.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use pcb_core::{Board, CopperLayer, Id, Length, Point, Rect, Trace, Via};
 
@@ -101,12 +102,19 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
         fanout: FanoutPlan::default(),
         stubs: Vec::new(),
     };
-    if board.stackup.layer_count() < 3 {
+    if board.stackup.layer_count() < 2 {
         return plan;
     }
-    // Too coarse a coarse-grid for the localized escape to pay off — use
-    // the plain fanout (which the coarse router handles fine at this pitch).
-    if opts.cell.to_mm() > FINE_ESCAPE_MAX_CELL_MM {
+    // Fine-grid stub escape was designed for multi-layer stackups where the
+    // breakout via lands on a roomy inner plane. On 2-layer boards the same
+    // path walls off the top surface with stubs and still has only Bottom as
+    // an escape layer — the cheaper VIP/dogbone fanout (below) does that
+    // without the fine-grid cost. Use fine escape only when:
+    //   • ≥3 copper layers, AND
+    //   • the coarse cell is fine enough (≤ FINE_ESCAPE_MAX_CELL_MM).
+    // Otherwise fall through to plan_fanout, which now also runs on 2-layer
+    // and places dogbone vias for pads too small for via-in-pad.
+    if board.stackup.layer_count() < 3 || opts.cell.to_mm() > FINE_ESCAPE_MAX_CELL_MM {
         plan.fanout = fanout::plan_fanout(board, opts);
         return plan;
     }
@@ -126,8 +134,17 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
     // via-fit test) respect them.
     let mut work = board.clone();
     let mut accepted: Vec<Escape> = Vec::new();
+    // Soft budget for the escape pre-pass: keep ~20% of the overall route
+    // budget for the coarse RR&R loop. Without this, a 56-pad QFN can burn
+    // the whole max_seconds in fine-grid stub A* before any coarse route runs.
+    let escape_deadline = opts.max_seconds.filter(|s| *s > 0.0 && s.is_finite()).map(|s| {
+        Instant::now() + std::time::Duration::from_secs_f64((s * 0.25).clamp(5.0, 45.0))
+    });
 
     for fp in board.footprints_in_order() {
+        if escape_deadline.is_some_and(|d| Instant::now() >= d) {
+            break;
+        }
         let (fp_cx, fp_cy) = footprint_centroid(fp);
 
         // Which of this footprint's pads need to escape (same rule as the
@@ -249,6 +266,9 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
         // the fan grows monotonically and stubs don't cross).
         infos.sort_by(|a, b| a.perp_coord.partial_cmp(&b.perp_coord).unwrap());
         for info in &infos {
+            if escape_deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
             let t = &targets[info.idx];
             let want_perp = fan_target[&info.idx];
             // Every flagged pin (signal AND power) escapes via the stub:

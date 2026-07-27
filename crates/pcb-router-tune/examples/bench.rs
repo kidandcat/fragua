@@ -167,8 +167,10 @@ fn main() {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0),
-        // Localized fine-grid escape (Level 2). On by default in the bench;
-        // set FINE_ESCAPE=0 to compare against the plain via-in-pad fanout.
+        // Unlimited for bench (we want wall-clock of a full route, not a
+        // soft budget abort).
+        max_seconds: None,
+        on_progress: None,
     };
 
     let t0 = std::time::Instant::now();

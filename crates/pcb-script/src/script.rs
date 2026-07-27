@@ -1285,7 +1285,8 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
         }),
 
         "route" => {
-            // optional kv: trace_width, clearance, via_drill, via_diameter, via_cost, cell, order
+            // optional kv: trace_width, clearance, via_drill, via_diameter, via_cost, cell, order,
+            // max_seconds
             let mut args = json!({});
             apply_kv(
                 &mut args,
@@ -1302,6 +1303,7 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     ("organic", AttrType::BoolInto("organic")),
                     ("fillet", AttrType::NumInto("organic_fillet_mm")),
                     ("engine", AttrType::Str),
+                    ("max_seconds", AttrType::Num),
                 ],
             )?;
             Ok(Cmd {
