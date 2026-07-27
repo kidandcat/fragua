@@ -150,6 +150,13 @@ pub(crate) enum Shape {
 pub(crate) struct Obstacle {
     pub(crate) shape: Shape,
     pub(crate) clearance_mm: f64,
+    /// True when `clearance_mm` came from a rule area covering this
+    /// copper: an ABSOLUTE requirement that replaces the chain's own
+    /// class clearance instead of being maxed with it. That is what
+    /// lets the smoothing pass keep the tight geometry a fine-pitch
+    /// escape zone legalised, instead of unwinding it to the board
+    /// default.
+    pub(crate) absolute: bool,
     /// Net owning the copper, when it has one — the topo engine's
     /// targeted rip-up wants to know WHO is in the way.
     pub(crate) net: Option<String>,
@@ -162,6 +169,18 @@ pub(crate) struct Obstacles {
     /// Outline shrink for the centreline: half-width + edge clearance.
     pub(crate) outline_min: P2,
     pub(crate) outline_max: P2,
+}
+
+impl Obstacle {
+    /// Clearance this obstacle demands from a chain whose own class
+    /// clearance is `clr`.
+    pub(crate) fn required(&self, clr: f64) -> f64 {
+        if self.absolute {
+            self.clearance_mm
+        } else {
+            clr.max(self.clearance_mm)
+        }
+    }
 }
 
 impl Obstacles {
@@ -180,7 +199,7 @@ impl Obstacles {
                 }
             }
             for ob in &self.items {
-                let need = hw + clr.max(ob.clearance_mm);
+                let need = hw + ob.required(clr);
                 let (d, what) = match &ob.shape {
                     Shape::Rect { min, max } => (
                         seg_rect_dist(a, b, *min, *max),
@@ -222,7 +241,7 @@ impl Obstacles {
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             for ob in &self.items {
-                let need = hw + clr.max(ob.clearance_mm);
+                let need = hw + ob.required(clr);
                 let d = match &ob.shape {
                     Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
                     Shape::Capsule {
@@ -258,7 +277,7 @@ impl Obstacles {
                 }
             }
             for ob in &self.items {
-                let need = hw + clr.max(ob.clearance_mm);
+                let need = hw + ob.required(clr);
                 let d = match &ob.shape {
                     Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
                     Shape::Capsule {
@@ -318,14 +337,30 @@ where
         }
     }
 
+    // Shared rule resolver so the smoothing pass judges clearance the
+    // same way the grid search and DRC do — including rule areas.
+    let areas = board.rule_areas.clone();
+    let schematic = route_opts.schematic.clone();
+    let resolver = pcb_core::RuleResolver::new(
+        &areas,
+        pcb_core::RuleDefaults {
+            clearance: route_opts.clearance,
+            trace_width: route_opts.trace_width,
+            via_diameter: route_opts.via_diameter,
+            via_drill: route_opts.via_drill,
+        },
+    )
+    .with_schematic(schematic.as_deref());
+
     for net in &nets {
         let (width, clearance) = rules(route_opts, net);
         let hw = width.to_mm() / 2.0;
         let clr = clearance.to_mm();
 
         for layer in [CopperLayer::Top, CopperLayer::Bottom] {
-            let obstacles =
-                collect_obstacles(board, net, layer, route_opts, &rules, hw, clr, outline);
+            let obstacles = collect_obstacles(
+                board, net, layer, route_opts, &rules, hw, clr, outline, &resolver,
+            );
             let chains = extract_chains(board, net, layer);
             for chain in chains {
                 report.chains += 1;
@@ -360,11 +395,15 @@ pub(crate) fn collect_obstacles<F>(
     hw: f64,
     clr: f64,
     outline: pcb_core::Rect,
+    resolver: &pcb_core::RuleResolver<'_>,
 ) -> Obstacles
 where
     F: Fn(&RouteOptions, &str) -> (Length, Length),
 {
     let mut items: Vec<Obstacle> = Vec::new();
+    // A rule area covering the obstacle overrides the class rule there.
+    let area_at =
+        |p: Point| -> Option<f64> { resolver.area_clearance(p, Some(layer)).map(|l| l.to_mm()) };
     // Cache per-net rule lookups; boards have few distinct nets.
     let mut rule_cache: HashMap<String, (f64, f64)> = HashMap::new();
     let mut rules_of = |n: &str| -> (f64, f64) {
@@ -388,7 +427,9 @@ where
             }
             let c = fp.pad_world_center(pad);
             let (w, h) = fp.pad_world_size(pad);
-            let clearance_mm = pad.net.as_deref().map_or(clr, |n| rules_of(n).1);
+            let area = area_at(c);
+            let clearance_mm =
+                area.unwrap_or_else(|| pad.net.as_deref().map_or(clr, |n| rules_of(n).1));
             let cm = to_mm(c);
             items.push(Obstacle {
                 shape: Shape::Rect {
@@ -396,6 +437,7 @@ where
                     max: [cm[0] + w.to_mm() / 2.0, cm[1] + h.to_mm() / 2.0],
                 },
                 clearance_mm,
+                absolute: area.is_some(),
                 net: None, // pads are immovable — never rip-up targets
             });
         }
@@ -405,13 +447,19 @@ where
             continue;
         }
         let (w_o, c_o) = rules_of(&t.net);
+        let mid = Point::new(
+            Length((t.start.x.0 + t.end.x.0) / 2),
+            Length((t.start.y.0 + t.end.y.0) / 2),
+        );
+        let area = area_at(mid);
         items.push(Obstacle {
             shape: Shape::Capsule {
                 a: to_mm(t.start),
                 b: to_mm(t.end),
                 half_w: w_o / 2.0,
             },
-            clearance_mm: c_o,
+            clearance_mm: area.unwrap_or(c_o),
+            absolute: area.is_some(),
             net: Some(t.net.clone()),
         });
     }
@@ -420,12 +468,14 @@ where
             continue;
         }
         let c_o = rules_of(&v.net).1;
+        let area = area_at(v.position);
         items.push(Obstacle {
             shape: Shape::Circle {
                 c: to_mm(v.position),
                 r: v.diameter.to_mm() / 2.0,
             },
-            clearance_mm: c_o,
+            clearance_mm: area.unwrap_or(c_o),
+            absolute: area.is_some(),
             net: Some(v.net.clone()),
         });
     }
@@ -745,6 +795,7 @@ mod tests {
                 max: [6.0, 2.0],
             },
             clearance_mm: 0.2,
+            absolute: false,
             net: None,
         });
         let out = string_pull(&pts, &obs, 0.125, 0.2);

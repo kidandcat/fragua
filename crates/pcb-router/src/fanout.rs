@@ -17,9 +17,99 @@
 
 use std::collections::{HashMap, HashSet};
 
-use pcb_core::{Board, CopperLayer, Id, Length, Point, Trace, Via};
+use pcb_core::{Board, CopperLayer, Id, Length, Point, RuleResolver, Trace, Via};
 
 use crate::router::RouteOptions;
+
+/// The rules in force at ONE pad, resolved through the shared
+/// `RuleResolver` (see `pcb_core::rules`).
+///
+/// A fine-pitch escape zone is exactly where a fab-legal design uses a
+/// tighter clearance and a smaller barrel, so every geometric test in
+/// this pass asks here instead of reading a single global number. When a
+/// rule area covers the pad its clearance is ABSOLUTE (same gap to every
+/// foreign net); outside one, the gap is the pairwise rule — the
+/// strictest of the two nets' classes.
+pub(crate) struct PadRules<'a> {
+    resolver: Option<&'a RuleResolver<'a>>,
+    net: &'a str,
+    /// `Some` when a rule area covers this pad: an absolute override.
+    fixed: Option<f64>,
+    /// Clearance against copper carrying no net / an unknown net.
+    base: f64,
+    /// Via geometry to use for a barrel dropped at this pad.
+    pub via_diameter: f64,
+    pub via_drill: f64,
+    /// Narrowest copper the pad → via stub may use here.
+    pub min_stub_width: f64,
+}
+
+impl<'a> PadRules<'a> {
+    /// Single global clearance, no areas — what callers with no rule
+    /// context (fine-grid escape, tests) get.
+    pub(crate) fn uniform(clearance: f64) -> Self {
+        Self {
+            resolver: None,
+            net: "",
+            fixed: Some(clearance),
+            base: clearance,
+            via_diameter: FANOUT_VIA_DIAMETER_MM,
+            via_drill: FANOUT_VIA_DRILL_MM,
+            min_stub_width: STUB_MIN_WIDTH_MM,
+        }
+    }
+
+    /// Rules at `at` for a pad on `net`.
+    pub(crate) fn at_pad(
+        resolver: &'a RuleResolver<'a>,
+        net: &'a str,
+        at: Point,
+        layer: CopperLayer,
+        fab: Option<&pcb_core::FabRules>,
+    ) -> Self {
+        let layer = Some(layer);
+        let fixed = resolver.area_clearance(at, layer).map(|l| l.to_mm());
+        // Smallest via that is legal here: an area override wins, else
+        // the fab's floor (a 0.30/0.15 barrel is below JLCPCB's standard
+        // tier, so a board that adopted a preset must not fan out with
+        // one), else the historical minimum.
+        let fab_dia = fab.map_or(0.0, |f| f.min_via_diameter_mm);
+        let fab_drill = fab.map_or(0.0, |f| f.min_via_drill_mm);
+        let via_diameter = resolver
+            .area_via_diameter(at, layer)
+            .map_or_else(|| FANOUT_VIA_DIAMETER_MM.max(fab_dia), |l| l.to_mm());
+        let via_drill = resolver
+            .area_via_drill(at, layer)
+            .map_or_else(|| FANOUT_VIA_DRILL_MM.max(fab_drill), |l| l.to_mm());
+        let min_stub_width = resolver
+            .area_trace_width(at, layer)
+            .map_or(STUB_MIN_WIDTH_MM, |l| l.to_mm());
+        Self {
+            resolver: Some(resolver),
+            net,
+            fixed,
+            base: resolver.pair_clearance(Some(net), None).to_mm(),
+            via_diameter,
+            via_drill,
+            min_stub_width,
+        }
+    }
+
+    /// Required clearance to copper belonging to `other`.
+    pub(crate) fn to(&self, other: Option<&str>) -> f64 {
+        match (self.fixed, self.resolver) {
+            (Some(c), _) => c,
+            (None, Some(r)) => r.pair_clearance(Some(self.net), other).to_mm(),
+            (None, None) => self.base,
+        }
+    }
+
+    /// Clearance to use when the other net is not known yet (ray probes,
+    /// via-to-via spacing ladders).
+    pub(crate) fn base(&self) -> f64 {
+        self.fixed.unwrap_or(self.base)
+    }
+}
 
 /// JLCPCB minimum via — 0.30 mm pad, 0.15 mm drill. Small enough to sit
 /// centred in a 0.30 mm-wide, 0.5 mm-pitch pad and still clear the
@@ -59,7 +149,11 @@ const DOGBONE_RANKS: usize = 3;
 /// The stub is real copper, so it must clear the neighbouring pins; on a
 /// 0.4 mm-pitch QFN only the narrow end of this list survives validation.
 /// Everything here is ≥ the DRC's 0.1 mm minimum trace width.
-const STUB_WIDTHS_MM: [f64; 4] = [0.25, 0.20, 0.15, 0.12];
+const STUB_WIDTHS_MM: [f64; 5] = [0.25, 0.20, 0.15, 0.12, 0.10];
+
+/// Narrowest stub allowed without a rule area saying otherwise — the
+/// DRC's own default minimum trace width.
+const STUB_MIN_WIDTH_MM: f64 = 0.12;
 
 /// Result of the fanout pass.
 #[derive(Debug, Default, Clone)]
@@ -177,9 +271,8 @@ pub(crate) fn can_escape_surface(
     net: &str,
     foreign: &[&PadRect],
     tw: f64,
-    clearance: f64,
+    rules: &PadRules<'_>,
 ) -> bool {
-    let need = tw / 2.0 + clearance;
     let dirs = [
         (1.0, 0.0),
         (-1.0, 0.0),
@@ -203,7 +296,7 @@ pub(crate) fn can_escape_surface(
                 if r.net.as_deref() == Some(net) {
                     continue;
                 }
-                if point_rect_dist(px, py, r) < need {
+                if point_rect_dist(px, py, r) < tw / 2.0 + rules.to(r.net.as_deref()) {
                     blocked = true;
                     break;
                 }
@@ -228,16 +321,15 @@ pub(crate) fn fanout_via_fits(
     cy: f64,
     net: &str,
     via_r: f64,
-    clearance: f64,
+    rules: &PadRules<'_>,
     foreign: &[&PadRect],
     board: &Board,
 ) -> bool {
-    let need = via_r + clearance;
     for r in foreign {
         if r.net.as_deref() == Some(net) {
             continue;
         }
-        if point_rect_dist(cx, cy, r) < need - 1e-9 {
+        if point_rect_dist(cx, cy, r) < via_r + rules.to(r.net.as_deref()) - 1e-9 {
             return false;
         }
     }
@@ -245,7 +337,7 @@ pub(crate) fn fanout_via_fits(
         let dx = cx - v.position.x.to_mm();
         let dy = cy - v.position.y.to_mm();
         let other_r = v.diameter.to_mm() / 2.0;
-        if (dx * dx + dy * dy).sqrt() < via_r + other_r + clearance - 1e-9 {
+        if (dx * dx + dy * dy).sqrt() < via_r + other_r + rules.to(Some(v.net.as_str())) - 1e-9 {
             return false;
         }
     }
@@ -282,7 +374,7 @@ pub(crate) fn pick_via_position(
     fp_cy: f64,
     net: &str,
     via_r: f64,
-    clearance: f64,
+    rules: &PadRules<'_>,
     foreign: &[&PadRect],
     work: &Board,
 ) -> Option<(f64, f64)> {
@@ -320,7 +412,7 @@ pub(crate) fn pick_via_position(
     let fanout_via_centers: Vec<(f64, f64)> = work
         .vias
         .iter()
-        .filter(|v| (v.diameter.to_mm() - FANOUT_VIA_DIAMETER_MM).abs() < 1e-6)
+        .filter(|v| (v.diameter.to_mm() - rules.via_diameter).abs() < 1e-6)
         .map(|v| (v.position.x.to_mm(), v.position.y.to_mm()))
         .collect();
 
@@ -331,7 +423,7 @@ pub(crate) fn pick_via_position(
         }
         let vx = cx + dx * off;
         let vy = cy + dy * off;
-        if !fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
+        if !fanout_via_fits(vx, vy, net, via_r, rules, foreign, work) {
             continue;
         }
         let score = fanout_via_centers
@@ -380,11 +472,11 @@ pub(crate) fn plan_footprint(
     foreign: &[&PadRect],
     work: &mut Board,
     opts: &RouteOptions,
+    resolver: &RuleResolver<'_>,
+    fab: Option<&pcb_core::FabRules>,
 ) -> FanoutPlan {
     let mut plan = FanoutPlan::default();
     let tw = opts.trace_width.to_mm();
-    let clearance = opts.clearance.to_mm();
-    let via_r = FANOUT_VIA_DIAMETER_MM / 2.0;
     {
         // Footprint centre (pad centroid) — the interior reference the via
         // staggering slides toward, so escapes head into the part's central
@@ -438,6 +530,11 @@ pub(crate) fn plan_footprint(
             let (w, h) = fp.pad_world_size(pad);
             let (cx, cy) = (c.x.to_mm(), c.y.to_mm());
             let (hw, hh) = (w.to_mm() / 2.0, h.to_mm() / 2.0);
+            // Rules AT THIS PAD: a fine-pitch rule area gives a tighter
+            // clearance and (typically) a smaller barrel exactly where
+            // the escape is impossible at board-default rules.
+            let rules = PadRules::at_pad(resolver, net, c, pad.layer, fab);
+            let via_r = rules.via_diameter / 2.0;
             // Count foreign-net pads crowding this one.
             let neighbours = foreign
                 .iter()
@@ -447,7 +544,7 @@ pub(crate) fn plan_footprint(
             let in_cluster = neighbours >= CLUSTER_NEIGHBOURS;
             // Fan out if the pad is in a fine-pitch cluster (parallel
             // escape impossible) OR simply can't escape in any direction.
-            if !in_cluster && can_escape_surface(cx, cy, hw, hh, net, foreign, tw, clearance) {
+            if !in_cluster && can_escape_surface(cx, cy, hw, hh, net, foreign, tw, &rules) {
                 continue;
             }
             // Pick the via-in-pad position. A via-in-pad may sit anywhere
@@ -460,7 +557,7 @@ pub(crate) fn plan_footprint(
             // pins fail to land. Staggering adjacent pins to opposite ends of
             // their pads opens a clear approach lane down the pad's long axis.
             let vip = pick_via_position(
-                cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, clearance, foreign, work,
+                cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, &rules, foreign, work,
             );
             // Dogbone fallback: pad too small for a true via-in-pad
             // (typical 0.4 mm-pitch QFN pads are ~0.20 mm wide — a
@@ -482,12 +579,12 @@ pub(crate) fn plan_footprint(
                     // barrel and then discovering its stub is boxed in.
                     let max_stub_w = tw.min(2.0 * hw.min(hh));
                     dogbone_via_candidates(
-                        cx, cy, hw, hh, dirx, diry, rank, net, via_r, clearance, foreign, work,
+                        cx, cy, hw, hh, dirx, diry, rank, net, via_r, &rules, foreign, work,
                     )
                     .into_iter()
                     .find_map(|(vx, vy)| {
                         dogbone_stub(
-                            pad.layer, cx, cy, vx, vy, net, max_stub_w, clearance, foreign, work,
+                            pad.layer, cx, cy, vx, vy, net, max_stub_w, &rules, foreign, work,
                         )
                         .map(|t| {
                             stub = Some(t);
@@ -505,8 +602,8 @@ pub(crate) fn plan_footprint(
             let via = Via {
                 id: Id::new(),
                 position: via_pos,
-                drill: Length::from_mm(FANOUT_VIA_DRILL_MM),
-                diameter: Length::from_mm(FANOUT_VIA_DIAMETER_MM),
+                drill: Length::from_mm(rules.via_drill),
+                diameter: Length::from_mm(rules.via_diameter),
                 net: net.to_string(),
             };
             work.vias.push(via.clone());
@@ -571,7 +668,7 @@ pub(crate) fn dogbone_via_candidates(
     rank: usize,
     net: &str,
     via_r: f64,
-    clearance: f64,
+    rules: &PadRules<'_>,
     foreign: &[&PadRect],
     work: &Board,
 ) -> Vec<(f64, f64)> {
@@ -590,7 +687,7 @@ pub(crate) fn dogbone_via_candidates(
     let pad_extent = (dx.abs() * hw + dy.abs() * hh).max(hw.min(hh));
     let base = pad_extent + via_r + 0.05;
     // One rank step must separate two barrels end-to-end.
-    let step = 2.0 * via_r + clearance;
+    let step = 2.0 * via_r + rules.base();
     let slot = rank % DOGBONE_RANKS;
     // Preferred depth first (this pad's rank), then the other rank slots,
     // then fine adjustments — a blocked first choice still has options but
@@ -615,7 +712,7 @@ pub(crate) fn dogbone_via_candidates(
         }
         let vx = cx + dx * dist;
         let vy = cy + dy * dist;
-        if fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
+        if fanout_via_fits(vx, vy, net, via_r, rules, foreign, work) {
             out.push((vx, vy));
         }
     }
@@ -624,10 +721,10 @@ pub(crate) fn dogbone_via_candidates(
     let (px, py) = (-dy, dx);
     for dist in [base, base + step, base + 2.0 * step] {
         for perp_sign in [1.0_f64, -1.0] {
-            let nudge = perp_sign * (via_r + clearance * 0.5);
+            let nudge = perp_sign * (via_r + rules.base() * 0.5);
             let vx = cx + dx * dist + px * nudge;
             let vy = cy + dy * dist + py * nudge;
-            if fanout_via_fits(vx, vy, net, via_r, clearance, foreign, work) {
+            if fanout_via_fits(vx, vy, net, via_r, rules, foreign, work) {
                 out.push((vx, vy));
             }
         }
@@ -652,22 +749,21 @@ pub(crate) fn dogbone_stub(
     vy: f64,
     net: &str,
     max_width: f64,
-    clearance: f64,
+    rules: &PadRules<'_>,
     foreign: &[&PadRect],
     work: &Board,
 ) -> Option<Trace> {
     for &w in &STUB_WIDTHS_MM {
-        if w > max_width + 1e-9 {
+        if w > max_width + 1e-9 || w + 1e-9 < rules.min_stub_width {
             continue;
         }
         let half = w / 2.0;
-        let need = half + clearance;
         let mut ok = true;
         for r in foreign {
             if r.net.as_deref() == Some(net) {
                 continue;
             }
-            if seg_rect_dist(cx, cy, vx, vy, r) < need - 1e-9 {
+            if seg_rect_dist(cx, cy, vx, vy, r) < half + rules.to(r.net.as_deref()) - 1e-9 {
                 ok = false;
                 break;
             }
@@ -680,7 +776,7 @@ pub(crate) fn dogbone_stub(
                 continue;
             }
             let d = point_seg_dist(v.position.x.to_mm(), v.position.y.to_mm(), cx, cy, vx, vy);
-            if d < half + v.diameter.to_mm() / 2.0 + clearance - 1e-9 {
+            if d < half + v.diameter.to_mm() / 2.0 + rules.to(Some(v.net.as_str())) - 1e-9 {
                 ok = false;
                 break;
             }
@@ -698,7 +794,7 @@ pub(crate) fn dogbone_stub(
                 .min(point_seg_dist(tbx, tby, cx, cy, vx, vy))
                 .min(point_seg_dist(cx, cy, tax, tay, tbx, tby))
                 .min(point_seg_dist(vx, vy, tax, tay, tbx, tby));
-            if d < half + t.width.to_mm() / 2.0 + clearance - 1e-9 {
+            if d < half + t.width.to_mm() / 2.0 + rules.to(Some(t.net.as_str())) - 1e-9 {
                 ok = false;
                 break;
             }

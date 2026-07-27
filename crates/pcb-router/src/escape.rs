@@ -122,6 +122,20 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
     let tw = opts.trace_width.to_mm();
     let clearance = opts.clearance.to_mm();
     let via_r = FANOUT_VIA_DIAMETER_MM / 2.0;
+    // Shared rule resolver: the fanout has to agree with the router's
+    // grid and with DRC about what "clear" means, so it goes through the
+    // same `pcb_core::RuleResolver` (rule areas + net classes).
+    let resolver = pcb_core::RuleResolver::new(
+        &board.rule_areas,
+        pcb_core::RuleDefaults {
+            clearance: opts.clearance,
+            trace_width: opts.trace_width,
+            via_diameter: opts.via_diameter,
+            via_drill: opts.via_drill,
+        },
+    )
+    .with_schematic(opts.schematic.as_deref());
+    let fab = board.fab_rules.as_ref();
 
     // Local net-id map: every net gets a stable id so the fine grid's
     // clearance model treats foreign copper as foreign. No-net pads stamp
@@ -161,7 +175,7 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
         // Baseline: the proven VIP + dogbone fanout for this footprint,
         // planned against the copper committed so far. Cheap (no search).
         let mut base_work = work.clone();
-        let base = fanout::plan_footprint(fp, &foreign, &mut base_work, opts);
+        let base = fanout::plan_footprint(fp, &foreign, &mut base_work, opts, &resolver, fab);
         if !fine_allowed || escape_deadline.is_some_and(|d| Instant::now() >= d) {
             fanout::merge_plan(&mut plan.fanout, base);
             work = base_work;
@@ -284,7 +298,16 @@ fn fine_escape_footprint(
                     .any(|r| fanout::point_rect_dist(cx, cy, r) < POWER_NEIGHBOUR_MM);
             if !in_cluster
                 && !power_crowded
-                && fanout::can_escape_surface(cx, cy, hw, hh, net, foreign, tw, clearance)
+                && fanout::can_escape_surface(
+                    cx,
+                    cy,
+                    hw,
+                    hh,
+                    net,
+                    foreign,
+                    tw,
+                    &fanout::PadRules::uniform(clearance),
+                )
             {
                 continue;
             }
@@ -448,7 +471,17 @@ fn fine_escape_footprint(
                 // Fall back to the staggered via-in-pad (legacy fanout
                 // behaviour) — never worse than before.
                 if let Some((vx, vy)) = fanout::pick_via_position(
-                    t.cx, t.cy, t.hw, t.hh, fp_cx, fp_cy, &t.net, via_r, clearance, foreign, work,
+                    t.cx,
+                    t.cy,
+                    t.hw,
+                    t.hh,
+                    fp_cx,
+                    fp_cy,
+                    &t.net,
+                    via_r,
+                    &fanout::PadRules::uniform(clearance),
+                    foreign,
+                    work,
                 ) {
                     let pos = Point::new(Length::from_mm(vx), Length::from_mm(vy));
                     let via = Via {
@@ -514,7 +547,10 @@ fn route_one(
     // exact-geometry validator.
     let cell = FINE_CELL_MM;
     let clr_cells = (((clearance + width / 2.0) / cell).floor() as i32).max(1);
-    let via_safe = 1;
+    // Fine-grid escape works on its own local grid with a single
+    // clearance, so a uniform model is exactly right here.
+    let clr_model = crate::grid::ClearanceModel::uniform(clr_cells);
+    let via_model = crate::grid::ClearanceModel::uniform(1);
     let cost_map = grid.new_cost_map();
     let huge_via_cost = 1_000_000u32; // keep the stub planar
 
@@ -538,7 +574,15 @@ fn route_one(
                 let bx = t.cx + dx * depth + px * shift;
                 let by = t.cy + dy * depth + py * shift;
                 // Via must fit (exact) against foreign pads, existing vias, edge.
-                if !fanout::fanout_via_fits(bx, by, &t.net, via_r, clearance, foreign, work) {
+                if !fanout::fanout_via_fits(
+                    bx,
+                    by,
+                    &t.net,
+                    via_r,
+                    &fanout::PadRules::uniform(clearance),
+                    foreign,
+                    work,
+                ) {
                     continue;
                 }
                 // One pad can try dir × depth × perp-nudge = up to 40 fine-grid
@@ -562,8 +606,8 @@ fn route_one(
                     target_id,
                     huge_via_cost,
                     target,
-                    via_safe,
-                    clr_cells,
+                    Some(&via_model),
+                    &clr_model,
                     &cost_map,
                     &[],
                     1.0,

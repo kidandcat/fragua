@@ -138,7 +138,9 @@ fn tiny_pad_gets_a_dogbone_via_outside_its_copper() {
     let via_r = 0.15;
     let mut checked = 0;
     for p in &u1.pads {
-        let Some(net) = p.net.as_deref() else { continue };
+        let Some(net) = p.net.as_deref() else {
+            continue;
+        };
         if net == "GND" {
             continue;
         }
@@ -214,7 +216,10 @@ fn qfn56_routes_real_copper_inside_the_budget() {
     let report = route(&mut board, &opts);
     let elapsed = t0.elapsed().as_secs_f64();
 
-    assert!(elapsed < 120.0, "route took {elapsed:.1}s with a 60 s budget");
+    assert!(
+        elapsed < 120.0,
+        "route took {elapsed:.1}s with a 60 s budget"
+    );
     assert!(
         board.vias.len() >= 10,
         "only {} via(s) on the board: {report:?}",

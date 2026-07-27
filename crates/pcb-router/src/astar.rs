@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
-use crate::grid::{self, Cell, CostMap, Grid, GridPoint};
+use crate::grid::{self, Cell, ClearanceModel, CostMap, Grid, GridPoint};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct Node {
@@ -59,17 +59,20 @@ const DIAG: u32 = 1414;
 /// charge extra for via-in-pad fill, so we'd rather offset.
 const VIA_IN_PAD_PENALTY: u32 = 40 * SCALE;
 
-// `via_safe_radius`: in cells, ceil((via_diameter/2 + clearance) / cell).
-// A via flip is rejected if any foreign-net cell sits within this radius
-// on either layer. Pass 0 to disable the check.
+// `via_model`: the clearance model for a VIA of the searching net —
+// radii built from `via_diameter/2 + required_clearance`. A via flip is
+// rejected if foreign copper sits inside it on ANY layer (the barrel
+// exists on all of them). Pass `None` to skip the via check entirely.
 //
-// `clr_cells`: the searching net's per-trace clearance radius in cells,
-// `ceil((clearance + trace_width/2) / cell)`. A precomputed Euclidean
-// disk of this radius is scanned at every non-via expansion (and along
-// the Theta* LOS shortcut): if any foreign copper sits inside the disk,
-// the move is rejected. Because foreign copper is stamped bare (its own
-// half-width baked into the stamp) and this radius adds clearance plus
-// the searching net's own half-width, centreline-to-centreline ends up at
+// `clr_model`: the searching net's per-trace clearance model. Its radii
+// are `ceil((required_clearance + trace_width/2) / cell)` — and
+// `required_clearance` is resolved PER FOREIGN NET (strictest of the two
+// classes) and PER CELL (a rule area overrides outright), which is what
+// makes a fine-pitch escape zone legal without loosening the rest of the
+// board. Scanned at every non-via expansion and along the Theta* LOS
+// shortcut. Because foreign copper is stamped bare (its own half-width
+// baked into the stamp) and this radius adds clearance plus the searching
+// net's own half-width, centreline-to-centreline ends up at
 // `w_a/2 + w_b/2 + clearance` — exact at any grid pitch.
 //
 // `cost_map` adds per-cell extra bias for negotiated congestion. Raw
@@ -99,8 +102,8 @@ pub fn search(
     target_net: u32,
     via_cost: u32,
     target: GridPoint,
-    via_safe_radius: i32,
-    clr_cells: i32,
+    via_model: Option<&ClearanceModel<'_>>,
+    clr_model: &ClearanceModel<'_>,
     cost_map: &CostMap,
     // Existing trace cells of `target_net` laid so far (the partial
     // tree). Seeded at g=0 so a later spoke branches off the closest
@@ -124,11 +127,6 @@ pub fn search(
     const SEED_FALLBACK_PENALTY: u32 = 24 * SCALE;
 
     let via_scaled = via_cost.saturating_mul(SCALE);
-
-    // Per-trace clearance disk, computed once: the set of cell offsets
-    // within `clr_cells` of any candidate centreline cell that must be
-    // free of foreign copper. Reused for every expansion and LOS check.
-    let disk = grid::disk_offsets(clr_cells);
 
     // Bound the search to the bounding box of {sources, start, target}
     // inflated by a generous margin. A purely local connection (e.g.
@@ -377,8 +375,10 @@ pub fn search(
                             _ => {}
                         }
                     }
-                    if via_safe_radius > 0 && !via_safe(grid, next_p, target_net, via_safe_radius) {
-                        return None;
+                    if let Some(vm) = via_model {
+                        if !grid.via_clearance_ok(next_p, target_net, vm) {
+                            return None;
+                        }
                     }
                     Some(if on_smd_pad { VIA_IN_PAD_PENALTY } else { 0 })
                 });
@@ -397,7 +397,7 @@ pub fn search(
             if !is_via {
                 let own_pad =
                     matches!(cell, Cell::NetPad(n) | Cell::DrilledPad(n) if n == target_net);
-                if !own_pad && !grid.clearance_ok_disk(next_p, target_net, &disk) {
+                if !own_pad && !grid.clearance_ok(next_p, target_net, clr_model) {
                     continue;
                 }
             }
@@ -419,7 +419,7 @@ pub fn search(
             if !is_via {
                 if let Some(&parent) = came_from.get(&p) {
                     if parent.layer == next_p.layer
-                        && grid.line_of_sight(parent, next_p, target_net, &disk)
+                        && grid.line_of_sight(parent, next_p, target_net, clr_model)
                     {
                         let g_parent = *g_score.get(&parent).unwrap_or(&u32::MAX);
                         if g_parent != u32::MAX {
@@ -452,34 +452,6 @@ pub fn search(
         }
     }
     None
-}
-
-/// True if a via at `p` would have foreign-net copper within `radius`
-/// cells on either layer.
-fn via_safe(grid: &Grid, p: GridPoint, target_net: u32, radius: i32) -> bool {
-    let r2 = radius * radius;
-    for layer in 0..grid.layer_count {
-        for dr in -radius..=radius {
-            for dc in -radius..=radius {
-                if dr * dr + dc * dc > r2 {
-                    continue;
-                }
-                let np = GridPoint {
-                    layer,
-                    col: p.col + dc,
-                    row: p.row + dr,
-                };
-                match grid.get(np) {
-                    Cell::Obstacle => return false,
-                    Cell::NetPad(n) | Cell::DrilledPad(n) | Cell::Trace(n) if n != target_net => {
-                        return false;
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    true
 }
 
 #[derive(Copy, Clone)]

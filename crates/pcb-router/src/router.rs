@@ -4,10 +4,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pcb_core::{Board, CopperLayer, Length, Point, Rect, Schematic, Trace, Via};
+use pcb_core::{
+    Board, CopperLayer, Length, Point, Rect, RuleArea, RuleDefaults, RuleResolver, Schematic,
+    Trace, Via,
+};
 
 use crate::astar::{search, Limits};
-use crate::grid::{CostMap, Grid, GridPoint};
+use crate::grid::{AreaField, ClearanceModel, CostMap, Grid, GridPoint};
 
 /// Which search engine lays the copper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,10 +34,20 @@ pub struct RouteOptions {
     /// Default trace width laid down by the router. Per-net entries in
     /// `net_overrides` win when set.
     pub trace_width: Length,
-    /// Default clearance added on every side of pad obstacles. Per-net
-    /// entries in `net_overrides` win when set; the grid is stamped at
-    /// the *max* clearance across all overrides + this default so a
-    /// stricter net's clearance is never undersold.
+    /// The board's DEFAULT copper-to-copper clearance — the floor every
+    /// pair of nets is held to.
+    ///
+    /// The actual gap enforced between two pieces of copper is resolved
+    /// per pair and per location by `pcb_core::RuleResolver`: the
+    /// strictest of this default and either net's class, unless a
+    /// `RuleArea` covering the point overrides it outright. Obstacles are
+    /// stamped BARE (their own copper extent, no clearance halo) and the
+    /// gap is enforced inside the search, so a fine-pitch escape zone is
+    /// genuinely routable at its own rule while the rest of the board
+    /// keeps this one. (Historically the grid inflated everything by the
+    /// max clearance in play and each search only checked its OWN net's
+    /// clearance — a finer class could never route finer, and a finer net
+    /// could hug a stricter neighbour.)
     pub clearance: Length,
     /// Cost of punching a via, expressed as a multiplier on the
     /// per-cell base step. Higher = router prefers single-layer
@@ -261,6 +274,138 @@ pub(crate) fn effective_net_rules(opts: &RouteOptions, net: &str) -> (Length, Le
 /// geometry clearance honest at a coarse grid. (Costs ~1 cell of extra
 /// separation — at cell 0.20 that's 0.20 mm — traded for zero collisions.)
 const CLEARANCE_GUARD_CELLS: i32 = 1;
+
+/// The rule context of one routing pass: the shared resolver plus the
+/// rasterised rule-area field the search consults per cell.
+///
+/// This is what makes per-net clearance HONEST. The old model inflated
+/// nothing and checked only the searching net's own clearance, so a net
+/// could hug a stricter neighbour (under-enforcement), and a rule area
+/// could not be honoured at all. Here every search gets a
+/// [`ClearanceModel`] whose radius depends on **which** foreign net is
+/// found (strictest of the two classes) and on **where** the candidate
+/// cell is (a rule area overrides outright).
+pub(crate) struct RuleCtx<'a> {
+    resolver: RuleResolver<'a>,
+    /// Per-cell area index, `None` when the board declares no
+    /// clearance-bearing area (the overwhelmingly common case — then
+    /// every model is a plain single-radius disk, as before).
+    field: Option<AreaField>,
+    /// Clearance of area `k` (1-based, `[0]` unused), matching `field`.
+    area_clearance: Vec<Length>,
+    /// Net name by net id, so a model can resolve the pair rule.
+    order: &'a [String],
+}
+
+impl<'a> RuleCtx<'a> {
+    /// Build the context for a pass. `areas`/`schematic` are borrowed
+    /// from locals in the caller so the resolver never fights the
+    /// `&mut Board` the pass needs.
+    fn new(
+        areas: &'a [RuleArea],
+        schematic: Option<&'a Schematic>,
+        opts: &RouteOptions,
+        order: &'a [String],
+        grid: &Grid,
+    ) -> Self {
+        let resolver = RuleResolver::new(
+            areas,
+            RuleDefaults {
+                clearance: opts.clearance,
+                trace_width: opts.trace_width,
+                via_diameter: opts.via_diameter,
+                via_drill: opts.via_drill,
+            },
+        )
+        .with_schematic(schematic);
+
+        // Rasterise the clearance-bearing areas, weakest-priority first
+        // so a later stamp (higher priority / smaller area) overwrites.
+        let mut clearance_areas: Vec<&RuleArea> =
+            areas.iter().filter(|a| a.clearance_mm.is_some()).collect();
+        clearance_areas.sort_by_key(|a| (a.priority, -a.area_nm2()));
+        let (field, area_clearance) = if clearance_areas.is_empty() {
+            (None, Vec::new())
+        } else {
+            let mut f = AreaField::new(grid.cols, grid.rows, grid.layer_count);
+            let mut clr = vec![opts.clearance]; // index 0 = "no area"
+            for (i, a) in clearance_areas.iter().enumerate() {
+                let idx = u8::try_from(i + 1).unwrap_or(u8::MAX);
+                let (c0, r0) = grid.cell_of(a.rect.min);
+                let (c1, r1) = grid.cell_of(a.rect.max);
+                let layers: Vec<u8> = a.layers.iter().map(|l| l.index).collect();
+                f.stamp_box(c0, r0, c1, r1, &layers, idx);
+                clr.push(Length::from_mm(a.clearance_mm.unwrap_or(0.0)));
+            }
+            (Some(f), clr)
+        };
+
+        Self {
+            resolver,
+            field,
+            area_clearance,
+            order,
+        }
+    }
+
+    /// Clearance radius in cells for `clearance` against copper whose
+    /// own half-width is already baked into its stamp: the searching
+    /// net's half-width plus the required gap, plus the quantization
+    /// guard.
+    fn radius_cells(clearance: Length, half_width: Length, cell: Length, guard: i32) -> i32 {
+        (ceil_cells(clearance.0 + half_width.0, cell.0) + guard).max(1)
+    }
+
+    fn model(&self, net: &str, half_width: Length, cell: Length, guard: i32) -> ClearanceModel<'_> {
+        let per_net: Vec<i32> = self
+            .order
+            .iter()
+            .map(|other| {
+                let c = self.resolver.pair_clearance(Some(net), Some(other));
+                let r = Self::radius_cells(c, half_width, cell, guard);
+                r * r
+            })
+            .collect();
+        // Copper with no net (NC pads, mounting holes) has no class, so
+        // it demands the searching net's own rule.
+        let other = Self::radius_cells(
+            self.resolver.pair_clearance(Some(net), None),
+            half_width,
+            cell,
+            guard,
+        );
+        let area_r2: Vec<i32> = self
+            .area_clearance
+            .iter()
+            .map(|c| {
+                let r = Self::radius_cells(*c, half_width, cell, guard);
+                r * r
+            })
+            .collect();
+        ClearanceModel::new(per_net, other * other, area_r2, self.field.as_ref())
+    }
+
+    /// Model for a trace of `width` on `net`.
+    pub(crate) fn trace_model(&self, net: &str, width: Length, cell: Length) -> ClearanceModel<'_> {
+        self.model(net, Length(width.0 / 2), cell, CLEARANCE_GUARD_CELLS)
+    }
+
+    /// Model for a via barrel of `net`. Same rule, with the via's copper
+    /// radius in place of the trace's half-width and no quantization
+    /// guard beyond what `radius_cells` already adds.
+    pub(crate) fn via_model(&self, net: &str, cell: Length) -> ClearanceModel<'_> {
+        // No quantization guard: a via is a disk stamped at its own
+        // centre cell, not an any-angle segment that can drift half a
+        // cell off its raster — this matches the historical
+        // `via_safe_radius` exactly.
+        self.model(
+            net,
+            Length(self.resolver.defaults().via_diameter.0 / 2),
+            cell,
+            0,
+        )
+    }
+}
 
 /// Ceil-divide `num_nm` by `cell_nm` on the underlying nm integers,
 /// returning a cell count. Used to size per-net clearance / copper /
@@ -1027,6 +1172,13 @@ fn route_pass(
     let region = compute_region(board, opts);
     let mut grid = Grid::with_layers(region, opts.cell, board.stackup.layer_count());
 
+    // Rule context for the pass. The areas are cloned (a handful of
+    // rects) so the resolver doesn't borrow the board this pass mutates;
+    // the schematic is already behind an Arc.
+    let areas: Vec<RuleArea> = board.rule_areas.clone();
+    let schematic = opts.schematic.clone();
+    let rules = RuleCtx::new(&areas, schematic.as_deref(), opts, order, &grid);
+
     let net_id_lookup = |n: &str| net_id_of.get(n).copied();
     // Layered stamping, broad-to-narrow: bodies block the area each
     // footprint occupies, keepouts block any user-marked region, pads
@@ -1050,10 +1202,18 @@ fn route_pass(
     // exist (only the barrel does), so walling off the full rect there
     // would block the very approach lanes the inner-layer escape needs.
     if !fanout.through_pads.is_empty() {
-        // The fanout via is the JLCPCB-minimum 0.30 mm; its copper radius
-        // in cells, floored at one cell so the landing is always at least
-        // a single reachable DrilledPad cell.
-        let fanout_via_copper_cells = ceil_cells(Length::from_mm(0.15).0, opts.cell.0).max(1);
+        // Copper radius of a fanout barrel, in cells, floored at one so
+        // the landing is always at least a single reachable DrilledPad
+        // cell. The barrel is the smallest via legal where it sits (fab
+        // floor / rule-area override), so read the planned via rather
+        // than assuming the historical 0.30 mm one.
+        let fanout_via_radius = fanout
+            .vias
+            .iter()
+            .map(|v| v.diameter.0 / 2)
+            .max()
+            .unwrap_or(Length::from_mm(0.15).0);
+        let fanout_via_copper_cells = ceil_cells(fanout_via_radius, opts.cell.0).max(1);
         for fp in board.footprints_in_order() {
             for pad in &fp.pads {
                 let key = format!("{}.{}", fp.reference, pad.number);
@@ -1148,6 +1308,7 @@ fn route_pass(
             net_id,
             pad_points,
             opts,
+            &rules,
             cost_map,
             fanout,
             via_copper_cells,
@@ -1174,6 +1335,7 @@ fn route_pass(
                     nets,
                     &net_id_of,
                     opts,
+                    &rules,
                     cost_map,
                     fanout,
                     via_copper_cells,
@@ -1282,6 +1444,7 @@ fn route_one_net(
     net_id: u32,
     pad_points: &[NetPadInfo],
     opts: &RouteOptions,
+    rules: &RuleCtx<'_>,
     cost_map: &CostMap,
     fanout: &crate::fanout::FanoutPlan,
     via_copper_cells: i32,
@@ -1333,6 +1496,7 @@ fn route_one_net(
                 net_trace_width_early,
                 gap_mm,
                 opts,
+                rules,
                 via_copper_cells,
                 cost_map,
                 limits,
@@ -1408,13 +1572,14 @@ fn route_one_net(
 
     // Resolve this net's trace width and clearance: schematic class
     // first, then per-net override, then the global default.
-    let (net_trace_width, net_clearance) = effective_net_rules(opts, net_name);
-    // Via-safety radius is per net (via geometry is fixed; only the
-    // net's clearance varies). A via's copper extends `via_diameter/2`
-    // and must keep `clearance` to foreign copper — whose own
-    // half-width is already baked into its bare stamp, so no extra
-    // term is needed here.
-    let via_safe_radius = ceil_cells(opts.via_diameter.0 / 2 + net_clearance.0, opts.cell.0).max(1);
+    let (net_trace_width, _net_clearance) = effective_net_rules(opts, net_name);
+    // Via clearance model for this net: a via's copper extends
+    // `via_diameter/2` and must keep the required clearance to foreign
+    // copper — whose own half-width is already baked into its bare
+    // stamp, so no extra term is needed here. The required clearance is
+    // now resolved per foreign net and per cell (rule areas), which is
+    // what `via_model` encodes.
+    let via_model = rules.via_model(net_name, opts.cell);
 
     let mut net_segments = 0usize;
     let mut net_vias = 0usize;
@@ -1451,12 +1616,11 @@ fn route_one_net(
         } else {
             net_trace_width
         };
-        // Per-trace clearance + copper radii, from this spoke's
-        // (possibly necked) width. `clr_cells` drives the search-time
-        // clearance disk; `copper_cells` the bare-copper stamp.
-        let clr_cells = (ceil_cells(net_clearance.0 + spoke_width.0 / 2, opts.cell.0)
-            + CLEARANCE_GUARD_CELLS)
-            .max(1);
+        // Per-trace clearance model + copper radius, from this spoke's
+        // (possibly necked) width. The model drives the search-time
+        // clearance test; `copper_cells` the bare-copper stamp.
+        let clr_model = rules.trace_model(net_name, spoke_width, opts.cell);
+        let clr_cells = clr_model.max_radius_cells();
         let copper_cells = ceil_cells(spoke_width.0 / 2, opts.cell.0).max(0);
         let Some(result) = search(
             grid,
@@ -1464,8 +1628,8 @@ fn route_one_net(
             net_id,
             opts.via_cost,
             spoke_grid,
-            via_safe_radius,
-            clr_cells,
+            Some(&via_model),
+            &clr_model,
             cost_map,
             &net_trace_cells,
             opts.heuristic_weight,
@@ -1588,6 +1752,7 @@ fn try_ripup_route(
     nets: &BTreeMap<String, Vec<NetPadInfo>>,
     net_id_of: &HashMap<String, u32>,
     opts: &RouteOptions,
+    rules: &RuleCtx<'_>,
     cost_map: &CostMap,
     fanout: &crate::fanout::FanoutPlan,
     via_copper_cells: i32,
@@ -1642,6 +1807,7 @@ fn try_ripup_route(
             a_id,
             a_pads,
             opts,
+            rules,
             cost_map,
             fanout,
             via_copper_cells,
@@ -1668,6 +1834,7 @@ fn try_ripup_route(
                 rid,
                 r_pads,
                 opts,
+                rules,
                 cost_map,
                 fanout,
                 via_copper_cells,
@@ -1694,6 +1861,7 @@ fn try_ripup_route(
                         nets,
                         net_id_of,
                         opts,
+                        rules,
                         cost_map,
                         fanout,
                         via_copper_cells,
@@ -1738,6 +1906,7 @@ fn try_ripup_route(
         a_id,
         a_pads,
         opts,
+        rules,
         cost_map,
         fanout,
         via_copper_cells,
@@ -2106,6 +2275,7 @@ fn try_diff_pair_follow(
     width_b: Length,
     gap_mm: f64,
     opts: &RouteOptions,
+    rules: &RuleCtx<'_>,
     via_copper_cells: i32,
     cost_map: &crate::grid::CostMap,
     limits: Limits,
@@ -2114,14 +2284,12 @@ fn try_diff_pair_follow(
     if b_pads.len() < 2 {
         return Err("less than 2 pads on follower".into());
     }
-    // Per-trace clearance / copper / via-safe radii for net B, from its
-    // own width and clearance — mirrors the spoke loop in `route_pass`.
+    // Per-trace clearance model / copper radius for net B, from its own
+    // width and clearance — mirrors the spoke loop in `route_pass`.
     let (_, net_b_clearance) = effective_net_rules(opts, net_b);
-    let clr_cells_b =
-        (ceil_cells(net_b_clearance.0 + width_b.0 / 2, opts.cell.0) + CLEARANCE_GUARD_CELLS).max(1);
+    let clr_model_b = rules.trace_model(net_b, width_b, opts.cell);
     let copper_cells_b = ceil_cells(width_b.0 / 2, opts.cell.0).max(0);
-    let via_safe_radius =
-        ceil_cells(opts.via_diameter.0 / 2 + net_b_clearance.0, opts.cell.0).max(1);
+    let via_model_b = rules.via_model(net_b, opts.cell);
     // Pick a layer that the partner actually uses (same layer for both).
     let layer = partner_traces[0].layer;
     if !partner_traces.iter().all(|t| t.layer == layer) {
@@ -2283,8 +2451,8 @@ fn try_diff_pair_follow(
             net_id_b,
             opts.via_cost,
             spoke_grid,
-            via_safe_radius,
-            clr_cells_b,
+            Some(&via_model_b),
+            &clr_model_b,
             cost_map,
             &db_sources,
             opts.heuristic_weight,

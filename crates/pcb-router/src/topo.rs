@@ -661,10 +661,23 @@ impl<'a> TopoEngine<'a> {
     ) -> Obstacles {
         let outline = self.board.outline.expect("engine built with outline");
         let rules = |o: &RouteOptions, n: &str| effective_net_rules(o, n);
+        // Same resolver the grid engine and DRC use, so the topological
+        // validator honours rule areas too.
+        let schematic = self.opts.schematic.clone();
+        let resolver = pcb_core::RuleResolver::new(
+            &self.board.rule_areas,
+            pcb_core::RuleDefaults {
+                clearance: self.opts.clearance,
+                trace_width: self.opts.trace_width,
+                via_diameter: self.opts.via_diameter,
+                via_drill: self.opts.via_drill,
+            },
+        )
+        .with_schematic(schematic.as_deref());
         organic::collect_obstacles(
             self.board, net, layer, self.opts, &rules,
             0.0, // half-width folded in at check time by polyline_clear callers
-            clr, outline,
+            clr, outline, &resolver,
         )
     }
 

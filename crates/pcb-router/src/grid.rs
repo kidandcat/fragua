@@ -38,9 +38,8 @@ pub(crate) fn min_pad_pitch_mm(fp: &Footprint) -> Option<f64> {
     let mut best = f64::INFINITY;
     for i in 0..centres.len() {
         for j in (i + 1)..centres.len() {
-            let d = ((centres[i].0 - centres[j].0).powi(2)
-                + (centres[i].1 - centres[j].1).powi(2))
-            .sqrt();
+            let d = ((centres[i].0 - centres[j].0).powi(2) + (centres[i].1 - centres[j].1).powi(2))
+                .sqrt();
             if d < best {
                 best = d;
             }
@@ -151,6 +150,190 @@ pub(crate) fn disk_offsets(r: i32) -> Vec<(i32, i32)> {
     v
 }
 
+/// Same disk, but carrying each offset's squared cell distance and
+/// sorted by it. Lets a clearance scan stop as soon as it passes the
+/// largest radius any net could demand at that spot.
+pub(crate) fn disk_offsets_sorted(r: i32) -> Vec<(i32, i32, i32)> {
+    let r = r.max(0);
+    let r2 = r * r;
+    let mut v: Vec<(i32, i32, i32)> = Vec::new();
+    for dr in -r..=r {
+        for dc in -r..=r {
+            let d2 = dc * dc + dr * dr;
+            if d2 <= r2 {
+                v.push((dc, dr, d2));
+            }
+        }
+    }
+    v.sort_by_key(|(_, _, d2)| *d2);
+    v
+}
+
+/// Per-cell map of "which clearance-bearing rule area owns this spot",
+/// built once per routing pass. `0` = none; `k` = the k-th clearance
+/// area (1-based) in the router's area list.
+///
+/// Rule areas are resolved POSITIONALLY (see `pcb_core::rules`), so the
+/// search needs the answer per candidate cell, not per net. Storing one
+/// byte per cell keeps that lookup O(1) and the memory a few hundred KB
+/// on a board-sized grid, instead of re-testing every rect per
+/// expansion.
+#[derive(Debug, Clone)]
+pub struct AreaField {
+    cols: i32,
+    rows: i32,
+    layer_count: u8,
+    idx: Vec<u8>,
+}
+
+impl AreaField {
+    /// Empty field (no areas anywhere) sized like `grid`.
+    pub fn new(cols: i32, rows: i32, layer_count: u8) -> Self {
+        Self {
+            cols,
+            rows,
+            layer_count,
+            idx: vec![0; (cols.max(0) * rows.max(0)) as usize * layer_count.max(1) as usize],
+        }
+    }
+
+    /// Mark cells of the inclusive box on `layers` (empty = all) with
+    /// `area_idx`, keeping the HIGHEST index already present only when
+    /// `wins` says the incoming one loses. The router stamps areas in
+    /// resolution order (weakest first), so a plain overwrite is enough.
+    pub fn stamp_box(&mut self, c0: i32, r0: i32, c1: i32, r1: i32, layers: &[u8], area_idx: u8) {
+        let c0 = c0.max(0);
+        let r0 = r0.max(0);
+        let c1 = c1.min(self.cols - 1);
+        let r1 = r1.min(self.rows - 1);
+        if c1 < c0 || r1 < r0 {
+            return;
+        }
+        let stride = (self.cols * self.rows) as usize;
+        for layer in 0..self.layer_count {
+            if !layers.is_empty() && !layers.contains(&layer) {
+                continue;
+            }
+            for r in r0..=r1 {
+                let base = layer as usize * stride + (r * self.cols) as usize;
+                for c in c0..=c1 {
+                    self.idx[base + c as usize] = area_idx;
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn at(&self, p: GridPoint) -> u8 {
+        if p.col < 0
+            || p.row < 0
+            || p.col >= self.cols
+            || p.row >= self.rows
+            || p.layer >= self.layer_count
+        {
+            return 0;
+        }
+        let i = p.layer as usize * (self.cols * self.rows) as usize
+            + (p.row * self.cols + p.col) as usize;
+        self.idx[i]
+    }
+}
+
+/// Everything one search needs to decide "does this candidate cell keep
+/// legal clearance", honouring BOTH halves of the rule:
+///
+/// - **pairwise**: the required gap is the strictest of the two nets
+///   involved, so the radius depends on WHICH foreign net is found —
+///   `per_net_r2`, indexed by net id.
+/// - **positional**: a rule area containing the candidate cell overrides
+///   outright — `area_r2`, indexed through [`AreaField`].
+///
+/// Radii are squared cell counts so the scan needs no square roots.
+#[derive(Debug, Clone)]
+pub struct ClearanceModel<'a> {
+    /// Offsets sorted by ascending squared distance, up to the largest
+    /// radius this model can demand anywhere.
+    disk: Vec<(i32, i32, i32)>,
+    /// Required r² against foreign net id `i` (outside any area).
+    per_net_r2: Vec<i32>,
+    /// Required r² against copper with no table entry: the `FOREIGN_NET`
+    /// sentinel (no-net pads) and any id past the table.
+    other_r2: i32,
+    /// Largest of the above — the scan bound outside any area.
+    pair_r2: i32,
+    /// Required r² inside clearance area `k` (1-based; `[0]` unused).
+    area_r2: Vec<i32>,
+    field: Option<&'a AreaField>,
+}
+
+impl<'a> ClearanceModel<'a> {
+    pub fn new(
+        per_net_r2: Vec<i32>,
+        other_r2: i32,
+        area_r2: Vec<i32>,
+        field: Option<&'a AreaField>,
+    ) -> Self {
+        let pair_r2 = per_net_r2.iter().copied().fold(other_r2, i32::max);
+        let max_r2 = area_r2.iter().copied().fold(pair_r2, i32::max);
+        // r² → r, rounded up so the disk always covers the radius.
+        let r = (f64::from(max_r2).sqrt().ceil()) as i32;
+        Self {
+            disk: disk_offsets_sorted(r),
+            per_net_r2,
+            other_r2,
+            pair_r2,
+            area_r2,
+            field,
+        }
+    }
+
+    /// A model that demands the same radius from every net and knows no
+    /// areas — the historical single-radius behaviour, used by callers
+    /// with no rule context (fine-grid escape, tests).
+    pub fn uniform(radius_cells: i32) -> Self {
+        let r = radius_cells.max(0);
+        Self::new(Vec::new(), r * r, Vec::new(), None)
+    }
+
+    /// `(scan bound r², fixed requirement r² or -1)` at `p`. Inside a
+    /// clearance area the requirement is absolute — the same for every
+    /// foreign net — which is also the scan bound.
+    #[inline]
+    fn bound_and_fixed(&self, p: GridPoint) -> (i32, i32) {
+        if let Some(f) = self.field {
+            let k = f.at(p) as usize;
+            if k > 0 {
+                if let Some(&r2) = self.area_r2.get(k) {
+                    return (r2, r2);
+                }
+            }
+        }
+        (self.pair_r2, -1)
+    }
+
+    #[inline]
+    fn need2_of(&self, c: Cell) -> i32 {
+        let id = match c {
+            Cell::NetPad(n) | Cell::DrilledPad(n) | Cell::Trace(n) => n,
+            _ => return self.other_r2,
+        };
+        if id == FOREIGN_NET {
+            return self.other_r2;
+        }
+        self.per_net_r2
+            .get(id as usize)
+            .copied()
+            .unwrap_or(self.other_r2)
+    }
+
+    /// Largest radius (cells) this model can demand — used to size
+    /// corridor scans that still want a single number.
+    pub fn max_radius_cells(&self) -> i32 {
+        let max_r2 = self.area_r2.iter().copied().fold(self.pair_r2, i32::max);
+        (f64::from(max_r2).sqrt().ceil()) as i32
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cell {
     Free,
@@ -257,6 +440,17 @@ impl Grid {
     }
 
     /// Snap a board-coord point to the nearest grid cell on the given layer.
+    /// Column/row of a board point, layer-agnostic. Used to rasterise
+    /// rectangular regions (rule areas) onto the grid.
+    pub fn cell_of(&self, p: Point) -> (i32, i32) {
+        let dx = p.x.0 - self.origin_nm.0;
+        let dy = p.y.0 - self.origin_nm.1;
+        (
+            (dx + self.cell_nm / 2) as i32 / self.cell_nm as i32,
+            (dy + self.cell_nm / 2) as i32 / self.cell_nm as i32,
+        )
+    }
+
     pub fn snap(&self, p: Point, layer: CopperLayer) -> GridPoint {
         let dx = p.x.0 - self.origin_nm.0;
         let dy = p.y.0 - self.origin_nm.1;
@@ -672,18 +866,63 @@ impl Grid {
     /// offsets within the searching net's clearance radius; any foreign
     /// `NetPad`/`DrilledPad`/`Trace` inside it rejects the move. Bodies
     /// (`Obstacle`) are ignored here — they only block entry.
-    pub(crate) fn clearance_ok_disk(&self, p: GridPoint, target: u32, disk: &[(i32, i32)]) -> bool {
-        for &(dc, dr) in disk {
+    pub(crate) fn clearance_ok(
+        &self,
+        p: GridPoint,
+        target: u32,
+        model: &ClearanceModel<'_>,
+    ) -> bool {
+        self.clearance_scan(p, target, model, false)
+    }
+
+    fn clearance_scan(
+        &self,
+        p: GridPoint,
+        target: u32,
+        model: &ClearanceModel<'_>,
+        block_obstacles: bool,
+    ) -> bool {
+        let (bound2, fixed) = model.bound_and_fixed(p);
+        for &(dc, dr, d2) in &model.disk {
+            // The disk is sorted by distance, so once we are past the
+            // widest radius anything could demand here, we are done.
+            if d2 > bound2 {
+                break;
+            }
             let gp = GridPoint {
                 layer: p.layer,
                 col: p.col + dc,
                 row: p.row + dr,
             };
-            if is_foreign(self.get(gp), target) {
+            let c = self.get(gp);
+            if block_obstacles && matches!(c, Cell::Obstacle) {
+                return false;
+            }
+            if !is_foreign(c, target) {
+                continue;
+            }
+            let need2 = if fixed >= 0 { fixed } else { model.need2_of(c) };
+            if d2 <= need2 {
                 return false;
             }
         }
         true
+    }
+
+    /// Via variant of [`Grid::clearance_ok`]: a via barrel exists on
+    /// every layer, so its clearance must hold on every layer — and
+    /// unlike a trace, a via may not be crowded by an `Obstacle` either
+    /// (its pad ring is real copper that has to sit somewhere legal,
+    /// including inside the routing region: out-of-bounds reads as
+    /// `Obstacle`).
+    pub(crate) fn via_clearance_ok(
+        &self,
+        p: GridPoint,
+        target: u32,
+        model: &ClearanceModel<'_>,
+    ) -> bool {
+        (0..self.layer_count)
+            .all(|layer| self.clearance_scan(GridPoint { layer, ..p }, target, model, true))
     }
 
     /// True if every Bresenham cell of the straight segment `a..b`
@@ -697,7 +936,7 @@ impl Grid {
         a: GridPoint,
         b: GridPoint,
         target_net: u32,
-        disk: &[(i32, i32)],
+        model: &ClearanceModel<'_>,
     ) -> bool {
         debug_assert_eq!(a.layer, b.layer);
         let layer = a.layer;
@@ -710,7 +949,7 @@ impl Grid {
             if !walkable(self.get(p), target_net) {
                 return false;
             }
-            if !self.clearance_ok_disk(p, target_net, disk) {
+            if !self.clearance_ok(p, target_net, model) {
                 return false;
             }
         }
