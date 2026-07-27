@@ -17,58 +17,56 @@ and [Mitayi-Pico-D1](https://github.com/CIRCUITSTATE/Mitayi-Pico-D1) (MIT).
 
 | Path | What |
 |------|------|
-| `rp2040-minimal.fragua` | Live project (schematic + placement + partial route) |
+| `rp2040-minimal.fragua` | Live project (schematic + placement + route) |
 | `01_schematic.fragua.txt` | Script that builds libs + schematic |
-| `rp2040-minimal-v2.png` | Latest board screenshot |
-| `0*_*.txt` | API session logs |
+| `rp2040-minimal-v3.png` | Latest board screenshot |
+| `07_route_v3.txt` | Latest route API log |
 
 ## How to drive
 
 ```sh
-# From repo root (release binary)
 ./target/release/fragua run stress/rp2040-minimal.fragua
 
-# Agent loop
 curl -s http://127.0.0.1:7878/script \
   -H 'content-type: application/json' \
-  -d '{"script":"status\nview\nroute"}'
+  -d '{"script":"status\nview\nroute max_seconds=90"}'
 ```
 
-## Results (2026-07-27 stress session)
+## Results (2026-07-27)
 
-| Stage | Result |
-|-------|--------|
-| Library (9 new footprints) | OK via `lib` + **`confirm-lib`** |
-| Schematic | 36 symbols, 39 nets, **ERC 0 errors** |
-| Placement | 36 footprints; **`edge-place`** fixed USB/headers |
-| Route (default, ~6 min wall) | **62 traces / 3 vias**, only **~6/39 nets fully connected** |
-| DRC after route | **3 errors**, 107 warnings |
+| Stage | v1 (first pass) | v3 (after router/placer fixes) |
+|-------|-----------------|--------------------------------|
+| Library | OK via `confirm-lib` | same |
+| Schematic | ERC 0 | same |
+| Placement | 36 fps, `edge-place` | same + passive pull-to-anchor |
+| Route wall | **~6 min**, no budget | **~90 s** with `max_seconds=90` |
+| Copper | 62 traces / 3 vias | **402 traces / 41 vias** (dogbone fanout) |
+| Fully connected nets | ~6/39 | ~5/39 (still the QFN wall) |
+| DRC | 3E | 2E |
 
 ### What works
 
 - End-to-end agent loop: libs → confirm → schematic → place → route → screenshot
-- Complex multi-pin ICs and many passives on one board
+- Complex multi-pin ICs and many passives
 - GND pour + net classes
-- Edge connectors with the new `edge-place REF side` verb
+- `edge-place REF side`
+- **`route max_seconds=N`** returns on time; progress in the activity log
+- **2-layer dogbone fanout** for pads too small for via-in-pad (QFN 0.4 mm)
 
-### Gaps exposed (to improve next)
+### Still hard
 
-1. **Fine-pitch QFN fanout (0.4 mm)** — 2-layer router rarely escapes RP2040
-   pads; QSPI / USB / crystal nets often fail. Escape pre-pass is a no-op on
-   2-layer boards (`pcb-router` escape module).
-2. **Route wall-clock** — full RR&R on this board can take **5–10+ minutes**
-   with no agent-visible progress or time budget; HTTP client timeouts leave
-   the server still burning CPU.
-3. **`list-lib` / placement failures** — text/plain API previously hid keys and
-   place errors (fixed this session).
-4. **Pending library confirm** — was UI-only; agents could not finish a new
-   footprint without a human click (fixed: `confirm-lib` / `list-pending`).
-5. **Edge placement math** — hand-tuned `place X Y` for edge-mounted parts
-   routinely failed bbox/side checks (fixed: `edge-place`).
+1. **QFN-56 full connectivity on 2 layers** — dogbones open Bottom, but
+   escape density + body keep-out still leave QSPI / USB / many GPIOs
+   unrouted. Next levers: thinner body keep-out moat, 4-layer default for
+   fine-pitch, or module-style RP2040 footprint.
+2. **Passive clustering** — auto-place pulls 2–4 pad parts toward fixed IC
+   pads; still not as tight as a human decoupling ring.
 
-## Fragua code changes from this stress pass
+## Code changes from this stress pass
 
-- `confirm-lib KEY`, `list-pending`, `discard-pending KEY`
-- `list-lib` lists keys in the text reply
-- `placement.batch` prints per-item FAIL reasons in text
+- `confirm-lib` / `list-pending` / `discard-pending`
+- `list-lib` + placement FAIL text
 - `edge-place REF left|right|top|bottom [along=N]`
+- **Router:** 2-layer dogbone fanout; `max_seconds` + progress; scaled A*
+  pop cap; skip organic when budget hit
+- **Placer:** pull passives toward net anchors after SA
