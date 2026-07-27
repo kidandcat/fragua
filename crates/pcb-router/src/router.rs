@@ -677,7 +677,33 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         }
     }
 
-    let (best_work, mut best_report) = best.expect("at least one iteration ran");
+    // A budget small enough that the escape/fanout pre-pass alone exhausts
+    // it leaves `best` empty — the RR loop never got to run a single pass.
+    // Synthesise an all-timed-out report rather than panicking: the caller
+    // asked for a hard wall-clock bound and is entitled to an answer, and
+    // the fanout copper below is still worth committing.
+    let (best_work, mut best_report) = best.unwrap_or_else(|| {
+        let mut work = board.clone();
+        work.clear_routing();
+        let per_net = order
+            .iter()
+            .map(|n| {
+                (
+                    n.clone(),
+                    Outcome::Failed {
+                        reason: "timeout (route max_seconds budget) before the first pass".into(),
+                    },
+                )
+            })
+            .collect();
+        (
+            work,
+            RouteReport {
+                per_net,
+                ..RouteReport::default()
+            },
+        )
+    });
     best_report.iterations = iterations_run;
     best_report.hints = generate_hints(&best_report, &nets);
     // Stamp the winning routing onto the caller's board.
