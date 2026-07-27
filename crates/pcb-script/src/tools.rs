@@ -5177,6 +5177,11 @@ fn tool_layer_remove(project: &Project, args: &Value) -> Result<Value, ToolError
             input.name
         )));
     };
+    // Every item that stores a layer reference has to be checked, not
+    // just the obvious copper: a pour or a keepout left behind on a
+    // removed layer keeps a now-dangling `Layer{index}` in the saved
+    // project, which silently changes what the router sees on later
+    // runs (issue O9 — the stackup round-trip must be a true no-op).
     let mut uses = 0usize;
     for fp in board.footprints_in_order() {
         if fp.layer == target {
@@ -5193,10 +5198,28 @@ fn tool_layer_remove(project: &Project, args: &Value) -> Result<Value, ToolError
             uses += 1;
         }
     }
+    let pour_uses = board.pours.iter().filter(|p| p.layer == target).count();
+    let keepout_uses = board
+        .keepouts
+        .iter()
+        .filter(|k| k.layers.contains(&target))
+        .count();
+    uses += pour_uses + keepout_uses;
     drop(snap);
     if uses > 0 {
+        let mut detail = String::new();
+        if pour_uses > 0 {
+            detail.push_str(&format!(
+                "; {pour_uses} pour(s) — drop them with `clear-pour`"
+            ));
+        }
+        if keepout_uses > 0 {
+            detail.push_str(&format!(
+                "; {keepout_uses} keepout(s) — drop them with `keepout remove`"
+            ));
+        }
         return Err(ToolError::invalid_params(format!(
-            "layer.remove: {uses} item(s) still on layer `{}`",
+            "layer.remove: {uses} item(s) still on layer `{}`{detail}",
             input.name
         )));
     }
