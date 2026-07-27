@@ -110,4 +110,7 @@ fn stress_board_probe() {
         rep.budget_hit
     );
     println!("FAILED: {}", failed.join(", "));
+    for h in rep.hints.iter().filter(|h| h.starts_with("congestion:")) {
+        println!("{h}");
+    }
 }
