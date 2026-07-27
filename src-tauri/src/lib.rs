@@ -766,8 +766,9 @@ pub fn pending_entries_json(project: &pcb_core::Project) -> serde_json::Value {
 }
 
 /// Confirm a pending library entry: promote it to the on-disk library
-/// (plus any staged attachments). The script-side agent does NOT have
-/// a verb for this — confirmation is human-only, by design.
+/// (plus any staged attachments). Also exposed to agents as
+/// `confirm-lib KEY` so headless design loops can proceed after a
+/// self-check of pad numbering / chirality.
 #[tauri::command]
 fn confirm_pending_library_entry(state: State<'_, AppState>, key: String) -> Result<bool, String> {
     let ok = state.project.confirm_pending_library_entry(&key)?;

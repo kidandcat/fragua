@@ -839,6 +839,141 @@ impl Project {
         moved_refs
     }
 
+    /// Place an edge-mounted palette item so its declared `edge_side`
+    /// (or any side, if undeclared) sits on the requested board outline
+    /// edge. Computes rotation (90° steps) and the free-axis coordinate
+    /// so agents don't have to hand-solve the bbox/edge math.
+    ///
+    /// `along_mm` is the coordinate along the free axis (x for top/bottom
+    /// edges, y for left/right). When `None`, the part is centred on that
+    /// axis.
+    pub fn place_edge_from_palette(
+        &self,
+        reference: &str,
+        board_side: crate::board::EdgeSide,
+        along_mm: Option<f64>,
+    ) -> Result<(Id, f64, f64, f32), String> {
+        use crate::board::EdgeSide;
+        let library = Arc::clone(&self.library);
+        let margin_for = |fp: &Footprint| {
+            if fp.key.is_empty() {
+                crate::library::PlacementMargin::default()
+            } else {
+                library
+                    .find(&fp.key)
+                    .map(|e| e.placement_margin)
+                    .unwrap_or_default()
+            }
+        };
+
+        let mut inner = self.inner.write().expect("project lock poisoned");
+        let outline = inner
+            .board
+            .outline
+            .ok_or_else(|| "edge-place: board has no outline — call `outline W H` first".to_string())?;
+        let idx = inner
+            .palette
+            .iter()
+            .position(|f| f.reference == reference)
+            .ok_or_else(|| format!("no palette item named {reference}"))?;
+
+        let mut probe = inner.palette[idx].clone();
+        if !probe.edge_mounted {
+            return Err(format!(
+                "{reference} is not edge-mounted — use `place` or `edge-mount KEY <side>` first"
+            ));
+        }
+
+        // Rotation so the declared local edge faces the requested board edge.
+        // If no edge_side is declared, leave the palette rotation as-is.
+        let rotation_deg = if let Some(local) = probe.edge_side {
+            let q_local = local.ccw_index();
+            let q_target = board_side.ccw_index();
+            let q = (q_target + 4 - q_local) % 4;
+            (q as f32) * 90.0
+        } else {
+            probe.rotation
+        };
+        probe.rotation = rotation_deg;
+        probe.position = Point::new(Length::from_mm(0.0), Length::from_mm(0.0));
+
+        let bbox = probe
+            .bounds()
+            .ok_or_else(|| format!("{reference}: footprint has no pads (empty bbox)"))?;
+        // Bbox at origin with chosen rotation — offsets relative to origin.
+        let min_x = bbox.min.x.to_mm();
+        let max_x = bbox.max.x.to_mm();
+        let min_y = bbox.min.y.to_mm();
+        let max_y = bbox.max.y.to_mm();
+
+        let ox = outline.min.x.to_mm();
+        let oy = outline.min.y.to_mm();
+        let ow = (outline.max.x - outline.min.x).to_mm();
+        let oh = (outline.max.y - outline.min.y).to_mm();
+
+        // Snap the facing side of the bbox onto the outline edge.
+        let (x_mm, y_mm) = match board_side {
+            EdgeSide::Left => {
+                // bbox.min.x + pos.x == ox  => pos.x = ox - min_x
+                let x = ox - min_x;
+                let y = along_mm.unwrap_or_else(|| oy + oh / 2.0 - (min_y + max_y) / 2.0);
+                (x, y)
+            }
+            EdgeSide::Right => {
+                // bbox.max.x + pos.x == ox+ow
+                let x = ox + ow - max_x;
+                let y = along_mm.unwrap_or_else(|| oy + oh / 2.0 - (min_y + max_y) / 2.0);
+                (x, y)
+            }
+            EdgeSide::Bottom => {
+                let y = oy - min_y;
+                let x = along_mm.unwrap_or_else(|| ox + ow / 2.0 - (min_x + max_x) / 2.0);
+                (x, y)
+            }
+            EdgeSide::Top => {
+                let y = oy + oh - max_y;
+                let x = along_mm.unwrap_or_else(|| ox + ow / 2.0 - (min_x + max_x) / 2.0);
+                (x, y)
+            }
+        };
+
+        let position = Point::new(Length::from_mm(x_mm), Length::from_mm(y_mm));
+        probe.position = position;
+
+        if let Some(other) = inner.board.first_overlapper(&probe, None) {
+            return Err(format!(
+                "{reference} edge-place at ({x_mm:.2}, {y_mm:.2}) mm would overlap {other}"
+            ));
+        }
+        if let Some(other) = inner.board.first_body_overlapper(&probe, None, &margin_for) {
+            return Err(format!(
+                "{reference} body edge-place at ({x_mm:.2}, {y_mm:.2}) mm would overlap {other} body"
+            ));
+        }
+        if let Some(reason) = inner.board.body_outline_violation(&probe, margin_for(&probe)) {
+            return Err(format!("{reference} {reason}"));
+        }
+        if let Some(reason) = inner.board.edge_mount_violation(&probe) {
+            return Err(format!("{reference} is edge-mounted but {reason}"));
+        }
+
+        let mut fp = inner.palette.remove(idx);
+        fp.position = position;
+        fp.rotation = rotation_deg;
+        let id = fp.id;
+        let _ = inner.board.add_footprint(fp);
+        let palette_count = inner.palette.len();
+        drop(inner);
+        self.bus.publish(Event::PaletteChanged {
+            count: palette_count,
+        });
+        self.bus.publish(Event::FootprintAdded {
+            id,
+            reference: reference.to_string(),
+        });
+        Ok((id, x_mm, y_mm, rotation_deg))
+    }
+
     /// Move a palette item onto the board at `position`. The footprint
     /// disappears from the palette. Returns the new board id, or an
     /// error if no palette item with that reference exists or if the

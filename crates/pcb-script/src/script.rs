@@ -952,6 +952,27 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                 args: json!({"key": tokens[1]}),
             })
         }
+        "list-pending" => Ok(Cmd {
+            line,
+            tool: "library.list_pending".into(),
+            args: json!({}),
+        }),
+        "confirm-lib" => {
+            need_args(line, tokens, 1, "confirm-lib KEY")?;
+            Ok(Cmd {
+                line,
+                tool: "library.confirm".into(),
+                args: json!({"key": tokens[1]}),
+            })
+        }
+        "discard-pending" => {
+            need_args(line, tokens, 1, "discard-pending KEY")?;
+            Ok(Cmd {
+                line,
+                tool: "library.discard_pending".into(),
+                args: json!({"key": tokens[1]}),
+            })
+        }
         "delete-lib" => {
             need_args(line, tokens, 1, "delete-lib KEY")?;
             Ok(Cmd {
@@ -1185,6 +1206,32 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     args: json!({"reference": reference, "x_mm": x, "y_mm": y}),
                 })
             }
+        }
+        "edge-place" => {
+            // edge-place REF left|right|top|bottom [along=N]
+            // Snaps an edge-mounted palette item onto a board outline edge,
+            // computing rotation + free-axis position so agents don't have
+            // to hand-solve the bbox/edge math.
+            need_args(
+                line,
+                tokens,
+                2,
+                "edge-place REF left|right|top|bottom [along=N]",
+            )?;
+            let reference = tokens[1].clone();
+            let side = tokens[2].clone();
+            let mut args = json!({"reference": reference, "side": side});
+            apply_kv(
+                &mut args,
+                &tokens[3..],
+                line,
+                &[("along", AttrType::NumInto("along_mm"))],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "placement.edge_place".into(),
+                args,
+            })
         }
 
         "move" => {

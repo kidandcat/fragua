@@ -115,7 +115,15 @@ PROJECT / READS:\n\
   sch                                          — schematic SVG\n\
   sch-status                                   — schematic counts + unconnected pins\n\
   nets                                         — per-net pad-by-pad connection report\n\
-  list-lib                                     — every library entry (key, desc, pad count, attachments)\n\
+  list-lib                                     — every library entry (key, desc, pad count, attachments).\n\
+                                                 Text reply lists one key per line so agents can parse it\n\
+                                                 without JSON (HTTP surface is text/plain).\n\
+  list-pending                                 — library entries queued for confirmation (not on disk yet)\n\
+  confirm-lib KEY                              — promote a pending entry to the on-disk library.\n\
+                                                 Agents MAY call this after self-checking pad numbering\n\
+                                                 / chirality (esp. pin-1 corner and mirrored modules).\n\
+                                                 Prefer attaching a photo first when one exists.\n\
+  discard-pending KEY                          — drop a pending entry without saving it\n\
   list-palette                                 — items waiting in the palette\n\
   save PATH                                    — write the project to PATH (atomic .tmp+rename).\n\
                                                  Use this when fragua was launched with no file\n\
@@ -266,6 +274,14 @@ PALETTE / PLACEMENT:\n\
                                                  view transform, same as `place X Y ROT`.\n\
   clear-palette\n\
   place REF X Y [ROT_DEG]                      — drop palette item at (x, y) mm; rejects if it\n\
+  edge-place REF left|right|top|bottom [along=N]\n\
+                                               — place an edge-mounted palette item on a board\n\
+                                                 outline edge. Computes rotation (so the library\n\
+                                                 `edge-mount` side faces the outline) and the snap\n\
+                                                 coordinate automatically. `along` is the free-axis\n\
+                                                 position (x for top/bottom, y for left/right);\n\
+                                                 defaults to centred. Prefer this over hand-tuned\n\
+                                                 `place` for USB / headers / terminals.\n\
                                                  overlaps another footprint or violates the\n\
                                                  edge_mounted constraint\n\
   move REF X Y\n\
@@ -480,6 +496,9 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "palette.clear" => tool_palette_clear(project),
         "palette.add_from_library" => tool_palette_add_from_library(project, args),
         "library.list" => tool_library_list(project),
+        "library.list_pending" => tool_library_list_pending(project),
+        "library.confirm" => tool_library_confirm(project, args),
+        "library.discard_pending" => tool_library_discard_pending(project, args),
         "library.find" => tool_library_find(project, args),
         "library.create" => tool_library_create(project, args),
         "library.attach" => tool_library_attach(project, args),
@@ -490,6 +509,7 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "library.delete_attachment" => tool_library_delete_attachment(project, args),
         "library.delete" => tool_library_delete(project, args),
         "placement.place_from_palette" => tool_place_from_palette(project, args),
+        "placement.edge_place" => tool_placement_edge_place(project, args),
         "placement.batch" => tool_placement_batch(project, args),
         "placement.move" => tool_placement_move(project, args),
         "placement.rotate" => tool_placement_rotate(project, args),
@@ -1850,8 +1870,92 @@ fn library_silk_to_footprint_with_view(
 fn tool_library_list(project: &Project) -> Result<Value, ToolError> {
     let entries = project.library().list();
     let items: Vec<Value> = entries.iter().map(library_entry_summary).collect();
-    Ok(text_result(format!("{} entries in library", items.len()))
-        .with_data(json!({ "entries": items })))
+    // HTTP replies are text/plain — put keys in the text so agents can
+    // parse without structured data. One line per entry.
+    let mut lines = vec![format!("{} entries in library:", entries.len())];
+    for e in &entries {
+        let edge = if e.edge_mounted { " edge" } else { "" };
+        let body = if e.body_rect.is_some() { " body" } else { "" };
+        let desc = if e.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", e.description.replace('\n', " "))
+        };
+        lines.push(format!(
+            "  {}  pads={}{}{}{}",
+            e.key,
+            e.pads.len(),
+            edge,
+            body,
+            desc
+        ));
+    }
+    Ok(text_result(lines.join("\n")).with_data(json!({ "entries": items })))
+}
+
+fn tool_library_list_pending(project: &Project) -> Result<Value, ToolError> {
+    let pending = project.pending_library_entries();
+    let mut lines = vec![format!("{} pending library entries:", pending.len())];
+    let mut items = Vec::new();
+    for p in &pending {
+        let e = &p.entry;
+        lines.push(format!(
+            "  {}  pads={}  staged_attachments={}",
+            e.key,
+            e.pads.len(),
+            p.attachments.len()
+        ));
+        items.push(library_entry_summary(e));
+    }
+    if pending.is_empty() {
+        lines.push("  (none — `lib KEY` queues entries here until `confirm-lib KEY`)".into());
+    }
+    Ok(text_result(lines.join("\n")).with_data(json!({ "entries": items })))
+}
+
+#[derive(Debug, Deserialize)]
+struct LibraryKeyInput {
+    key: String,
+}
+
+fn tool_library_confirm(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: LibraryKeyInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("library.confirm: {e}")))?;
+    let ok = project
+        .confirm_pending_library_entry(&input.key)
+        .map_err(ToolError::invalid_params)?;
+    if !ok {
+        return Err(ToolError::invalid_params(format!(
+            "library.confirm: no pending entry with key {} (use list-pending)",
+            input.key
+        )));
+    }
+    project.log(
+        ActivityLevel::Info,
+        format!("library.confirm: {} (saved)", input.key),
+    );
+    Ok(text_result(format!(
+        "Confirmed {} — now in on-disk library (palette/place/body-rect ready)",
+        input.key
+    ))
+    .into())
+}
+
+fn tool_library_discard_pending(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: LibraryKeyInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("library.discard_pending: {e}")))?;
+    let ok = project.discard_pending_library_entry(&input.key);
+    if !ok {
+        return Err(ToolError::invalid_params(format!(
+            "library.discard_pending: no pending entry with key {}",
+            input.key
+        )));
+    }
+    project.log(
+        ActivityLevel::Info,
+        format!("library.discard_pending: {} (dropped)", input.key),
+    );
+    Ok(text_result(format!("Discarded pending entry {}", input.key)).into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2020,12 +2124,10 @@ fn tool_library_create(project: &Project, args: &Value) -> Result<Value, ToolErr
         placement_margin: pcb_core::PlacementMargin::default(),
         body_rect: None,
     };
-    // HARD GUARD: a library entry the agent generates does NOT land in
-    // the on-disk library until a human eyeballs the rendered footprint
-    // against the component photo and clicks confirm. Mirrored / mis-
-    // numbered footprints have shipped fab orders that ended up in the
-    // bin; the cost of one extra click per part is trivial next to
-    // ordering PCBs twice.
+    // Queue for confirmation: mirrored / mis-numbered footprints have
+    // shipped fab scrap before. The UI review pane is the preferred
+    // path when a photo is available; agents may also call
+    // `confirm-lib KEY` after self-checking pad numbering/chirality.
     let pad_count = entry.pads.len();
     let key = entry.key.clone();
     let pending = pcb_core::PendingLibraryEntry {
@@ -2036,11 +2138,13 @@ fn tool_library_create(project: &Project, args: &Value) -> Result<Value, ToolErr
     project.log(
         ActivityLevel::Info,
         format!(
-            "library.create: {key} ({pad_count} pads) — pending human confirmation ({pending_count} queued)"
+            "library.create: {key} ({pad_count} pads) — pending confirmation ({pending_count} queued)"
         ),
     );
     Ok(text_result(format!(
-        "Queued {key} for review — open the library review pane (or the auto-popup) and confirm before it lands in the on-disk library. Attach the component photo via `library.attach` before confirming so the reviewer can compare pinout vs. reality; once confirmed you can `calibrate-photo` that photo and set a `body-rect`."
+        "Queued {key} for review ({pad_count} pads, {pending_count} pending total). \
+Confirm via UI review pane OR `confirm-lib {key}` after checking pin-1 / chirality. \
+Optional: `attach {key} photo <path>` before confirming."
     ))
     .with_data(library_entry_full(&entry)))
 }
@@ -2688,6 +2792,52 @@ fn tool_place_from_palette(project: &Project, args: &Value) -> Result<Value, Too
 }
 
 #[derive(Debug, Deserialize)]
+struct EdgePlaceInput {
+    reference: String,
+    side: String,
+    #[serde(default)]
+    along_mm: Option<f64>,
+}
+
+fn tool_placement_edge_place(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: EdgePlaceInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("placement.edge_place: {e}")))?;
+    let side = pcb_core::EdgeSide::parse(&input.side).ok_or_else(|| {
+        ToolError::invalid_params(format!(
+            "edge-place: side must be left|right|top|bottom, got {}",
+            input.side
+        ))
+    })?;
+    let (id, x_mm, y_mm, rot) = project
+        .place_edge_from_palette(&input.reference, side, input.along_mm)
+        .map_err(ToolError::invalid_params)?;
+    project.log(
+        ActivityLevel::Info,
+        format!(
+            "placement.edge_place: {} on {} at ({:.2}, {:.2}) mm rot={rot:.0}",
+            input.reference,
+            side.name(),
+            x_mm,
+            y_mm
+        ),
+    );
+    Ok(text_result(format!(
+        "Edge-placed {} on {} at ({:.2}, {:.2}) mm rot={rot:.0}",
+        input.reference,
+        side.name(),
+        x_mm,
+        y_mm
+    ))
+    .with_data(json!({
+        "id": id.0.to_string(),
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "rotation_deg": rot,
+        "side": side.name(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
 struct PlacementBatchItem {
     reference: String,
     x_mm: f64,
@@ -2749,13 +2899,24 @@ fn tool_placement_batch(project: &Project, args: &Value) -> Result<Value, ToolEr
         ActivityLevel::Info,
         format!("placement.batch: {ok_count} placed, {fail_count} failed"),
     );
-    Ok(
-        text_result(format!("{ok_count} placed, {fail_count} failed")).with_data(json!({
-            "ok_count": ok_count,
-            "fail_count": fail_count,
-            "results": results,
-        })),
-    )
+    // Surface per-item errors in the text reply — HTTP is text/plain and
+    // agents cannot see structuredContent.without parsing JSON envelopes.
+    let mut lines = vec![format!("{ok_count} placed, {fail_count} failed")];
+    for r in &results {
+        let reference = r.get("reference").and_then(|v| v.as_str()).unwrap_or("?");
+        if r.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            lines.push(format!("  ok {reference}"));
+        } else {
+            let stage = r.get("stage").and_then(|v| v.as_str()).unwrap_or("?");
+            let err = r.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            lines.push(format!("  FAIL {reference} ({stage}): {err}"));
+        }
+    }
+    Ok(text_result(lines.join("\n")).with_data(json!({
+        "ok_count": ok_count,
+        "fail_count": fail_count,
+        "results": results,
+    })))
 }
 
 #[derive(Debug, Deserialize)]

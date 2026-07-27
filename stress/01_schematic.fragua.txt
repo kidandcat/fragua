@@ -1,0 +1,342 @@
+reset
+# RP2040 Minimal — open-hardware stress (RPi HW design guide / Mitayi-Pico class)
+lib rp2040_qfn56 desc="RP2040 QFN-56 7x7mm 0.4mm pitch" mpn=RP2040
+  pad 1 -3.450 -2.600 0.550 0.250 name=IOVDD
+  pad 2 -3.450 -2.200 0.550 0.250 name=GPIO0
+  pad 3 -3.450 -1.800 0.550 0.250 name=GPIO1
+  pad 4 -3.450 -1.400 0.550 0.250 name=GPIO2
+  pad 5 -3.450 -1.000 0.550 0.250 name=GPIO3
+  pad 6 -3.450 -0.600 0.550 0.250 name=GPIO4
+  pad 7 -3.450 -0.200 0.550 0.250 name=GPIO5
+  pad 8 -3.450 0.200 0.550 0.250 name=GPIO6
+  pad 9 -3.450 0.600 0.550 0.250 name=GPIO7
+  pad 10 -3.450 1.000 0.550 0.250 name=GPIO8
+  pad 11 -3.450 1.400 0.550 0.250 name=GPIO9
+  pad 12 -3.450 1.800 0.550 0.250 name=GPIO10
+  pad 13 -3.450 2.200 0.550 0.250 name=GPIO11
+  pad 14 -3.450 2.600 0.550 0.250 name=GPIO12
+  pad 15 -2.600 3.450 0.250 0.550 name=GPIO13
+  pad 16 -2.200 3.450 0.250 0.550 name=GPIO14
+  pad 17 -1.800 3.450 0.250 0.550 name=GPIO15
+  pad 18 -1.400 3.450 0.250 0.550 name=TESTEN
+  pad 19 -1.000 3.450 0.250 0.550 name=XIN
+  pad 20 -0.600 3.450 0.250 0.550 name=XOUT
+  pad 21 -0.200 3.450 0.250 0.550 name=IOVDD2
+  pad 22 0.200 3.450 0.250 0.550 name=DVDD
+  pad 23 0.600 3.450 0.250 0.550 name=SWCLK
+  pad 24 1.000 3.450 0.250 0.550 name=SWD
+  pad 25 1.400 3.450 0.250 0.550 name=RUN
+  pad 26 1.800 3.450 0.250 0.550 name=GPIO16
+  pad 27 2.200 3.450 0.250 0.550 name=GPIO17
+  pad 28 2.600 3.450 0.250 0.550 name=GPIO18
+  pad 29 3.450 2.600 0.550 0.250 name=GPIO19
+  pad 30 3.450 2.200 0.550 0.250 name=GPIO20
+  pad 31 3.450 1.800 0.550 0.250 name=GPIO21
+  pad 32 3.450 1.400 0.550 0.250 name=GPIO22
+  pad 33 3.450 1.000 0.550 0.250 name=GPIO23
+  pad 34 3.450 0.600 0.550 0.250 name=GPIO24
+  pad 35 3.450 0.200 0.550 0.250 name=GPIO25
+  pad 36 3.450 -0.200 0.550 0.250 name=GPIO26
+  pad 37 3.450 -0.600 0.550 0.250 name=GPIO27
+  pad 38 3.450 -1.000 0.550 0.250 name=GPIO28
+  pad 39 3.450 -1.400 0.550 0.250 name=GPIO29
+  pad 40 3.450 -1.800 0.550 0.250 name=IOVDD3
+  pad 41 3.450 -2.200 0.550 0.250 name=ADC_AVDD
+  pad 42 3.450 -2.600 0.550 0.250 name=VREG_VIN
+  pad 43 2.600 -3.450 0.250 0.550 name=VREG_VOUT
+  pad 44 2.200 -3.450 0.250 0.550 name=USB_DM
+  pad 45 1.800 -3.450 0.250 0.550 name=USB_DP
+  pad 46 1.400 -3.450 0.250 0.550 name=USB_VDD
+  pad 47 1.000 -3.450 0.250 0.550 name=IOVDD4
+  pad 48 0.600 -3.450 0.250 0.550 name=DVDD2
+  pad 49 0.200 -3.450 0.250 0.550 name=QSPI_SD3
+  pad 50 -0.200 -3.450 0.250 0.550 name=QSPI_SCLK
+  pad 51 -0.600 -3.450 0.250 0.550 name=QSPI_SD0
+  pad 52 -1.000 -3.450 0.250 0.550 name=QSPI_SD2
+  pad 53 -1.400 -3.450 0.250 0.550 name=QSPI_SD1
+  pad 54 -1.800 -3.450 0.250 0.550 name=QSPI_SS
+  pad 55 -2.200 -3.450 0.250 0.550 name=GND
+  pad 56 -2.600 -3.450 0.250 0.550 name=IOVDD5
+  pad 57 0.000 0.000 3.400 3.400 name=GND_EP
+  silk-line top -3.5 -3.5 3.5 -3.5 width=0.12
+  silk-line top 3.5 -3.5 3.5 3.5 width=0.12
+  silk-line top 3.5 3.5 -3.5 3.5 width=0.12
+  silk-line top -3.5 3.5 -3.5 -3.5 width=0.12
+  silk-line top -3.8 -2.6 -3.8 -2.0 width=0.15
+  silk-text top 0 0 "{REF}" size=0.8 anchor=middle
+lib w25q16_soic8 desc="W25Q16JV SOIC-8 QSPI flash" mpn=W25Q16JVSSIQ lcsc=C132291
+  pad 1 -2.700 1.905 1.55 0.60 name=CS
+  pad 2 -2.700 0.635 1.55 0.60 name=DO
+  pad 3 -2.700 -0.635 1.55 0.60 name=WP
+  pad 4 -2.700 -1.905 1.55 0.60 name=GND
+  pad 8 2.700 1.905 1.55 0.60 name=VCC
+  pad 7 2.700 0.635 1.55 0.60 name=HOLD
+  pad 6 2.700 -0.635 1.55 0.60 name=CLK
+  pad 5 2.700 -1.905 1.55 0.60 name=DI
+  silk-line top -2.0 -2.6 2.0 -2.6 width=0.12
+  silk-line top 2.0 -2.6 2.0 2.6 width=0.12
+  silk-line top 2.0 2.6 -2.0 2.6 width=0.12
+  silk-line top -2.0 2.6 -2.0 -2.6 width=0.12
+  silk-text top 0 0 "{REF}" size=0.7 anchor=middle
+lib xtal_3225 desc="12MHz crystal 3225 4-pad"
+  pad 1 -1.1 -0.85 1.2 0.95 name=X1
+  pad 2 1.1 -0.85 1.2 0.95 name=GND1
+  pad 3 1.1 0.85 1.2 0.95 name=X2
+  pad 4 -1.1 0.85 1.2 0.95 name=GND2
+  silk-line top -1.6 -1.25 1.6 -1.25 width=0.1
+  silk-line top 1.6 -1.25 1.6 1.25 width=0.1
+  silk-line top 1.6 1.25 -1.6 1.25 width=0.1
+  silk-line top -1.6 1.25 -1.6 -1.25 width=0.1
+  silk-text top 0 0 "{REF}" size=0.6 anchor=middle
+lib usbc_16p edge=true desc="USB-C receptacle simplified functional"
+  pad 1 -3.25 0.0 0.7 1.4 name=GND1
+  pad 2 -2.40 0.0 0.55 1.4 name=VBUS1
+  pad 3 -1.55 0.0 0.45 1.4 name=CC1
+  pad 4 -0.70 0.0 0.4 1.4 name=DP
+  pad 5 0.0 0.0 0.4 1.4 name=DM
+  pad 6 0.70 0.0 0.4 1.4 name=SBU
+  pad 7 1.55 0.0 0.45 1.4 name=CC2
+  pad 8 2.40 0.0 0.55 1.4 name=VBUS2
+  pad 9 3.25 0.0 0.7 1.4 name=GND2
+  pad 10 -4.2 -0.5 1.6 1.6 name=SH1 drill=0.9
+  pad 11 4.2 -0.5 1.6 1.6 name=SH2 drill=0.9
+  silk-line top -4.5 1.0 4.5 1.0 width=0.12
+  silk-text top 0 1.8 "{REF}" size=0.7 anchor=middle
+lib ldo_sot23_5 desc="MIC5219-3.3 LDO SOT-23-5" mpn=MIC5219-3.3YM5
+  pad 1 -0.95 -1.0 0.6 0.9 name=IN
+  pad 2 0.0 -1.0 0.6 0.9 name=GND
+  pad 3 0.95 -1.0 0.6 0.9 name=EN
+  pad 4 0.95 1.0 0.6 0.9 name=BYP
+  pad 5 -0.95 1.0 0.6 0.9 name=OUT
+  silk-text top 0 0 "{REF}" size=0.6 anchor=middle
+lib r_0603 desc="0603 SMD resistor" lcsc=C25804
+  pad 1 -0.775 0 0.95 0.95 name=1
+  pad 2 0.775 0 0.95 0.95 name=2
+  silk-text top 0 1.1 "{REF}" size=0.5 anchor=middle
+lib sw_smd_4x4 desc="SMD tactile switch 4x4mm"
+  pad 1 -1.5 1.0 1.0 0.8 name=1
+  pad 2 1.5 1.0 1.0 0.8 name=2
+  pad 3 1.5 -1.0 1.0 0.8 name=3
+  pad 4 -1.5 -1.0 1.0 0.8 name=4
+  silk-line top -2 -2 2 -2 width=0.1
+  silk-line top 2 -2 2 2 width=0.1
+  silk-line top 2 2 -2 2 width=0.1
+  silk-line top -2 2 -2 -2 width=0.1
+  silk-text top 0 0 "{REF}" size=0.6 anchor=middle
+lib header_1x03_2.54mm edge=true desc="1x03 THT header 2.54mm SWD"
+  pad 1 -2.54 0 1.7 1.7 name=SWDIO drill=1.0
+  pad 2 0.00 0 1.7 1.7 name=GND drill=1.0
+  pad 3 2.54 0 1.7 1.7 name=SWCLK drill=1.0
+  silk-text top 0 2 "{REF}" size=0.7 anchor=middle
+lib header_1x10_2.54mm edge=true desc="1x10 THT header 2.54mm"
+  pad 1 -11.430 0 1.7 1.7 name=P1 drill=1.0
+  pad 2 -8.890 0 1.7 1.7 name=P2 drill=1.0
+  pad 3 -6.350 0 1.7 1.7 name=P3 drill=1.0
+  pad 4 -3.810 0 1.7 1.7 name=P4 drill=1.0
+  pad 5 -1.270 0 1.7 1.7 name=P5 drill=1.0
+  pad 6 1.270 0 1.7 1.7 name=P6 drill=1.0
+  pad 7 3.810 0 1.7 1.7 name=P7 drill=1.0
+  pad 8 6.350 0 1.7 1.7 name=P8 drill=1.0
+  pad 9 8.890 0 1.7 1.7 name=P9 drill=1.0
+  pad 10 11.430 0 1.7 1.7 name=P10 drill=1.0
+  silk-text top 0 2 "{REF}" size=0.7 anchor=middle
+confirm-lib rp2040_qfn56
+confirm-lib w25q16_soic8
+confirm-lib xtal_3225
+confirm-lib usbc_16p
+confirm-lib ldo_sot23_5
+confirm-lib r_0603
+confirm-lib sw_smd_4x4
+confirm-lib header_1x03_2.54mm
+confirm-lib header_1x10_2.54mm
+body-rect rp2040_qfn56 -3.5 -3.5 3.5 3.5
+body-rect w25q16_soic8 -2.6 -2.7 2.6 2.7
+body-rect xtal_3225 -1.6 -1.25 1.6 1.25
+body-rect usbc_16p -4.5 -2.5 4.5 1.5
+body-rect ldo_sot23_5 -1.5 -1.5 1.5 1.5
+body-rect sw_smd_4x4 -2 -2 2 2
+edge-mount usbc_16p bottom
+edge-mount header_1x03_2.54mm top
+edge-mount header_1x10_2.54mm left
+outline 70 40 radius=1.5
+class ground pour=both
+class power width=0.35 clearance=0.2
+class usb width=0.25 clearance=0.2
+sym U1 ic key=rp2040_qfn56 desc="RP2040 MCU"
+  pin 1 L IOVDD role=power_in
+  pin 2 L GPIO0 role=bidir
+  pin 3 L GPIO1 role=bidir
+  pin 4 L GPIO2 role=bidir
+  pin 5 L GPIO3 role=bidir
+  pin 6 L GPIO4 role=bidir
+  pin 7 L GPIO5 role=bidir
+  pin 8 L GPIO6 role=bidir
+  pin 9 L GPIO7 role=bidir
+  pin 10 L GPIO8 role=bidir
+  pin 11 L GPIO9 role=bidir
+  pin 18 T TESTEN role=input
+  pin 19 T XIN role=input
+  pin 20 T XOUT role=output
+  pin 21 T IOVDD2 role=power_in
+  pin 22 T DVDD role=power_in
+  pin 23 T SWCLK role=input
+  pin 24 T SWD role=bidir
+  pin 25 T RUN role=input
+  pin 26 T GPIO16 role=bidir
+  pin 27 T GPIO17 role=bidir
+  pin 28 T GPIO18 role=bidir
+  pin 29 R GPIO19 role=bidir
+  pin 30 R GPIO20 role=bidir
+  pin 35 R GPIO25 role=bidir
+  pin 40 R IOVDD3 role=power_in
+  pin 41 R ADC_AVDD role=power_in
+  pin 42 R VREG_VIN role=power_in
+  pin 43 B VREG_VOUT role=power_out
+  pin 44 B USB_DM role=bidir
+  pin 45 B USB_DP role=bidir
+  pin 46 B USB_VDD role=power_in
+  pin 47 B IOVDD4 role=power_in
+  pin 48 B DVDD2 role=power_in
+  pin 49 B QSPI_SD3 role=bidir
+  pin 50 B QSPI_SCLK role=output
+  pin 51 B QSPI_SD0 role=bidir
+  pin 52 B QSPI_SD2 role=bidir
+  pin 53 B QSPI_SD1 role=bidir
+  pin 54 B QSPI_SS role=bidir
+  pin 55 B GND role=power_in
+  pin 56 B IOVDD5 role=power_in
+  pin 57 B GND_EP role=power_in
+sym U2 ic key=w25q16_soic8 desc="16Mbit QSPI flash"
+  pin 1 L CS role=input
+  pin 2 L DO role=bidir
+  pin 3 L WP role=input
+  pin 4 L GND role=power_in
+  pin 5 R DI role=bidir
+  pin 6 R CLK role=input
+  pin 7 R HOLD role=input
+  pin 8 R VCC role=power_in
+sym U3 ic key=ldo_sot23_5 desc="3.3V LDO"
+  pin 1 L IN role=power_in
+  pin 2 L GND role=power_in
+  pin 3 L EN role=input
+  pin 4 R BYP role=passive
+  pin 5 R OUT role=power_out
+sym Y1 ic key=xtal_3225 value=12MHz desc="12MHz crystal"
+  pin 1 L X1 role=passive
+  pin 2 L GND1 role=power_in
+  pin 3 R X2 role=passive
+  pin 4 R GND2 role=power_in
+sym C1 capacitor key=c_0603 value=100nF desc="IOVDD decap"
+sym C2 capacitor key=c_0603 value=100nF desc="IOVDD2 decap"
+sym C3 capacitor key=c_0603 value=100nF desc="IOVDD3 decap"
+sym C4 capacitor key=c_0603 value=100nF desc="IOVDD4 decap"
+sym C5 capacitor key=c_0603 value=100nF desc="IOVDD5 decap"
+sym C6 capacitor key=c_0603 value=100nF desc="DVDD decap"
+sym C7 capacitor key=c_0603 value=100nF desc="DVDD2 decap"
+sym C8 capacitor key=c_0603 value=100nF desc="USB_VDD decap"
+sym C9 capacitor key=c_0603 value=100nF desc="ADC_AVDD decap"
+sym C10 capacitor key=c_0603 value=1uF desc="VREG_VIN bulk"
+sym C11 capacitor key=c_0603 value=2.2uF desc="VREG_VOUT bulk"
+sym C12 capacitor key=c_0603 value=100nF desc="flash VCC"
+sym C13 capacitor key=c_0603 value=10uF desc="LDO in"
+sym C14 capacitor key=c_0603 value=10uF desc="LDO out"
+sym C15 capacitor key=c_0603 value=27pF desc="xtal load1"
+sym C16 capacitor key=c_0603 value=27pF desc="xtal load2"
+sym C17 capacitor key=c_0603 value=100nF desc="LDO bypass"
+sym R1 resistor key=r_0603 value=27 desc="USB DM series"
+sym R2 resistor key=r_0603 value=27 desc="USB DP series"
+sym R3 resistor key=r_0603 value=5.1k desc="CC1 RD"
+sym R4 resistor key=r_0603 value=5.1k desc="CC2 RD"
+sym R5 resistor key=r_0603 value=1k desc="BOOTSEL pullup"
+sym R6 resistor key=r_0603 value=10k desc="RUN pullup"
+sym R7 resistor key=r_0603 value=470 desc="LED series"
+sym R8 resistor key=r_0603 value=1k desc="LDO EN to VIN"
+sym D1 led key=led_0603 value=green desc="GPIO25 LED"
+sym SW1 ic key=sw_smd_4x4 value=BOOT desc="BOOTSEL"
+  pin 1 L P1 role=passive
+  pin 2 L P2 role=passive
+  pin 3 L P3 role=passive
+  pin 4 L P4 role=passive
+sym SW2 ic key=sw_smd_4x4 value=RESET desc="RESET"
+  pin 1 L P1 role=passive
+  pin 2 L P2 role=passive
+  pin 3 L P3 role=passive
+  pin 4 L P4 role=passive
+sym J1 ic key=usbc_16p desc="USB-C"
+  pin 1 B GND1 role=passive
+  pin 2 B VBUS1 role=passive
+  pin 3 B CC1 role=passive
+  pin 4 B DP role=passive
+  pin 5 B DM role=passive
+  pin 7 B CC2 role=passive
+  pin 8 B VBUS2 role=passive
+  pin 9 B GND2 role=passive
+  pin 10 B SH1 role=passive
+  pin 11 B SH2 role=passive
+sym J2 ic key=header_1x03_2.54mm desc="SWD"
+  pin 1 T SWDIO role=bidir
+  pin 2 T GND role=power_in
+  pin 3 T SWCLK role=input
+sym J3 ic key=header_1x10_2.54mm desc="GPIO A"
+  pin 1 L P1 role=bidir
+  pin 2 L P2 role=bidir
+  pin 3 L P3 role=bidir
+  pin 4 L P4 role=bidir
+  pin 5 L P5 role=bidir
+  pin 6 L P6 role=bidir
+  pin 7 L P7 role=bidir
+  pin 8 L P8 role=bidir
+  pin 9 L P9 role=bidir
+  pin 10 L P10 role=bidir
+sym J4 ic key=header_1x10_2.54mm desc="GPIO B"
+  pin 1 R P1 role=bidir
+  pin 2 R P2 role=bidir
+  pin 3 R P3 role=bidir
+  pin 4 R P4 role=bidir
+  pin 5 R P5 role=bidir
+  pin 6 R P6 role=bidir
+  pin 7 R P7 role=bidir
+  pin 8 R P8 role=bidir
+  pin 9 R P9 role=bidir
+  pin 10 R P10 role=bidir
+net GND U1.55 U1.57 U1.18 U2.4 U3.2 Y1.2 Y1.4 J1.1 J1.9 J1.10 J1.11 J2.2 C1.2 C2.2 C3.2 C4.2 C5.2 C6.2 C7.2 C8.2 C9.2 C10.2 C11.2 C12.2 C13.2 C14.2 C15.2 C16.2 C17.2 R3.2 R4.2 D1.K SW1.2 SW1.3 SW2.2 SW2.3 class=ground
+net VBUS J1.2 J1.8 U3.1 U3.3 R8.1 C13.1 class=power
+net +3V3 U3.5 R8.2 C14.1 C10.1 U1.1 U1.21 U1.40 U1.47 U1.56 U1.41 U1.42 U1.46 U2.8 C1.1 C2.1 C3.1 C4.1 C5.1 C8.1 C9.1 C12.1 R5.1 R6.1 class=power
+net +1V1 U1.43 U1.22 U1.48 C6.1 C7.1 C11.1 class=power
+net USB_DM J1.5 R1.1 class=usb
+net USB_DM_MCU R1.2 U1.44 class=usb
+net USB_DP J1.4 R2.1 class=usb
+net USB_DP_MCU R2.2 U1.45 class=usb
+net CC1 J1.3 R3.1
+net CC2 J1.7 R4.1
+net XIN U1.19 Y1.1 C15.1
+net XOUT U1.20 Y1.3 C16.1
+net QSPI_SS U1.54 U2.1 R5.2 SW1.1 SW1.4
+net QSPI_SCLK U1.50 U2.6
+net QSPI_SD0 U1.51 U2.5
+net QSPI_SD1 U1.53 U2.2
+net QSPI_SD2 U1.52 U2.3
+net QSPI_SD3 U1.49 U2.7
+net GPIO25 U1.35 R7.1
+net LED_A R7.2 D1.A
+net RUN U1.25 R6.2 SW2.1 SW2.4
+net SWDIO U1.24 J2.1
+net SWCLK U1.23 J2.3
+net LDO_BYP U3.4 C17.1
+net GPIO0 U1.2 J3.1
+net GPIO1 U1.3 J3.2
+net GPIO2 U1.4 J3.3
+net GPIO3 U1.5 J3.4
+net GPIO4 U1.6 J3.5
+net GPIO5 U1.7 J3.6
+net GPIO6 U1.8 J3.7
+net GPIO7 U1.9 J3.8
+net GPIO8 U1.10 J3.9
+net GPIO9 U1.11 J3.10
+net HDRB1 U1.26 J4.1
+net HDRB2 U1.27 J4.2
+net HDRB3 U1.28 J4.3
+net HDRB4 U1.29 J4.4
+net HDRB5 U1.30 J4.5
+erc
+save /Users/jairo/pcb/stress/rp2040-minimal.fragua

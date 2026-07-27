@@ -565,7 +565,8 @@ pub enum EdgeSide {
 impl EdgeSide {
     /// CCW index used by the rotation math: Top=0, Left=1, Bottom=2,
     /// Right=3 (a +90 deg CCW rotation advances a side by one step).
-    fn ccw_index(self) -> u32 {
+    #[must_use]
+    pub fn ccw_index(self) -> u32 {
         match self {
             Self::Top => 0,
             Self::Left => 1,
