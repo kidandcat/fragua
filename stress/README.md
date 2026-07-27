@@ -1,5 +1,7 @@
 # Fragua stress: RP2040 Minimal (open hardware)
 
+> **Full agent handoff:** see [`AGENT-HANDOFF.md`](./AGENT-HANDOFF.md) — problems, fixes, router internals, next steps.
+
 Recreation of a **Raspberry Pi Pico–class** open-hardware board in Fragua:
 
 - Bare **RP2040 QFN-56** (0.4 mm pitch)
