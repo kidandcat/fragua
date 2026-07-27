@@ -44,6 +44,9 @@ pub enum Event {
     /// A keep-out polygon was added or removed. Carries the resulting
     /// count so the UI can refresh its overlay layer.
     KeepoutsChanged { count: usize },
+    /// A design-rule area was declared, edited or removed, or the fab
+    /// rule preset changed. Carries the resulting area count.
+    RuleAreasChanged { count: usize },
     /// Silkscreen content was added or removed. Carries totals so the
     /// UI can refresh without a follow-up fetch.
     SilkChanged {

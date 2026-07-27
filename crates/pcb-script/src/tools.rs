@@ -261,6 +261,32 @@ SCHEMATIC:\n\
                                                  standard GND-on-both-layers pattern that connects\n\
                                                  same-net pads regardless of which side they sit on.\n\
 \n\
+DESIGN-RULE AREAS (make fine pitch LEGAL, not near-miss):\n\
+  rule-area NAME X1 Y1 X2 Y2 [clearance=N] [width=N] [via_drill=N] [via_dia=N]\n\
+           [layers=top|bottom|both] [priority=N]\n\
+                                               — rectangular rule override. INSIDE the rect the\n\
+                                                 clearance is absolute: it overrides both nets'\n\
+                                                 classes and the board default, so it can relax\n\
+                                                 (0.4 mm-pitch QFN escape) or tighten (HV moat).\n\
+                                                 Router, fanout/dogbone, organic pass and DRC all\n\
+                                                 read the same rule, so what routes is what passes.\n\
+                                                 Outside any area the rule is the strictest of the\n\
+                                                 two nets' classes and the default. Overlaps: higher\n\
+                                                 `priority` wins, ties go to the smaller rect.\n\
+                                                 Re-declaring a NAME edits it in place.\n\
+  rule-area-around REF NAME [margin=1.0] [clearance=N] ...\n\
+                                               — same, sized to a placed footprint's pad bbox plus\n\
+                                                 `margin` mm. This is the fine-pitch-escape helper:\n\
+                                                 `rule-area-around U1 fine margin=1.5 clearance=0.13`.\n\
+  list-rule-areas                              — one parseable line per area + the adopted fab rules\n\
+  rule-area-remove NAME\n\
+  fab-rules jlcpcb-2l|jlcpcb-4l|clear|list     — adopt a fab's capability floor (persisted with the\n\
+                                                 project). DRC gates every minimum against it, the\n\
+                                                 fanout drops the smallest via it allows, and any\n\
+                                                 rule area below it raises a RuleBelowFabLimit\n\
+                                                 warning. It does NOT loosen your design defaults —\n\
+                                                 re-ruling a whole board is an explicit decision.\n\
+\n\
 PALETTE / PLACEMENT:\n\
   palette REF KEY [rot=N] [value=V] [layer=top|bottom]\n\
                                                — spawn a palette item from a library entry; the\n\
@@ -557,6 +583,11 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "layer.remove" => tool_layer_remove(project, args),
         "layer.rename" => tool_layer_rename(project, args),
         "impedance.suggest" => tool_impedance_suggest(project, args),
+        "rules.area_set" => tool_rule_area_set(project, args),
+        "rules.area_around" => tool_rule_area_around(project, args),
+        "rules.area_remove" => tool_rule_area_remove(project, args),
+        "rules.area_list" => tool_rule_area_list(project),
+        "rules.fab_set" => tool_fab_rules_set(project, args),
         "fab.profile" => tool_fab_profile(project, args),
         "fab.profile_clear" => tool_fab_profile_clear(project),
         _ => Err(ToolError {
@@ -1168,8 +1199,11 @@ fn tool_view_summary(project: &Project) -> Result<Value, ToolError> {
     let nets = collect_net_status(board, sch);
 
     // DRC summary only — no per-violation list. Use drc.run for details.
+    // Same options `drc` uses (schematic classes + the board's own fab
+    // rules) so the two never disagree on the counts.
     let drc_opts = pcb_drc::DrcOptions {
         placement_margins: build_drc_margin_map(project),
+        schematic: Some(std::sync::Arc::new(sch.clone())),
         ..pcb_drc::DrcOptions::default()
     };
     let drc = pcb_drc::run(board, &drc_opts);
@@ -1184,8 +1218,27 @@ fn tool_view_summary(project: &Project) -> Result<Value, ToolError> {
         })
         .count();
 
+    // Rule areas change what "legal" means, so the board summary has to
+    // name them — an agent reading only text must not have to guess why
+    // a 0.13 mm gap passed.
+    let mut rules_line = String::new();
+    if !board.rule_areas.is_empty() {
+        rules_line.push_str(&format!(
+            "\nrule areas: {}",
+            board
+                .rule_areas
+                .iter()
+                .map(|a| describe_rule_area(a))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if let Some(f) = board.fab_rules.as_ref() {
+        rules_line.push_str(&format!("\nfab-rules: {}", f.preset));
+    }
+
     Ok(text_result(format!(
-        "{} symbols, {} nets ({} fully connected), {} placed, {} in palette; DRC {}E {}W",
+        "{} symbols, {} nets ({} fully connected), {} placed, {} in palette; DRC {}E {}W{rules_line}",
         sch.symbols.len(),
         total_nets,
         total_nets - unconnected_nets,
@@ -4246,6 +4299,10 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         let snap = project.read();
         let opts = pcb_drc::DrcOptions {
             placement_margins: margins,
+            // Classes and rule areas decide what counts as a violation,
+            // so the post-route verdict must see them — otherwise it
+            // disagrees with the `drc` verb on the very same copper.
+            schematic: Some(std::sync::Arc::new(snap.schematic().clone())),
             ..pcb_drc::DrcOptions::default()
         };
         pcb_drc::run(snap.board(), &opts)
@@ -4443,6 +4500,18 @@ fn tool_drc_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         "DRC: {} error(s), {} warning(s)",
         report.error_count, report.warning_count
     );
+    {
+        // Name the rule areas in force: they are why a 0.13 mm gap can be
+        // legal here and a violation two millimetres away.
+        let snap = project.read();
+        let board = snap.board();
+        if let Some(f) = board.fab_rules.as_ref() {
+            summary.push_str(&format!("\nfab-rules: {}", f.preset));
+        }
+        for a in &board.rule_areas {
+            summary.push_str(&format!("\nrule area: {}", describe_rule_area(a)));
+        }
+    }
     const MAX_LISTED: usize = 25;
     let errors: Vec<&pcb_drc::Violation> = report
         .violations
@@ -5313,6 +5382,324 @@ fn tool_impedance_suggest(project: &Project, args: &Value) -> Result<Value, Tool
 #[derive(Debug, Deserialize)]
 struct FabProfileInput {
     name: String,
+}
+
+// ── Design-rule areas ─────────────────────────────────────────────────
+//
+// A rule area is a rectangle whose clearance / width / via geometry
+// overrides the board default INSIDE it. That is how a real design makes
+// a 0.4 mm-pitch QFN escape legal (tight rule near the package, normal
+// rule everywhere else) instead of shipping near-miss DRC errors. All of
+// router, fanout, organic and DRC read them through the one resolver in
+// `pcb_core::rules`.
+
+#[derive(Debug, Deserialize)]
+struct RuleAreaInput {
+    name: String,
+    x1_mm: f64,
+    y1_mm: f64,
+    x2_mm: f64,
+    y2_mm: f64,
+    #[serde(default)]
+    layers: Option<String>,
+    #[serde(default)]
+    clearance_mm: Option<f64>,
+    #[serde(default)]
+    trace_width_mm: Option<f64>,
+    #[serde(default)]
+    via_drill_mm: Option<f64>,
+    #[serde(default)]
+    via_diameter_mm: Option<f64>,
+    #[serde(default)]
+    priority: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleAreaAroundInput {
+    reference: String,
+    name: String,
+    #[serde(default)]
+    margin_mm: Option<f64>,
+    #[serde(default)]
+    layers: Option<String>,
+    #[serde(default)]
+    clearance_mm: Option<f64>,
+    #[serde(default)]
+    trace_width_mm: Option<f64>,
+    #[serde(default)]
+    via_drill_mm: Option<f64>,
+    #[serde(default)]
+    via_diameter_mm: Option<f64>,
+    #[serde(default)]
+    priority: Option<f64>,
+}
+
+fn rule_area_layers(spec: Option<&str>, what: &str) -> Result<Vec<CopperLayer>, ToolError> {
+    Ok(match spec.unwrap_or("both") {
+        "top" => vec![CopperLayer::Top],
+        "bottom" => vec![CopperLayer::Bottom],
+        "both" | "all" | "" => vec![],
+        other => {
+            return Err(ToolError::invalid_params(format!(
+                "{what}: layers must be top|bottom|both, got `{other}`"
+            )))
+        }
+    })
+}
+
+/// Store `area`, print the effective values so the agent sees exactly
+/// what is now in force (the HTTP surface is text-only).
+fn store_rule_area(
+    project: &Project,
+    area: pcb_core::RuleArea,
+    what: &str,
+) -> Result<Value, ToolError> {
+    if area.is_empty_override() {
+        return Err(ToolError::invalid_params(format!(
+            "{what}: an area must override something — set at least one of clearance=, width=, via_drill=, via_dia="
+        )));
+    }
+    let text = format!("Rule area {}", describe_rule_area(&area));
+    let data = rule_area_json(&area);
+    project.set_rule_area(area);
+    project.log(ActivityLevel::Info, text.clone());
+    let warn = fab_limit_warning(project);
+    Ok(text_result(format!("{text}{warn}")).with_data(data))
+}
+
+/// One parseable line per area — same shape as `list-lib`.
+fn describe_rule_area(a: &pcb_core::RuleArea) -> String {
+    let mut out = format!(
+        "{} {:.2},{:.2} {:.2},{:.2}",
+        a.name,
+        a.rect.min.x.to_mm(),
+        a.rect.min.y.to_mm(),
+        a.rect.max.x.to_mm(),
+        a.rect.max.y.to_mm(),
+    );
+    out.push_str(&format!(
+        " layers={}",
+        if a.layers.is_empty() {
+            "both".to_string()
+        } else {
+            a.layers
+                .iter()
+                .map(|l| layer_to_str(*l))
+                .collect::<Vec<_>>()
+                .join("+")
+        }
+    ));
+    if let Some(v) = a.clearance_mm {
+        out.push_str(&format!(" clearance={v:.3}"));
+    }
+    if let Some(v) = a.trace_width_mm {
+        out.push_str(&format!(" width={v:.3}"));
+    }
+    if let Some(v) = a.via_drill_mm {
+        out.push_str(&format!(" via_drill={v:.3}"));
+    }
+    if let Some(v) = a.via_diameter_mm {
+        out.push_str(&format!(" via_dia={v:.3}"));
+    }
+    if a.priority != 0 {
+        out.push_str(&format!(" priority={}", a.priority));
+    }
+    out
+}
+
+fn rule_area_json(a: &pcb_core::RuleArea) -> Value {
+    json!({
+        "name": a.name,
+        "x1_mm": a.rect.min.x.to_mm(),
+        "y1_mm": a.rect.min.y.to_mm(),
+        "x2_mm": a.rect.max.x.to_mm(),
+        "y2_mm": a.rect.max.y.to_mm(),
+        "layers": a.layers.iter().map(|l| layer_to_str(*l)).collect::<Vec<_>>(),
+        "clearance_mm": a.clearance_mm,
+        "trace_width_mm": a.trace_width_mm,
+        "via_drill_mm": a.via_drill_mm,
+        "via_diameter_mm": a.via_diameter_mm,
+        "priority": a.priority,
+    })
+}
+
+/// Text tail listing any rule-area value the adopted fab cannot build.
+/// Same rule as the DRC's `RuleBelowFabLimit`, surfaced at declaration
+/// time so the agent doesn't have to run DRC to find out.
+fn fab_limit_warning(project: &Project) -> String {
+    let snap = project.read();
+    let board = snap.board();
+    let Some(fab) = board.fab_rules.as_ref() else {
+        return String::new();
+    };
+    let mut hits: Vec<String> = Vec::new();
+    for a in &board.rule_areas {
+        let mut check = |what: &str, v: Option<f64>, min: f64| {
+            if let Some(v) = v {
+                if v + 1e-9 < min {
+                    hits.push(format!("{} {what} {v:.3} < {min:.3}", a.name));
+                }
+            }
+        };
+        check("clearance", a.clearance_mm, fab.min_clearance_mm);
+        check("width", a.trace_width_mm, fab.min_trace_width_mm);
+        check("via_drill", a.via_drill_mm, fab.min_via_drill_mm);
+        check("via_dia", a.via_diameter_mm, fab.min_via_diameter_mm);
+    }
+    if hits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nWARNING below {} limits (DRC RuleBelowFabLimit): {}",
+            fab.preset,
+            hits.join("; ")
+        )
+    }
+}
+
+fn tool_rule_area_set(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: RuleAreaInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("rule-area: {e}")))?;
+    let rect = pcb_core::Rect::from_corners(
+        Point::new(Length::from_mm(input.x1_mm), Length::from_mm(input.y1_mm)),
+        Point::new(Length::from_mm(input.x2_mm), Length::from_mm(input.y2_mm)),
+    );
+    let mut area = pcb_core::RuleArea::new(input.name, rect);
+    area.layers = rule_area_layers(input.layers.as_deref(), "rule-area")?;
+    area.clearance_mm = input.clearance_mm;
+    area.trace_width_mm = input.trace_width_mm;
+    area.via_drill_mm = input.via_drill_mm;
+    area.via_diameter_mm = input.via_diameter_mm;
+    area.priority = input.priority.unwrap_or(0.0) as i32;
+    store_rule_area(project, area, "rule-area")
+}
+
+fn tool_rule_area_around(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: RuleAreaAroundInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("rule-area-around: {e}")))?;
+    let margin = Length::from_mm(input.margin_mm.unwrap_or(1.0));
+    let rect = {
+        let snap = project.read();
+        let fp = snap
+            .board()
+            .footprints_in_order()
+            .find(|f| f.reference == input.reference)
+            .ok_or_else(|| {
+                ToolError::invalid_params(format!(
+                    "rule-area-around: no placed footprint `{}`",
+                    input.reference
+                ))
+            })?;
+        fp.bounds()
+            .ok_or_else(|| {
+                ToolError::invalid_params(format!(
+                    "rule-area-around: `{}` has no pads to bound",
+                    input.reference
+                ))
+            })?
+            .expand(margin)
+    };
+    let mut area = pcb_core::RuleArea::new(input.name, rect);
+    area.layers = rule_area_layers(input.layers.as_deref(), "rule-area-around")?;
+    area.clearance_mm = input.clearance_mm;
+    area.trace_width_mm = input.trace_width_mm;
+    area.via_drill_mm = input.via_drill_mm;
+    area.via_diameter_mm = input.via_diameter_mm;
+    area.priority = input.priority.unwrap_or(0.0) as i32;
+    store_rule_area(project, area, "rule-area-around")
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleAreaRemoveInput {
+    name: String,
+}
+
+fn tool_rule_area_remove(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: RuleAreaRemoveInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("rule-area-remove: {e}")))?;
+    if project.remove_rule_area(&input.name) {
+        Ok(text_result(format!("Rule area `{}` removed", input.name)).into())
+    } else {
+        Err(ToolError::invalid_params(format!(
+            "rule-area-remove: no area named `{}`",
+            input.name
+        )))
+    }
+}
+
+fn tool_rule_area_list(project: &Project) -> Result<Value, ToolError> {
+    let snap = project.read();
+    let board = snap.board();
+    let mut text = if board.rule_areas.is_empty() {
+        "0 rule area(s)".to_string()
+    } else {
+        format!("{} rule area(s):", board.rule_areas.len())
+    };
+    for a in &board.rule_areas {
+        text.push_str(&format!("\n  {}", describe_rule_area(a)));
+    }
+    if let Some(f) = board.fab_rules.as_ref() {
+        text.push_str(&format!(
+            "\nfab-rules {}: trace/space {:.3}, via drill {:.3}, via dia {:.3} mm",
+            f.preset, f.min_trace_width_mm, f.min_via_drill_mm, f.min_via_diameter_mm,
+        ));
+    } else {
+        text.push_str("\nfab-rules: none adopted");
+    }
+    let items: Vec<Value> = board.rule_areas.iter().map(rule_area_json).collect();
+    drop(snap);
+    Ok(text_result(text).with_data(json!({ "rule_areas": items })))
+}
+
+#[derive(Debug, Deserialize)]
+struct FabRulesInput {
+    preset: String,
+}
+
+fn tool_fab_rules_set(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: FabRulesInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("fab-rules: {e}")))?;
+    let key = input.preset.to_ascii_lowercase();
+    if key == "clear" || key == "none" {
+        project.set_fab_rules(None);
+        return Ok(text_result("fab rules cleared").into());
+    }
+    if key == "list" {
+        return Ok(text_result(format!(
+            "fab-rules presets: {}",
+            pcb_core::FabRules::preset_names().join(", ")
+        ))
+        .into());
+    }
+    let rules = pcb_core::FabRules::preset(&key).ok_or_else(|| {
+        ToolError::invalid_params(format!(
+            "fab-rules: unknown preset `{}` (have {})",
+            input.preset,
+            pcb_core::FabRules::preset_names().join(", ")
+        ))
+    })?;
+    let text = format!(
+        "fab rules `{}`: trace/space {:.3} mm, via drill {:.3} mm, via dia {:.3} mm, annular {:.3} mm, edge {:.3} mm, max {:.0}×{:.0} mm\nDRC now gates every minimum against this preset; the fanout uses the smallest via it allows.",
+        rules.preset,
+        rules.min_trace_width_mm,
+        rules.min_clearance_mm,
+        rules.min_via_drill_mm,
+        rules.min_via_diameter_mm,
+        rules.min_edge_clearance_mm,
+        rules.max_board_size_mm.0,
+        rules.max_board_size_mm.1,
+    );
+    let data = json!({
+        "preset": rules.preset,
+        "min_trace_width_mm": rules.min_trace_width_mm,
+        "min_clearance_mm": rules.min_clearance_mm,
+        "min_via_drill_mm": rules.min_via_drill_mm,
+        "min_via_diameter_mm": rules.min_via_diameter_mm,
+    });
+    project.set_fab_rules(Some(rules));
+    project.log(ActivityLevel::Info, text.clone());
+    let warn = fab_limit_warning(project);
+    Ok(text_result(format!("{text}{warn}")).with_data(data))
 }
 
 fn tool_fab_profile(project: &Project, args: &Value) -> Result<Value, ToolError> {

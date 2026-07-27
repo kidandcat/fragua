@@ -68,6 +68,11 @@ pub(crate) const VERBS: &[&str] = &[
     "impedance",
     "sheet",
     "keepout",
+    "rule-area",
+    "rule-area-around",
+    "rule-area-remove",
+    "list-rule-areas",
+    "fab-rules",
     "reset",
     "attach",
     "detach",
@@ -721,6 +726,70 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     format!("keepout: unknown subcommand `{other}` (add|list|remove)"),
                 )),
             }
+        }
+        "rule-area" => {
+            // rule-area NAME X1 Y1 X2 Y2 [layers=top|bottom|both]
+            //           [clearance=N] [width=N] [via_drill=N] [via_dia=N]
+            //           [priority=N]
+            need_args(
+                line,
+                tokens,
+                5,
+                "rule-area NAME X1 Y1 X2 Y2 [clearance=N] [width=N] [via_drill=N] [via_dia=N] [layers=top|bottom|both] [priority=N]",
+            )?;
+            let mut args = json!({
+                "name": tokens[1],
+                "x1_mm": parse_num(&tokens[2], line, "x1")?,
+                "y1_mm": parse_num(&tokens[3], line, "y1")?,
+                "x2_mm": parse_num(&tokens[4], line, "x2")?,
+                "y2_mm": parse_num(&tokens[5], line, "y2")?,
+            });
+            apply_kv(&mut args, &tokens[6..], line, RULE_AREA_ATTRS)?;
+            Ok(Cmd {
+                line,
+                tool: "rules.area_set".into(),
+                args,
+            })
+        }
+        "rule-area-around" => {
+            // rule-area-around REF NAME [margin=1.0] [clearance=N] ...
+            need_args(
+                line,
+                tokens,
+                2,
+                "rule-area-around REF NAME [margin=N] [clearance=N] [width=N] [via_drill=N] [via_dia=N] [layers=...] [priority=N]",
+            )?;
+            let mut args = json!({"reference": tokens[1], "name": tokens[2]});
+            let mut allowed: Vec<(&str, AttrType)> = RULE_AREA_ATTRS.to_vec();
+            allowed.push(("margin", AttrType::NumInto("margin_mm")));
+            apply_kv(&mut args, &tokens[3..], line, &allowed)?;
+            Ok(Cmd {
+                line,
+                tool: "rules.area_around".into(),
+                args,
+            })
+        }
+        "rule-area-remove" => {
+            need_args(line, tokens, 1, "rule-area-remove NAME")?;
+            Ok(Cmd {
+                line,
+                tool: "rules.area_remove".into(),
+                args: json!({"name": tokens[1]}),
+            })
+        }
+        "list-rule-areas" => Ok(Cmd {
+            line,
+            tool: "rules.area_list".into(),
+            args: json!({}),
+        }),
+        "fab-rules" => {
+            // fab-rules PRESET | fab-rules clear | fab-rules list
+            need_args(line, tokens, 1, "fab-rules jlcpcb-2l|jlcpcb-4l|clear|list")?;
+            Ok(Cmd {
+                line,
+                tool: "rules.fab_set".into(),
+                args: json!({"preset": tokens[1]}),
+            })
         }
         "pour" => {
             // Syntaxes:
@@ -1906,6 +1975,18 @@ fn guess_mime(path: &str) -> String {
         "application/octet-stream".into()
     }
 }
+
+/// Rule-area override keys, shared by `rule-area` and
+/// `rule-area-around`. Every one is optional — an area that sets none of
+/// them is rejected as a no-op by the tool.
+const RULE_AREA_ATTRS: &[(&str, AttrType)] = &[
+    ("clearance", AttrType::NumInto("clearance_mm")),
+    ("width", AttrType::NumInto("trace_width_mm")),
+    ("via_drill", AttrType::NumInto("via_drill_mm")),
+    ("via_dia", AttrType::NumInto("via_diameter_mm")),
+    ("layers", AttrType::Str),
+    ("priority", AttrType::Num),
+];
 
 #[derive(Clone, Copy)]
 enum AttrType {

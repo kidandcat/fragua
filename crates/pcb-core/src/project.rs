@@ -713,6 +713,42 @@ impl Project {
         removed
     }
 
+    /// Declare (or re-declare) a rule area. The name is the handle, so
+    /// re-declaring one edits it in place. Returns the stored id.
+    pub fn set_rule_area(&self, area: crate::rules::RuleArea) -> Id {
+        let (id, count) = {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            let id = inner.board.set_rule_area(area);
+            (id, inner.board.rule_areas.len())
+        };
+        self.bus.publish(Event::RuleAreasChanged { count });
+        id
+    }
+
+    /// Remove a rule area by name. Returns whether one went.
+    pub fn remove_rule_area(&self, name: &str) -> bool {
+        let (removed, count) = {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            let removed = inner.board.remove_rule_area(name);
+            (removed, inner.board.rule_areas.len())
+        };
+        if removed {
+            self.bus.publish(Event::RuleAreasChanged { count });
+        }
+        removed
+    }
+
+    /// Adopt (or clear) the board's fab capability floor. Persisted with
+    /// the project, unlike the in-memory `fab_profile` handle.
+    pub fn set_fab_rules(&self, rules: Option<crate::rules::FabRules>) {
+        let count = {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.fab_rules = rules;
+            inner.board.rule_areas.len()
+        };
+        self.bus.publish(Event::RuleAreasChanged { count });
+    }
+
     /// Remove a pour by `(net, layer)`. Returns true if one was removed.
     pub fn remove_pour(&self, net: &str, layer: CopperLayer) -> bool {
         let (removed, count) = {
