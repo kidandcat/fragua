@@ -283,7 +283,7 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
             // together.
             let stub = route_one(
                 &mut grid, t, info, want_perp, via_r, clearance, &foreign, &work, &net_ids,
-                &accepted, opts,
+                &accepted, opts, escape_deadline,
             );
             if let Some(esc) = stub {
                 // Record the breakout via in the working board so the next
@@ -381,6 +381,7 @@ fn route_one(
     net_ids: &HashMap<String, u32>,
     accepted: &[Escape],
     opts: &RouteOptions,
+    deadline: Option<Instant>,
 ) -> Option<Escape> {
     let target_id = *net_ids.get(&t.net)?;
     let (px, py) = info.perp;
@@ -416,6 +417,14 @@ fn route_one(
                 // Via must fit (exact) against foreign pads, existing vias, edge.
                 if !fanout::fanout_via_fits(bx, by, &t.net, via_r, clearance, foreign, work) {
                     continue;
+                }
+                // One pad can try dir × depth × perp-nudge = up to 40 fine-grid
+                // A* searches. The escape budget was only checked BETWEEN pads,
+                // so a 56-pad QFN could blow through `max_seconds` many times
+                // over inside this loop (observed: a 90 s budget running past
+                // 400 s on a 4-layer stackup). Check it per candidate.
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    return None;
                 }
                 let breakout = Point::new(Length::from_mm(bx), Length::from_mm(by));
                 // Stamp the breakout as a landing pad on the fine grid so the
