@@ -19,15 +19,22 @@
 //! The fine grid only proposes the stub PATH; every laid segment is then
 //! validated against the true (un-quantised) geometry at honest clearance,
 //! so a stub is accepted only when it really clears 0.20 mm. Pads for which
-//! no clean stub is found fall back to the staggered via-in-pad, so this
-//! pass is never worse than the fanout it replaces.
+//! no clean stub is found fall back to the staggered via-in-pad.
+//!
+//! The fine escape is an OPTIONAL improvement on top of the VIP/dogbone
+//! fanout, never a replacement for it: `plan_escapes` plans the fanout for
+//! every footprint first and only swaps in a fine escape for a footprint
+//! that (a) has pads the fanout could not free, (b) has room for the fan,
+//! and (c) actually frees at least as many pads. That is what keeps a
+//! 3-or-more-layer board from routing WORSE than the same board on two
+//! layers (issue O8).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use pcb_core::{Board, CopperLayer, Id, Length, Point, Rect, Trace, Via};
 
-use crate::astar::search;
+use crate::astar::{search, Limits};
 use crate::fanout::{
     self, FanoutPlan, PadRect, EDGE_CLEARANCE_MM, FANOUT_VIA_DIAMETER_MM, FANOUT_VIA_DRILL_MM,
 };
@@ -63,6 +70,11 @@ fn breakout_spread(opts: &RouteOptions) -> f64 {
 const BREAKOUT_DEPTH_MM: f64 = 0.85;
 /// Extra depths/perp nudges tried when the first breakout spot is taken.
 const DEPTH_STEPS: [f64; 4] = [0.0, 0.25, 0.5, 0.75];
+/// Wall-clock a footprint's fine escape gets per pad the fanout left
+/// stranded. See `fine_escape_footprint`.
+const FINE_ESCAPE_SECS_PER_PAD: f64 = 0.5;
+/// Pop cap for ONE fine-grid stub search (see the `Limits` at the call site).
+const FINE_ESCAPE_MAX_POPS: u64 = 20_000;
 
 /// Result of the escape pass. Carries a `FanoutPlan` shaped exactly like
 /// the legacy fanout (so the coarse router's via-disk stamping and
@@ -105,24 +117,6 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
     if board.stackup.layer_count() < 2 {
         return plan;
     }
-    // Fine-grid stub escape was designed for multi-layer stackups where the
-    // breakout via lands on a roomy inner plane. On 2-layer boards the same
-    // path walls off the top surface with stubs and still has only Bottom as
-    // an escape layer — the cheaper VIP/dogbone fanout (below) does that
-    // without the fine-grid cost. Use fine escape only when:
-    //   • ≥3 copper layers, AND
-    //   • the coarse cell is fine enough (≤ FINE_ESCAPE_MAX_CELL_MM).
-    // Otherwise fall through to plan_fanout, which now also runs on 2-layer
-    // and places dogbone vias for pads too small for via-in-pad.
-    if board.stackup.layer_count() < 3 || opts.cell.to_mm() > FINE_ESCAPE_MAX_CELL_MM {
-        let mut f = fanout::plan_fanout(board, opts);
-        // The dogbone path lays its own pad → via stubs; hoist them into
-        // the plan's stub list so the router stamps and commits them
-        // exactly like the fine-escape stubs.
-        plan.stubs = std::mem::take(&mut f.stubs);
-        plan.fanout = f;
-        return plan;
-    }
     let rects = pad_rects_owned(board);
     let foreign: Vec<&PadRect> = rects.iter().collect();
     let tw = opts.trace_width.to_mm();
@@ -139,17 +133,121 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
     // via-fit test) respect them.
     let mut work = board.clone();
     let mut accepted: Vec<Escape> = Vec::new();
-    // Soft budget for the escape pre-pass: keep ~20% of the overall route
+    // Fine-grid stub escape was designed for multi-layer stackups where the
+    // breakout via lands on a roomy inner plane. On 2-layer boards the same
+    // path walls off the top surface with stubs and still has only Bottom as
+    // an escape layer, so it is only *considered* when:
+    //   • the caller opted in (`RouteOptions::fine_escape`), AND
+    //   • ≥3 copper layers, AND
+    //   • the coarse cell is fine enough (≤ FINE_ESCAPE_MAX_CELL_MM).
+    // Even then it is per-footprint (see `fine_escape_footprint`): a
+    // footprint whose fan cannot fit, whose pads the fanout already freed,
+    // or whose fine escape frees fewer pads than the fanout, keeps the
+    // fanout. The fanout is therefore the baseline on EVERY stackup —
+    // extra layers can only add escapes, never take them away (issue O8).
+    let fine_allowed = opts.fine_escape
+        && board.stackup.layer_count() >= 3
+        && opts.cell.to_mm() <= FINE_ESCAPE_MAX_CELL_MM;
+    // Soft budget for the escape pre-pass: keep ~75% of the overall route
     // budget for the coarse RR&R loop. Without this, a 56-pad QFN can burn
     // the whole max_seconds in fine-grid stub A* before any coarse route runs.
-    let escape_deadline = opts.max_seconds.filter(|s| *s > 0.0 && s.is_finite()).map(|s| {
-        Instant::now() + std::time::Duration::from_secs_f64((s * 0.25).clamp(5.0, 45.0))
-    });
+    let escape_budget = opts
+        .max_seconds
+        .filter(|s| *s > 0.0 && s.is_finite())
+        .map(|s| std::time::Duration::from_secs_f64((s * 0.25).clamp(5.0, 45.0)));
+    let escape_deadline = escape_budget.map(|d| Instant::now() + d);
 
     for fp in board.footprints_in_order() {
-        if escape_deadline.is_some_and(|d| Instant::now() >= d) {
-            break;
+        // Baseline: the proven VIP + dogbone fanout for this footprint,
+        // planned against the copper committed so far. Cheap (no search).
+        let mut base_work = work.clone();
+        let base = fanout::plan_footprint(fp, &foreign, &mut base_work, opts);
+        if !fine_allowed || escape_deadline.is_some_and(|d| Instant::now() >= d) {
+            fanout::merge_plan(&mut plan.fanout, base);
+            work = base_work;
+            continue;
         }
+        let accepted_mark = accepted.len();
+        let mut fine_work = work.clone();
+        let fine = fine_escape_footprint(
+            fp,
+            board,
+            &mut fine_work,
+            &foreign,
+            &net_ids,
+            &net_id_of,
+            &mut accepted,
+            opts,
+            escape_deadline,
+            escape_budget,
+            tw,
+            clearance,
+            via_r,
+            base.through_pads.len(),
+        );
+        // Keep the fine escape only when it demonstrably helps: it must
+        // free at least as many of this footprint's pads as the fanout
+        // would have. Otherwise roll back and use the fanout.
+        match fine {
+            Some(sub) if sub.through_pads.len() >= base.through_pads.len() => {
+                fanout::merge_plan(&mut plan.fanout, sub);
+                work = fine_work;
+            }
+            _ => {
+                accepted.truncate(accepted_mark);
+                fanout::merge_plan(&mut plan.fanout, base);
+                work = base_work;
+            }
+        }
+    }
+
+    // The dogbone path lays its own pad → via stubs; hoist them into the
+    // plan's stub list so the router stamps and commits them exactly like
+    // the fine-escape stubs.
+    plan.stubs = std::mem::take(&mut plan.fanout.stubs);
+    // Emit the accepted fine-escape stubs as real traces.
+    for esc in &accepted {
+        for w in esc.points.windows(2) {
+            plan.stubs.push(Trace {
+                id: Id::new(),
+                layer: esc.layer,
+                start: w[0],
+                end: w[1],
+                width: opts.trace_width,
+                net: esc.net.clone(),
+            });
+        }
+    }
+    plan
+}
+
+/// Fine-grid stub escape for ONE footprint. Returns the sub-plan (vias +
+/// breakout landings) it managed to lay, or `None` when the footprint is
+/// not a fine-escape candidate at all. Accepted stubs are pushed onto
+/// `accepted` (the caller truncates on rollback) and the breakout vias
+/// onto `work`.
+#[allow(clippy::too_many_arguments)]
+fn fine_escape_footprint(
+    fp: &pcb_core::Footprint,
+    board: &Board,
+    work: &mut Board,
+    foreign: &[&PadRect],
+    net_ids: &HashMap<String, u32>,
+    net_id_of: &dyn Fn(&str) -> Option<u32>,
+    accepted: &mut Vec<Escape>,
+    opts: &RouteOptions,
+    escape_deadline: Option<Instant>,
+    escape_budget: Option<std::time::Duration>,
+    tw: f64,
+    clearance: f64,
+    via_r: f64,
+    // How many of this footprint's pads the VIP/dogbone fanout already
+    // freed. When it freed all of them there is nothing left for the fine
+    // grid to win, so the (expensive) search is skipped.
+    base_escaped: usize,
+) -> Option<FanoutPlan> {
+    let mut plan = FanoutPlan::default();
+    {
         let (fp_cx, fp_cy) = footprint_centroid(fp);
 
         // Which of this footprint's pads need to escape (same rule as the
@@ -186,7 +284,7 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                     .any(|r| fanout::point_rect_dist(cx, cy, r) < POWER_NEIGHBOUR_MM);
             if !in_cluster
                 && !power_crowded
-                && fanout::can_escape_surface(cx, cy, hw, hh, net, &foreign, tw, clearance)
+                && fanout::can_escape_surface(cx, cy, hw, hh, net, foreign, tw, clearance)
             {
                 continue;
             }
@@ -201,16 +299,32 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                 hh,
             });
         }
-        if targets.is_empty() {
-            continue;
+        // Nothing to escape, or the cheap fanout already escaped every pad
+        // this footprint needs: the fine grid can only spend budget here.
+        if targets.is_empty() || base_escaped >= targets.len() {
+            return None;
         }
+        // Time this footprint gets: proportional to the pads the fanout left
+        // stranded (that is all the fine grid can win), hard-capped at a
+        // quarter of the escape budget. Without the cap one connector's
+        // 40-candidates-per-pad sweep spends the whole pre-pass on a couple
+        // of extra escapes and the coarse router pays for it (issue O8).
+        let stranded = targets.len().saturating_sub(base_escaped) as f64;
+        let escape_deadline = match (escape_deadline, escape_budget) {
+            (Some(d), Some(b)) => {
+                let slice = (FINE_ESCAPE_SECS_PER_PAD * stranded)
+                    .clamp(FINE_ESCAPE_SECS_PER_PAD, b.as_secs_f64() / 4.0);
+                Some(d.min(Instant::now() + std::time::Duration::from_secs_f64(slice)))
+            }
+            (d, _) => d,
+        };
 
         // Build the local fine grid over the pad field + margin and stamp
         // every pad bare (no body/keepout: the connector body bbox covers
         // the very channel the stubs escape into).
         let region = footprint_tile(fp, TILE_MARGIN_MM);
         let mut grid = Grid::with_layers(region, Length::from_mm(FINE_CELL_MM), 2);
-        grid.stamp_pads(board, &net_id_of, Length(0));
+        grid.stamp_pads(board, net_id_of, Length(0));
 
         // Long axis / escape direction per pad, and fan grouping.
         let mut infos: Vec<PadInfo> = targets
@@ -265,6 +379,21 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                 let off = (rank as f64 - (n as f64 - 1.0) / 2.0) * spread;
                 fan_target.insert(k, center + off);
             }
+            // Fan-fit gate. The whole point of the fan is to put every
+            // breakout of one row on its own lane, `spread` apart. A row of
+            // `n` pins therefore needs `spread * (n - 1)` of perpendicular
+            // room; a connector row (a handful of escaping pins) has it, a
+            // 14-pin 0.4 mm QFN edge does not — its outer breakouts would
+            // land several millimetres past the package, where they neither
+            // fit nor route, and the search spent finding that out is the
+            // whole escape budget (issue O8: 24 s of a 90 s budget for 5
+            // escapes, against 25 from the dogbone fanout in 10 ms). When
+            // the fan cannot fit inside the pad row plus the tile margin,
+            // decline the footprint and let the caller keep the fanout.
+            let span = infos[*ms.last().unwrap()].perp_coord - infos[ms[0]].perp_coord;
+            if spread * (n as f64 - 1.0) > span + 2.0 * TILE_MARGIN_MM {
+                return None;
+            }
         }
 
         // Route each pad's stub (process in perp order within the tile so
@@ -282,8 +411,18 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
             // signals can no longer be reached), so the whole row escapes
             // together.
             let stub = route_one(
-                &mut grid, t, info, want_perp, via_r, clearance, &foreign, &work, &net_ids,
-                &accepted, opts, escape_deadline,
+                &mut grid,
+                t,
+                info,
+                want_perp,
+                via_r,
+                clearance,
+                foreign,
+                work,
+                net_ids,
+                accepted,
+                opts,
+                escape_deadline,
             );
             if let Some(esc) = stub {
                 // Record the breakout via in the working board so the next
@@ -296,11 +435,9 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                     net: esc.net.clone(),
                 };
                 work.vias.push(via.clone());
-                plan.fanout.vias.push(via);
-                plan.fanout.through_pads.insert(esc.pad_ref.clone());
-                plan.fanout
-                    .via_positions
-                    .insert(esc.pad_ref.clone(), esc.breakout);
+                plan.vias.push(via);
+                plan.through_pads.insert(esc.pad_ref.clone());
+                plan.via_positions.insert(esc.pad_ref.clone(), esc.breakout);
                 // Stamp the laid stub on the local grid as own copper so a
                 // later same-tile stub treats it as an obstacle.
                 if let Some(&id) = net_ids.get(&esc.net) {
@@ -311,7 +448,7 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                 // Fall back to the staggered via-in-pad (legacy fanout
                 // behaviour) — never worse than before.
                 if let Some((vx, vy)) = fanout::pick_via_position(
-                    t.cx, t.cy, t.hw, t.hh, fp_cx, fp_cy, &t.net, via_r, clearance, &foreign, &work,
+                    t.cx, t.cy, t.hw, t.hh, fp_cx, fp_cy, &t.net, via_r, clearance, foreign, work,
                 ) {
                     let pos = Point::new(Length::from_mm(vx), Length::from_mm(vy));
                     let via = Via {
@@ -322,28 +459,14 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
                         net: t.net.clone(),
                     };
                     work.vias.push(via.clone());
-                    plan.fanout.vias.push(via);
-                    plan.fanout.through_pads.insert(t.pad_ref.clone());
-                    plan.fanout.via_positions.insert(t.pad_ref.clone(), pos);
+                    plan.vias.push(via);
+                    plan.through_pads.insert(t.pad_ref.clone());
+                    plan.via_positions.insert(t.pad_ref.clone(), pos);
                 }
             }
         }
     }
-
-    // Emit the accepted stubs as real traces.
-    for esc in &accepted {
-        for w in esc.points.windows(2) {
-            plan.stubs.push(Trace {
-                id: Id::new(),
-                layer: esc.layer,
-                start: w[0],
-                end: w[1],
-                width: opts.trace_width,
-                net: esc.net.clone(),
-            });
-        }
-    }
-    plan
+    Some(plan)
 }
 
 struct EscapePad {
@@ -444,6 +567,16 @@ fn route_one(
                     &cost_map,
                     &[],
                     1.0,
+                    Limits {
+                        // A stub is a fraction of a millimetre of copper; on
+                        // the 0.05 mm fine grid a genuine one is found in a
+                        // few thousand pops. Anything beyond that is a dead
+                        // end being swept exhaustively — and this loop runs
+                        // up to 40 times per pad, so an unbounded sweep is
+                        // what let one connector eat the whole escape budget.
+                        max_pops: Some(FINE_ESCAPE_MAX_POPS),
+                        deadline,
+                    },
                 );
                 // Un-stamp the trial landing (set back to free) regardless of
                 // outcome; an accepted stub re-stamps its own copper.

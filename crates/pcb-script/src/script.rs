@@ -1304,6 +1304,7 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     ("fillet", AttrType::NumInto("organic_fillet_mm")),
                     ("engine", AttrType::Str),
                     ("max_seconds", AttrType::Num),
+                    ("fine_escape", AttrType::BoolInto("fine_escape")),
                 ],
             )?;
             Ok(Cmd {

@@ -339,6 +339,7 @@ PALETTE / PLACEMENT:\n\
 ROUTING:\n\
   route [trace_width=N] [clearance=N] [via_drill=N] [via_diameter=N] [via_cost=N] [cell=N]\n\
             [max_seconds=N] [organic=true|false] [fillet=MM] [engine=grid|topo]\n\
+            [fine_escape=true|false]\n\
                                                — auto-route every net (Theta* on 2 layers), then an\n\
                                                  organic post-pass (rubber-band string-pulling +\n\
                                                  arc fillets, TopoR-style flowing traces; clearance\n\
@@ -354,7 +355,10 @@ ROUTING:\n\
                                                  0 = unlimited) and streams progress into the\n\
                                                  activity log. Defaults trace_width=0.25,\n\
                                                  clearance=0.20, via_drill=0.30, via_diameter=0.60,\n\
-                                                 cell=0.20, via_cost=8\n\
+                                                 cell=0.20, via_cost=8. fine_escape=true opts into\n\
+                                                 the fine-grid stub escape on 3+ layer stackups\n\
+                                                 (off by default: on a 0.4 mm QFN it costs budget\n\
+                                                 and loses to the dogbone fanout)\n\
   clear-route                                  — drop all traces and vias\n\
   clear-net NET                                — clear one net's traces/vias\n\
   trace top|bottom NET X1 Y1 X2 Y2 [width=N]   — manual trace segment\n\
@@ -3595,6 +3599,10 @@ struct RouteRunInput {
     /// Soft wall-clock budget in seconds. Default 90. Pass 0 for unlimited.
     #[serde(default)]
     max_seconds: Option<f64>,
+    /// Opt in to the fine-grid escape pass on ≥3-layer stackups. Off by
+    /// default — see `RouteOptions::fine_escape`.
+    #[serde(default)]
+    fine_escape: Option<bool>,
 }
 
 fn de_u32_lenient<'de, D>(d: D) -> Result<u32, D::Error>
@@ -4172,6 +4180,7 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         // threshold). The knob exists for future open-board experiments.
         heuristic_weight: 1.0,
         max_seconds,
+        fine_escape: input.fine_escape.unwrap_or(false),
         on_progress: Some(std::sync::Arc::new(move |msg: &str| {
             progress_project.log(ActivityLevel::Info, msg);
         })),

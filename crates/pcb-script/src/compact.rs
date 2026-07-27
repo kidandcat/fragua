@@ -265,6 +265,7 @@ pub fn compact(
         cell: Length::from_mm(0.20),
         trace_width: Length::from_mm(0.25),
         clearance: Length::from_mm(0.20),
+        fine_escape: false,
         via_cost: 8,
         via_drill: Length::from_mm(0.30),
         via_diameter: Length::from_mm(0.60),

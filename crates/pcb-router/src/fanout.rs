@@ -354,28 +354,38 @@ pub(crate) fn pick_via_position(
 }
 
 /// Plan the fanout: for every pad that can't escape on the surface, drop
-/// a via-in-pad (or dogbone fallback via the escape pass) if it fits.
+/// a via-in-pad (or dogbone fallback) if it fits.
 ///
 /// On 2-layer boards the "other" layer is Bottom — vias still open a
 /// corridor under the package body. Via-in-pad only lands when the pad is
-/// large enough to host the 0.30 mm barrel; finer pads rely on the
-/// localized escape stubs in `escape.rs`.
-pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
+/// large enough to host the 0.30 mm barrel; finer pads get a dogbone.
+/// Fold `sub` (one footprint's fanout) into `plan`.
+pub(crate) fn merge_plan(plan: &mut FanoutPlan, sub: FanoutPlan) {
+    plan.vias.extend(sub.vias);
+    plan.stubs.extend(sub.stubs);
+    plan.dogbone_pads.extend(sub.dogbone_pads);
+    plan.through_pads.extend(sub.through_pads);
+    plan.via_positions.extend(sub.via_positions);
+}
+
+/// Plan the VIP / dogbone fanout of ONE footprint against the copper
+/// already committed in `work` (previous footprints' barrels and stubs),
+/// appending its own vias and stubs to `work` as it goes.
+///
+/// Split out of `plan_fanout` so the fine-grid escape (`escape.rs`) can
+/// use this proven path as its per-footprint baseline and only keep its
+/// own result when it demonstrably escapes at least as many pads.
+pub(crate) fn plan_footprint(
+    fp: &pcb_core::Footprint,
+    foreign: &[&PadRect],
+    work: &mut Board,
+    opts: &RouteOptions,
+) -> FanoutPlan {
     let mut plan = FanoutPlan::default();
-    if board.stackup.layer_count() < 2 {
-        return plan;
-    }
-    let rects = pad_rects(board);
-    let foreign: Vec<&PadRect> = rects.iter().collect();
     let tw = opts.trace_width.to_mm();
     let clearance = opts.clearance.to_mm();
     let via_r = FANOUT_VIA_DIAMETER_MM / 2.0;
-
-    // Mutable copy of board vias so successively-placed fanout vias also
-    // respect each other's spacing.
-    let mut work = board.clone();
-
-    for fp in board.footprints_in_order() {
+    {
         // Footprint centre (pad centroid) — the interior reference the via
         // staggering slides toward, so escapes head into the part's central
         // channel rather than out toward the board edge / shield pads.
@@ -437,7 +447,7 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
             let in_cluster = neighbours >= CLUSTER_NEIGHBOURS;
             // Fan out if the pad is in a fine-pitch cluster (parallel
             // escape impossible) OR simply can't escape in any direction.
-            if !in_cluster && can_escape_surface(cx, cy, hw, hh, net, &foreign, tw, clearance) {
+            if !in_cluster && can_escape_surface(cx, cy, hw, hh, net, foreign, tw, clearance) {
                 continue;
             }
             // Pick the via-in-pad position. A via-in-pad may sit anywhere
@@ -450,7 +460,7 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
             // pins fail to land. Staggering adjacent pins to opposite ends of
             // their pads opens a clear approach lane down the pad's long axis.
             let vip = pick_via_position(
-                cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, clearance, &foreign, &work,
+                cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, clearance, foreign, work,
             );
             // Dogbone fallback: pad too small for a true via-in-pad
             // (typical 0.4 mm-pitch QFN pads are ~0.20 mm wide — a
@@ -472,12 +482,12 @@ pub fn plan_fanout(board: &Board, opts: &RouteOptions) -> FanoutPlan {
                     // barrel and then discovering its stub is boxed in.
                     let max_stub_w = tw.min(2.0 * hw.min(hh));
                     dogbone_via_candidates(
-                        cx, cy, hw, hh, dirx, diry, rank, net, via_r, clearance, &foreign, &work,
+                        cx, cy, hw, hh, dirx, diry, rank, net, via_r, clearance, foreign, work,
                     )
                     .into_iter()
                     .find_map(|(vx, vy)| {
                         dogbone_stub(
-                            pad.layer, cx, cy, vx, vy, net, max_stub_w, clearance, &foreign, &work,
+                            pad.layer, cx, cy, vx, vy, net, max_stub_w, clearance, foreign, work,
                         )
                         .map(|t| {
                             stub = Some(t);
@@ -669,14 +679,7 @@ pub(crate) fn dogbone_stub(
             if v.net == net {
                 continue;
             }
-            let d = point_seg_dist(
-                v.position.x.to_mm(),
-                v.position.y.to_mm(),
-                cx,
-                cy,
-                vx,
-                vy,
-            );
+            let d = point_seg_dist(v.position.x.to_mm(), v.position.y.to_mm(), cx, cy, vx, vy);
             if d < half + v.diameter.to_mm() / 2.0 + clearance - 1e-9 {
                 ok = false;
                 break;
