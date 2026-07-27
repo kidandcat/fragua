@@ -365,7 +365,7 @@ PALETTE / PLACEMENT:\n\
 ROUTING:\n\
   route [trace_width=N] [clearance=N] [via_drill=N] [via_diameter=N] [via_cost=N] [cell=N]\n\
             [max_seconds=N] [organic=true|false] [fillet=MM] [engine=grid|topo]\n\
-            [fine_escape=true|false]\n\
+            [fine_escape=true|false] [negotiate=true|false]\n\
                                                — auto-route every net (Theta* on 2 layers), then an\n\
                                                  organic post-pass (rubber-band string-pulling +\n\
                                                  arc fillets, TopoR-style flowing traces; clearance\n\
@@ -384,7 +384,22 @@ ROUTING:\n\
                                                  cell=0.20, via_cost=8. fine_escape=true opts into\n\
                                                  the fine-grid stub escape on 3+ layer stackups\n\
                                                  (off by default: on a 0.4 mm QFN it costs budget\n\
-                                                 and loses to the dogbone fanout)\n\
+                                                 and loses to the dogbone fanout).\n\
+                                                 negotiate=true swaps the rip-up-and-reroute driver\n\
+                                                 for PathFinder-style NEGOTIATED CONGESTION: every\n\
+                                                 net takes its shortest path first, then corridors\n\
+                                                 they fight over get progressively more expensive\n\
+                                                 until the nets with an alternative detour, so the\n\
+                                                 routing ORDER stops deciding who gets the good\n\
+                                                 lane. Converges to legal copper or falls back to\n\
+                                                 the classic passes with the budget it has left\n\
+                                                 (best board wins either way). Off by default: it\n\
+                                                 pays on boards whose wall is inter-net contention,\n\
+                                                 and on the RP2040 stress board it is a diagnosis\n\
+                                                 rather than a cure — it reports which corridors\n\
+                                                 stay over-subscribed and which nets cannot route\n\
+                                                 even when allowed to share every foreign trace\n\
+                                                 (see the route hints)\n\
   clear-route                                  — drop all traces and vias\n\
   clear-net NET                                — clear one net's traces/vias\n\
   trace top|bottom NET X1 Y1 X2 Y2 [width=N]   — manual trace segment\n\
@@ -3656,6 +3671,10 @@ struct RouteRunInput {
     /// default — see `RouteOptions::fine_escape`.
     #[serde(default)]
     fine_escape: Option<bool>,
+    /// Opt in to PathFinder-style negotiated congestion. Off by default —
+    /// see `RouteOptions::negotiate`.
+    #[serde(default)]
+    negotiate: Option<bool>,
 }
 
 fn de_u32_lenient<'de, D>(d: D) -> Result<u32, D::Error>
@@ -4234,6 +4253,7 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
         heuristic_weight: 1.0,
         max_seconds,
         fine_escape: input.fine_escape.unwrap_or(false),
+        negotiate: input.negotiate.unwrap_or(false),
         on_progress: Some(std::sync::Arc::new(move |msg: &str| {
             progress_project.log(ActivityLevel::Info, msg);
         })),

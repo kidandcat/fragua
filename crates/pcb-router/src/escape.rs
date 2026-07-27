@@ -621,6 +621,7 @@ fn route_one(
                         max_pops: Some(FINE_ESCAPE_MAX_POPS),
                         deadline,
                     },
+                    None,
                 );
                 // Un-stamp the trial landing (set back to free) regardless of
                 // outcome; an accepted stub re-stamps its own copper.

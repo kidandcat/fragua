@@ -16,6 +16,7 @@ mod escape;
 mod fanout;
 mod grid;
 mod length_match;
+mod negotiate;
 mod organic;
 mod router;
 mod stitching;

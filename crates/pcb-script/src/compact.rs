@@ -282,6 +282,10 @@ pub fn compact(
         // Compaction probes many candidates — keep each route bounded so
         // a single bad candidate cannot burn the whole time budget.
         max_seconds: Some(30.0),
+        // Compaction wants the cheapest reliable answer per candidate, not
+        // the best one; the negotiation loop is an iterative process that
+        // pays off over a full route budget, not a 30 s feasibility probe.
+        negotiate: false,
         on_progress: None,
     };
     let base_min_gap = opts

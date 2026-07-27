@@ -136,6 +136,7 @@ impl Genome {
             initial_net_order: Some(self.net_order.clone()),
             heuristic_weight: baseline.heuristic_weight,
             max_seconds: baseline.max_seconds,
+            negotiate: baseline.negotiate,
             on_progress: None,
         }
     }
@@ -599,6 +600,7 @@ fn hill_climb_rotations(
         schematic: baseline_opts.schematic.clone(),
         heuristic_weight: baseline_opts.heuristic_weight,
         max_seconds: baseline_opts.max_seconds,
+        negotiate: baseline_opts.negotiate,
         on_progress: None,
     };
 

@@ -1374,6 +1374,7 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     ("engine", AttrType::Str),
                     ("max_seconds", AttrType::Num),
                     ("fine_escape", AttrType::BoolInto("fine_escape")),
+                    ("negotiate", AttrType::BoolInto("negotiate")),
                 ],
             )?;
             Ok(Cmd {

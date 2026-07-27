@@ -113,6 +113,34 @@ pub struct RouteOptions {
     /// 4-layer regression of issue O8. Until it demonstrably pays for
     /// itself, callers who want it have to ask for it.
     pub fine_escape: bool,
+    /// Run the PathFinder-style **negotiated congestion** driver
+    /// (`negotiate.rs`) before the historical rip-up-and-reroute loop.
+    ///
+    /// OFF by default — see the measurement below. Negotiation lets every
+    /// net take its shortest path in the first iteration and then makes
+    /// contended corridors progressively more expensive until the nets with
+    /// an alternative detour, which is the textbook fix for "the fat net
+    /// routed first owns the corridor forever". When it converges (no net
+    /// shares copper with any other) its solution is legal and complete and
+    /// the hard passes are skipped; when it does not, the RR&R loop still
+    /// runs on the remaining budget and the better board wins.
+    ///
+    /// **Why it is not the default.** On the RP2040 stress board it is a
+    /// congestion *diagnosis* rather than a cure: 12–13 of the 39 nets
+    /// cannot be routed even when every foreign trace is treated as
+    /// shareable, because the escape lanes at a 0.4 mm QFN are walled by
+    /// copper no negotiation can move (neighbouring pads and the fanout's
+    /// own via landings). Negotiation therefore cannot converge there, and
+    /// the budget it spends costs the hard passes ~2 nets of connectivity.
+    /// It is kept opt-in (`route negotiate=true`) because it is the right
+    /// algorithm for boards whose wall really is inter-net contention, and
+    /// because its corridor autopsy (reported in `hints`) is what names the
+    /// geometry that has to change instead.
+    ///
+    /// Ignored for `engine=topo`, and automatically declined on boards that
+    /// declare a differential pair (the follow-the-partner geometry lives in
+    /// the classic per-net path — see `try_diff_pair_follow`).
+    pub negotiate: bool,
     /// Optional progress callback — one short human-readable line per
     /// RR pass / net batch. Wired by the script API into the activity
     /// log so the UI and agents see routing progress without polling.
@@ -135,6 +163,7 @@ impl std::fmt::Debug for RouteOptions {
             .field("heuristic_weight", &self.heuristic_weight)
             .field("max_seconds", &self.max_seconds)
             .field("fine_escape", &self.fine_escape)
+            .field("negotiate", &self.negotiate)
             .field(
                 "on_progress",
                 &self.on_progress.as_ref().map(|_| "<callback>"),
@@ -176,12 +205,13 @@ impl Default for RouteOptions {
             // `route max_seconds=N`.
             max_seconds: Some(90.0),
             fine_escape: false,
+            negotiate: false,
             on_progress: None,
         }
     }
 }
 
-fn progress(opts: &RouteOptions, msg: impl AsRef<str>) {
+pub(crate) fn progress(opts: &RouteOptions, msg: impl AsRef<str>) {
     if let Some(cb) = opts.on_progress.as_ref() {
         cb(msg.as_ref());
     }
@@ -193,7 +223,7 @@ fn deadline_of(opts: &RouteOptions) -> Option<Instant> {
         .map(|s| Instant::now() + Duration::from_secs_f64(s))
 }
 
-fn timed_out(deadline: Option<Instant>) -> bool {
+pub(crate) fn timed_out(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|d| Instant::now() >= d)
 }
 
@@ -301,7 +331,7 @@ impl<'a> RuleCtx<'a> {
     /// Build the context for a pass. `areas`/`schematic` are borrowed
     /// from locals in the caller so the resolver never fights the
     /// `&mut Board` the pass needs.
-    fn new(
+    pub(crate) fn new(
         areas: &'a [RuleArea],
         schematic: Option<&'a Schematic>,
         opts: &RouteOptions,
@@ -412,7 +442,7 @@ impl<'a> RuleCtx<'a> {
 /// via radii so the discrete grid never undersells a distance (always
 /// rounds the radius up). Callers apply `.max(1)` (clearance / via-safe)
 /// or `.max(0)` (copper) as appropriate.
-fn ceil_cells(num_nm: i64, cell_nm: i64) -> i32 {
+pub(crate) fn ceil_cells(num_nm: i64, cell_nm: i64) -> i32 {
     let raw = (num_nm + cell_nm.max(1) - 1) / cell_nm.max(1);
     i32::try_from(raw).unwrap_or(1)
 }
@@ -677,16 +707,72 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let layer_count = board.stackup.layer_count();
     let mut cost_map = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
 
-    // The pristine easy-first order iteration 1 uses. The loop below mutates
-    // `order` (failed nets to the front); we keep the original to feed the
-    // dedicated rip-up pass its known-good baseline substrate.
-    let original_order = order.clone();
-
     let mut best: Option<(Board, RouteReport)> = None;
     let mut last_order: Option<Vec<String>> = None;
     let mut iterations_run = 0;
     let mut hit_deadline = false;
+    // Extra report lines the negotiation driver contributes (the corridor
+    // autopsy). Empty for the classic loop.
+    let mut extra_hints: Vec<String> = Vec::new();
+
+    // PathFinder-style negotiated congestion runs FIRST when enabled: it
+    // lets every net take its shortest path, then prices the corridors they
+    // fight over. If it converges, its solution is legal and complete and we
+    // are done. If it does not, it still hands the rip-up-and-reroute loop
+    // below still runs on the remaining budget and the driver keeps whichever
+    // board is better — so opting in can only cost wall-clock, never
+    // connectivity relative to what the hard passes find in the time they
+    // are left. Everything downstream (fanout copper, stitching, organic
+    // pass, reporting) is shared.
+    let negotiating = opts.negotiate && !declares_diff_pairs(opts, &order);
+    let mut converged = false;
+    if negotiating {
+        progress(
+            opts,
+            format!(
+                "route: negotiated congestion (PathFinder) on {} net(s)",
+                order.len()
+            ),
+        );
+        let neg = crate::negotiate::negotiate_route(
+            board,
+            &nets,
+            &order,
+            opts,
+            &fanout,
+            &escape_stubs,
+            deadline,
+        );
+        iterations_run = neg.iterations;
+        extra_hints = neg.autopsy;
+        progress(
+            opts,
+            format!(
+                "route: negotiation {} after {} iteration(s) — {} failed net(s)",
+                if neg.converged {
+                    "converged (no shared copper)"
+                } else {
+                    "did not converge"
+                },
+                neg.iterations,
+                count_failed(&neg.report),
+            ),
+        );
+        hit_deadline = timed_out(deadline);
+        converged = neg.converged;
+        best = Some((neg.board, neg.report));
+    }
+
+    // The pristine order the RR loop starts from — easy-first, or (after a
+    // negotiation) contention-first. The loop below mutates `order` (failed
+    // nets to the front); the dedicated rip-up pass wants this baseline
+    // substrate back.
+    let original_order = order.clone();
+
     for _ in 1..=MAX_RR_ITERATIONS {
+        if converged {
+            break;
+        }
         if timed_out(deadline) {
             hit_deadline = true;
             progress(
@@ -807,11 +893,13 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // causes on a churned board. Kept only when strictly better, so it can
     // never regress below baseline. Skipped when the wall-clock budget is
     // already exhausted.
-    if !hit_deadline && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
+    if !converged && !hit_deadline && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
         if timed_out(deadline) {
             hit_deadline = true;
         } else {
             progress(opts, "route: clean-board rip-up pass");
+            // The pristine order the rip-up pass runs on: whatever the loop
+            // started from (easy-first, or negotiation's contention order).
             let mut work = board.clone();
             work.clear_routing();
             let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
@@ -866,6 +954,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     });
     best_report.iterations = iterations_run;
     best_report.hints = generate_hints(&best_report, &nets);
+    best_report.hints.extend(extra_hints);
     // Stamp the winning routing onto the caller's board.
     board.clear_routing();
     for trace in best_work.traces {
@@ -1011,7 +1100,10 @@ fn route_topo(board: &mut Board, opts: &RouteOptions) -> RouteReport {
 /// usually right: the failing/detoured nets are the ones with one or
 /// two pads geographically far from the cluster, and moving those is
 /// the lowest-effort fix.
-fn generate_hints(report: &RouteReport, nets: &BTreeMap<String, Vec<NetPadInfo>>) -> Vec<String> {
+pub(crate) fn generate_hints(
+    report: &RouteReport,
+    nets: &BTreeMap<String, Vec<NetPadInfo>>,
+) -> Vec<String> {
     let mut hints = Vec::new();
     for (net_name, outcome) in &report.per_net {
         let troubled = match outcome {
@@ -1066,7 +1158,7 @@ fn generate_hints(report: &RouteReport, nets: &BTreeMap<String, Vec<NetPadInfo>>
 }
 
 /// Heuristic: fewer failed nets > shorter total wire > fewer vias.
-fn report_is_better(a: &RouteReport, b: &RouteReport) -> bool {
+pub(crate) fn report_is_better(a: &RouteReport, b: &RouteReport) -> bool {
     let fails_a = count_failed(a);
     let fails_b = count_failed(b);
     if fails_a != fails_b {
@@ -1078,7 +1170,7 @@ fn report_is_better(a: &RouteReport, b: &RouteReport) -> bool {
     a.via_count < b.via_count
 }
 
-fn count_failed(r: &RouteReport) -> usize {
+pub(crate) fn count_failed(r: &RouteReport) -> usize {
     r.per_net
         .iter()
         .filter(|(_, o)| matches!(o, Outcome::Failed { .. }))
@@ -1092,7 +1184,7 @@ fn count_failed(r: &RouteReport) -> usize {
 /// fall back to the content bbox expanded by 5 mm so the router still
 /// has slack to find paths. Pulled out so `route()` can size the
 /// negotiated-congestion cost map before the first pass.
-fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
+pub(crate) fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
     let edge_clearance = Length::from_mm(0.3);
     // Widest copper feature across the *effective* trace widths (max
     // of default and any class override) and the via diameter. Used
@@ -1139,47 +1231,43 @@ fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
     }
 }
 
-/// One full routing pass: lay every net (in `order`) onto a freshly
-/// cleared `board` and return the per-net outcomes. The board's
-/// routing must already be cleared by the caller.
+/// Via copper radius in cells — the barrel's own half-diameter, stamped
+/// bare on every layer. Independent of trace width, so it is one number
+/// per routing pass.
+pub(crate) fn via_copper_cells(opts: &RouteOptions) -> i32 {
+    ceil_cells(opts.via_diameter.0 / 2, opts.cell.0).max(0)
+}
+
+/// Nets already carrying a copper pour on some layer. The pour IS the
+/// electrical connection, so the router skips them by design.
+pub(crate) fn pour_nets(board: &Board) -> HashSet<String> {
+    board.pours.iter().map(|p| p.net.clone()).collect()
+}
+
+/// The obstacle grid every routing pass starts from: bodies, keepouts,
+/// pads, fanout landings and pre-laid escape stubs — everything that is
+/// FIXED for the whole route, and nothing that a net laid. Shared by the
+/// classic rip-up-and-reroute pass and the negotiation loop, which both
+/// need the identical substrate (and the negotiation loop rebuilds it
+/// from scratch every iteration).
 ///
-/// When `deadline` is hit mid-pass, remaining nets are recorded as
-/// failed (`timeout`) and the partial copper already laid is kept.
-#[allow(clippy::too_many_arguments)]
-fn route_pass(
-    board: &mut Board,
-    nets: &BTreeMap<String, Vec<NetPadInfo>>,
-    order: &[String],
+/// `order` doubles as the net-id table: a net's id is its index here.
+pub(crate) fn build_pass_grid(
+    board: &Board,
     opts: &RouteOptions,
-    cost_map: &CostMap,
+    order: &[String],
     fanout: &crate::fanout::FanoutPlan,
     escape_stubs: &[Trace],
-    allow_ripup: bool,
-    deadline: Option<Instant>,
-) -> RouteReport {
-    // Every A* in this pass inherits the pass deadline, so a single
-    // pathological search can no longer run past the caller's budget.
-    let limits = Limits {
-        deadline,
-        ..Limits::default()
-    };
-    let net_id_of: HashMap<String, u32> = order
+) -> Grid {
+    let net_id_of: HashMap<&str, u32> = order
         .iter()
         .enumerate()
-        .map(|(i, n)| (n.clone(), i as u32))
+        .map(|(i, n)| (n.as_str(), i as u32))
         .collect();
+    let net_id_lookup = |n: &str| net_id_of.get(n).copied();
 
     let region = compute_region(board, opts);
     let mut grid = Grid::with_layers(region, opts.cell, board.stackup.layer_count());
-
-    // Rule context for the pass. The areas are cloned (a handful of
-    // rects) so the resolver doesn't borrow the board this pass mutates;
-    // the schematic is already behind an Arc.
-    let areas: Vec<RuleArea> = board.rule_areas.clone();
-    let schematic = opts.schematic.clone();
-    let rules = RuleCtx::new(&areas, schematic.as_deref(), opts, order, &grid);
-
-    let net_id_lookup = |n: &str| net_id_of.get(n).copied();
     // Layered stamping, broad-to-narrow: bodies block the area each
     // footprint occupies, keepouts block any user-marked region, pads
     // overwrite the cells they actually own so they stay reachable.
@@ -1220,7 +1308,7 @@ fn route_pass(
                 if !fanout.through_pads.contains(&key) {
                     continue;
                 }
-                let Some(id) = pad.net.as_deref().and_then(&net_id_lookup) else {
+                let Some(id) = pad.net.as_deref().and_then(net_id_lookup) else {
                     continue;
                 };
                 let via_pos = fanout
@@ -1244,16 +1332,57 @@ fn route_pass(
             grid.stamp_trace(a, b, id, copper);
         }
     }
+    grid
+}
+
+/// One full routing pass: lay every net (in `order`) onto a freshly
+/// cleared `board` and return the per-net outcomes. The board's
+/// routing must already be cleared by the caller.
+///
+/// When `deadline` is hit mid-pass, remaining nets are recorded as
+/// failed (`timeout`) and the partial copper already laid is kept.
+#[allow(clippy::too_many_arguments)]
+fn route_pass(
+    board: &mut Board,
+    nets: &BTreeMap<String, Vec<NetPadInfo>>,
+    order: &[String],
+    opts: &RouteOptions,
+    cost_map: &CostMap,
+    fanout: &crate::fanout::FanoutPlan,
+    escape_stubs: &[Trace],
+    allow_ripup: bool,
+    deadline: Option<Instant>,
+) -> RouteReport {
+    // Every A* in this pass inherits the pass deadline, so a single
+    // pathological search can no longer run past the caller's budget.
+    let limits = Limits {
+        deadline,
+        ..Limits::default()
+    };
+    let net_id_of: HashMap<String, u32> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), i as u32))
+        .collect();
+
+    let mut grid = build_pass_grid(board, opts, order, fanout, escape_stubs);
+
+    // Rule context for the pass. The areas are cloned (a handful of
+    // rects) so the resolver doesn't borrow the board this pass mutates;
+    // the schematic is already behind an Arc.
+    let areas: Vec<RuleArea> = board.rule_areas.clone();
+    let schematic = opts.schematic.clone();
+    let rules = RuleCtx::new(&areas, schematic.as_deref(), opts, order, &grid);
+
     // Via copper radius (in cells): the via's own half-diameter, stamped
     // bare on every layer. Independent of trace width, so computed once.
-    let via_copper_cells = ceil_cells(opts.via_diameter.0 / 2, opts.cell.0).max(0);
+    let via_copper_cells = via_copper_cells(opts);
 
     // Nets that already have a copper pour on at least one layer
     // skip the router entirely — the pour itself is the electrical
     // connection, so adding traces is redundant copper that just
     // clutters the board.
-    let pour_nets: std::collections::HashSet<String> =
-        board.pours.iter().map(|p| p.net.clone()).collect();
+    let pour_nets: std::collections::HashSet<String> = pour_nets(board);
 
     // Per-net outcomes, folded into the report totals after the pass.
     // Storing outcomes (instead of incrementally summing) makes rip-up's
@@ -1414,7 +1543,7 @@ fn route_pass(
 
 /// Outcome of routing a single net into `grid`/`board`.
 #[derive(Clone)]
-enum NetRoute {
+pub(crate) enum NetRoute {
     Ok {
         trace_segments: usize,
         vias: usize,
@@ -1437,7 +1566,7 @@ enum NetRoute {
 /// or `Failed` carrying the failing spoke's corridor so the caller can
 /// pick rip-up blockers. Never accumulates pass totals, never nests rip-up.
 #[allow(clippy::too_many_arguments)]
-fn route_one_net(
+pub(crate) fn route_one_net(
     board: &mut Board,
     grid: &mut Grid,
     net_name: &str,
@@ -1634,6 +1763,7 @@ fn route_one_net(
             &net_trace_cells,
             opts.heuristic_weight,
             limits,
+            None,
         ) else {
             return NetRoute::Failed {
                 reason: format!(
@@ -1919,7 +2049,7 @@ fn try_ripup_route(
 /// mm. The minimum wire any tree connecting these pads can use; matches
 /// the DRC's `RoutingInefficient` lower bound so the two layers report
 /// the same "optimum we're measuring against".
-fn hpwl_mm(pads: &[NetPadInfo]) -> f64 {
+pub(crate) fn hpwl_mm(pads: &[NetPadInfo]) -> f64 {
     if pads.len() < 2 {
         return 0.0;
     }
@@ -1975,7 +2105,7 @@ fn bump_corridor(snap_grid: &Grid, cost_map: &mut CostMap, pads: &[NetPadInfo], 
 /// `(segments, vias, length_mm)` where `length_mm` is the sum of all
 /// straight segments laid (vias themselves contribute zero length).
 #[allow(clippy::too_many_arguments)]
-fn lay_path(
+pub(crate) fn lay_path(
     board: &mut Board,
     grid: &mut Grid,
     path: &[GridPoint],
@@ -2248,6 +2378,14 @@ fn simple_point_in_polygon(poly: &[Point], x: f64, y: f64) -> bool {
     inside
 }
 
+/// True when any net on the board declares a differential-pair partner.
+/// The follow-the-partner geometry (`try_diff_pair_follow`) is part of the
+/// classic per-net path and has no negotiated equivalent, so such boards
+/// keep the historical driver.
+fn declares_diff_pairs(opts: &RouteOptions, order: &[String]) -> bool {
+    order.iter().any(|n| diff_pair_partner(opts, n).is_some())
+}
+
 /// Resolve the diff-pair partner net for `net_name` from the schematic.
 /// Returns the partner only when the schematic declares one and it is a
 /// different net.
@@ -2457,6 +2595,7 @@ fn try_diff_pair_follow(
             &db_sources,
             opts.heuristic_weight,
             limits,
+            None,
         ) else {
             return Err(format!("no end-cap to pad {}", pad.pad_ref));
         };

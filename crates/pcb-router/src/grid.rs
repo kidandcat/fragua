@@ -79,6 +79,40 @@ impl CostMap {
         self.extra[idx]
     }
 
+    /// Bump the inclusive rectangle on ONE layer only. Negotiated-congestion
+    /// history is per-layer by nature: a corridor that stays over-subscribed
+    /// on the bottom layer says nothing about the top, and bumping both
+    /// would push nets off the free layer as well.
+    pub fn bump_box_on(
+        &mut self,
+        layer: u8,
+        c0: i32,
+        r0: i32,
+        c1: i32,
+        r1: i32,
+        amount: u32,
+        max: u32,
+    ) {
+        if layer >= self.layer_count {
+            return;
+        }
+        let c0 = c0.max(0);
+        let r0 = r0.max(0);
+        let c1 = c1.min(self.cols - 1);
+        let r1 = r1.min(self.rows - 1);
+        if c1 < c0 || r1 < r0 {
+            return;
+        }
+        let stride = (self.cols * self.rows) as usize;
+        for r in r0..=r1 {
+            let row_base = layer as usize * stride + (r * self.cols) as usize;
+            for c in c0..=c1 {
+                let i = row_base + c as usize;
+                self.extra[i] = (self.extra[i] + amount).min(max);
+            }
+        }
+    }
+
     /// Bump every cell inside the inclusive rectangle `[c0..=c1, r0..=r1]`
     /// on every layer by `amount`, capped at `max`. Out-of-range columns
     /// and rows are silently clipped.
@@ -128,6 +162,19 @@ pub(crate) fn walkable(c: Cell, target: u32) -> bool {
     match c {
         Cell::Free => true,
         Cell::NetPad(n) | Cell::DrilledPad(n) | Cell::Trace(n) => n == target,
+        Cell::Obstacle => false,
+    }
+}
+
+/// Negotiation-mode variant of [`walkable`]: foreign TRACE/VIA copper is
+/// enterable (the two nets "share" the cell and pay for it), while foreign
+/// PADS, bodies and keepouts stay hard. Pads cannot negotiate — they are
+/// fixed placement geometry, so a shared pad cell could never be legalised.
+#[inline]
+pub(crate) fn walkable_soft(c: Cell, target: u32) -> bool {
+    match c {
+        Cell::Free | Cell::Trace(_) => true,
+        Cell::NetPad(n) | Cell::DrilledPad(n) => n == target,
         Cell::Obstacle => false,
     }
 }
@@ -907,6 +954,132 @@ impl Grid {
             }
         }
         true
+    }
+
+    /// Negotiated-congestion variant of [`Grid::clearance_ok`].
+    ///
+    /// **This is where PathFinder meets copper clearance.** In classic FPGA
+    /// PathFinder a resource is a wire: two nets either share it or they do
+    /// not. On a PCB the resource a net really consumes is its copper *plus
+    /// the clearance halo around it*, and that halo is pairwise (the
+    /// strictest of the two nets' rules, or a rule area's override). We keep
+    /// the asymmetric formulation the exact-geometry check uses — copper is
+    /// stamped BARE and each net scans its own `clearance + half-width` disk
+    /// — and simply turn the verdict from a veto into a price:
+    ///
+    /// - foreign **trace/via** copper inside the disk → shareable: return
+    ///   how many distinct foreign nets are involved so the caller can
+    ///   charge the present-congestion price. Both nets see the same
+    ///   overlap from their own side (the requirement `w_a/2 + clr + w_b/2`
+    ///   is symmetric), so negotiation is symmetric too.
+    /// - foreign **pad** copper inside the disk → still a hard no. A pad
+    ///   cannot be ripped up and rerouted, so a halo violation against one
+    ///   could never be negotiated away; letting the search "buy" it would
+    ///   only produce solutions that can never be legalised.
+    ///
+    /// Because the price is computed from the very same disk test that
+    /// decides legality, "zero conflicts everywhere" is exactly "DRC-legal
+    /// copper" — the convergence test needs no separate geometry pass.
+    ///
+    /// `None` = hard-blocked. `Some(0)` = a clean cell. `Some(k>0)` = the
+    /// cell is shared and costs `k` units of present-congestion price.
+    ///
+    /// The price is deliberately capped at the FIRST sharing incident found
+    /// (`k` is 0 or 1) unless obstacles must still be scanned for: counting
+    /// every distinct foreign net would force a full disk sweep on every
+    /// expansion, where the hard test bails on the first violation. That
+    /// difference is the whole per-expansion cost of the search, and a
+    /// finer-grained price bought nothing measurable.
+    pub(crate) fn soft_clearance(
+        &self,
+        p: GridPoint,
+        target: u32,
+        model: &ClearanceModel<'_>,
+        block_obstacles: bool,
+    ) -> Option<u32> {
+        let (bound2, fixed) = model.bound_and_fixed(p);
+        let mut shared = 0u32;
+        for &(dc, dr, d2) in &model.disk {
+            if d2 > bound2 {
+                break;
+            }
+            let gp = GridPoint {
+                layer: p.layer,
+                col: p.col + dc,
+                row: p.row + dr,
+            };
+            let c = self.get(gp);
+            if block_obstacles && matches!(c, Cell::Obstacle) {
+                return None;
+            }
+            if shared > 0 && !block_obstacles {
+                // Nothing left to learn on this cell.
+                break;
+            }
+            if !is_foreign(c, target) {
+                continue;
+            }
+            let need2 = if fixed >= 0 { fixed } else { model.need2_of(c) };
+            if d2 > need2 {
+                continue;
+            }
+            match c {
+                Cell::Trace(_) => shared = 1,
+                // Foreign pad copper (including the `FOREIGN_NET` sentinel
+                // and fanout via landings): not negotiable.
+                _ => return None,
+            }
+        }
+        Some(shared)
+    }
+
+    /// Soft variant of [`Grid::line_of_sight`]: the Theta* any-angle
+    /// shortcut in negotiation mode. `None` when any cell on the segment is
+    /// hard-blocked; otherwise the total number of (cell, foreign net)
+    /// sharing incidents along the segment, which the caller prices.
+    pub(crate) fn los_conflicts(
+        &self,
+        a: GridPoint,
+        b: GridPoint,
+        target_net: u32,
+        model: &ClearanceModel<'_>,
+    ) -> Option<u32> {
+        debug_assert_eq!(a.layer, b.layer);
+        let layer = a.layer;
+        let mut total = 0u32;
+        for (c, r) in bresenham(a.col, a.row, b.col, b.row) {
+            let p = GridPoint {
+                layer,
+                col: c,
+                row: r,
+            };
+            if !walkable_soft(self.get(p), target_net) {
+                return None;
+            }
+            total = total.saturating_add(self.soft_clearance(p, target_net, model, false)?);
+        }
+        Some(total)
+    }
+
+    /// Soft variant of [`Grid::via_clearance_ok`]: the barrel exists on
+    /// every layer, so its sharing price is the sum over layers. Obstacles
+    /// still block (the annular ring has to sit somewhere real).
+    pub(crate) fn via_soft_clearance(
+        &self,
+        p: GridPoint,
+        target: u32,
+        model: &ClearanceModel<'_>,
+    ) -> Option<u32> {
+        let mut total = 0u32;
+        for layer in 0..self.layer_count {
+            total = total.saturating_add(self.soft_clearance(
+                GridPoint { layer, ..p },
+                target,
+                model,
+                true,
+            )?);
+        }
+        Some(total)
     }
 
     /// Via variant of [`Grid::clearance_ok`]: a via barrel exists on

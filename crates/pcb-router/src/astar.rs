@@ -50,6 +50,24 @@ pub struct Limits {
     pub deadline: Option<Instant>,
 }
 
+/// Negotiated-congestion mode for one search (PathFinder). When present,
+/// foreign trace/via copper stops being a wall and becomes a *price*: the
+/// search may route straight through another net's copper (or through its
+/// clearance halo) and is charged `present_factor` cost units — expressed
+/// in whole grid cells, like every other step cost — for every cell where
+/// it does. Foreign PADS stay hard (see
+/// [`crate::grid::Grid::soft_clearance`]).
+///
+/// The accumulated *history* cost of PathFinder is carried by the ordinary
+/// `cost_map` argument, which the driver bumps on cells that stay
+/// over-subscribed between iterations — so a cell that has been fought over
+/// for several rounds gets expensive for everyone, which is what breaks the
+/// "first net through the corridor owns it forever" deadlock.
+#[derive(Copy, Clone, Debug)]
+pub struct Negotiate {
+    pub present_factor: u32,
+}
+
 /// One unit cell = `SCALE` cost units. Lets us keep `u32` arithmetic
 /// while representing Euclidean distance to ~1e-3 cell precision.
 const SCALE: u32 = 1000;
@@ -118,6 +136,10 @@ pub fn search(
     // (see below) so short, tight searches stay optimal regardless of `W`.
     weight: f64,
     limits: Limits,
+    // `Some` switches the search into negotiated-congestion mode: foreign
+    // trace copper is shareable at a price instead of forbidden. See
+    // [`Negotiate`]. `None` = the classic hard-obstacle search.
+    neg: Option<Negotiate>,
 ) -> Option<AStarResult> {
     /// Floor for the seed pad's g-penalty when at least one trace cell
     /// exists. ~6 mm at default 0.25 mm pitch — kicks in only when every
@@ -233,7 +255,17 @@ pub fn search(
         // The caller's `sources` list may contain pad cells (path
         // endpoints); we filter them here so the search stays acyclic
         // while still avoiding the whole-grid rescan.
-        if matches!(grid.get(p), Cell::Trace(n) if n == target_net) {
+        // In negotiation mode our own copper may be invisible at a shared
+        // cell: `stamp_cell_copper` only claims FREE cells, so a cell we
+        // share with an earlier net still reads as that net's `Trace`. The
+        // caller only ever passes cells it laid itself, so accepting any
+        // `Trace` here is accepting our own tree. Pad cells stay excluded
+        // either way (they seed `came_from` cycles — see above).
+        let is_source = match grid.get(p) {
+            Cell::Trace(n) => neg.is_some() || n == target_net,
+            _ => false,
+        };
+        if is_source {
             let hp = h(p);
             if !g_score.contains_key(&p) {
                 g_score.insert(p, 0);
@@ -350,7 +382,12 @@ pub fn search(
                 continue;
             }
             let cell = grid.get(next_p);
-            if !grid::walkable(cell, target_net) {
+            let can_enter = if neg.is_some() {
+                grid::walkable_soft(cell, target_net)
+            } else {
+                grid::walkable(cell, target_net)
+            };
+            if !can_enter {
                 continue;
             }
             let is_via = matches!(kind, Move::Via);
@@ -375,12 +412,27 @@ pub fn search(
                             _ => {}
                         }
                     }
+                    let mut share = 0u32;
                     if let Some(vm) = via_model {
-                        if !grid.via_clearance_ok(next_p, target_net, vm) {
-                            return None;
+                        match neg {
+                            // Negotiated: the barrel may sit in another
+                            // net's copper/halo at a price, but never in a
+                            // drilled pad or an obstacle (handled above and
+                            // inside `via_soft_clearance`).
+                            Some(n) => match grid.via_soft_clearance(next_p, target_net, vm) {
+                                None => return None,
+                                Some(k) => {
+                                    share = k.saturating_mul(n.present_factor).saturating_mul(SCALE)
+                                }
+                            },
+                            None => {
+                                if !grid.via_clearance_ok(next_p, target_net, vm) {
+                                    return None;
+                                }
+                            }
                         }
                     }
-                    Some(if on_smd_pad { VIA_IN_PAD_PENALTY } else { 0 })
+                    Some(share.saturating_add(if on_smd_pad { VIA_IN_PAD_PENALTY } else { 0 }))
                 });
                 match verdict {
                     None => continue,
@@ -394,11 +446,29 @@ pub fn search(
             // geometry, not the router's to enforce; this is what lets a
             // net reach a fine-pitch pad whose foreign neighbour sits
             // inside the disk. (Vias use `via_safe`, not the disk.)
+            // Sharing price of the destination cell in negotiation mode:
+            // 0 on a clean cell, `present_factor` per foreign net disturbed.
+            let mut share_penalty = 0u32;
             if !is_via {
                 let own_pad =
                     matches!(cell, Cell::NetPad(n) | Cell::DrilledPad(n) if n == target_net);
-                if !own_pad && !grid.clearance_ok(next_p, target_net, clr_model) {
-                    continue;
+                if !own_pad {
+                    match neg {
+                        Some(n) => {
+                            match grid.soft_clearance(next_p, target_net, clr_model, false) {
+                                None => continue,
+                                Some(k) => {
+                                    share_penalty =
+                                        k.saturating_mul(n.present_factor).saturating_mul(SCALE);
+                                }
+                            }
+                        }
+                        None => {
+                            if !grid.clearance_ok(next_p, target_net, clr_model) {
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -411,16 +481,31 @@ pub fn search(
             let mut best_parent = p;
             let mut best_g = g
                 .saturating_add(base_step)
-                .saturating_add(cost_map.at(next_p).saturating_mul(SCALE));
+                .saturating_add(cost_map.at(next_p).saturating_mul(SCALE))
+                .saturating_add(share_penalty);
 
             // Theta* lazy shortcut: if our parent has line-of-sight to
             // the neighbour on the same layer, route p_parent → next
             // directly. Vias never shortcut (they cross layers).
             if !is_via {
                 if let Some(&parent) = came_from.get(&p) {
-                    if parent.layer == next_p.layer
-                        && grid.line_of_sight(parent, next_p, target_net, clr_model)
-                    {
+                    // In negotiation mode the shortcut is priced, not
+                    // vetoed: `los_conflicts` returns the sharing incidents
+                    // along the whole segment (and `None` only when it is
+                    // hard-blocked). The destination cell's own price is
+                    // already inside that sum, so it replaces — never
+                    // stacks with — `share_penalty`.
+                    let los = if parent.layer != next_p.layer {
+                        None
+                    } else if let Some(n) = neg {
+                        grid.los_conflicts(parent, next_p, target_net, clr_model)
+                            .map(|k| k.saturating_mul(n.present_factor).saturating_mul(SCALE))
+                    } else if grid.line_of_sight(parent, next_p, target_net, clr_model) {
+                        Some(0)
+                    } else {
+                        None
+                    };
+                    if let Some(share_along) = los {
                         let g_parent = *g_score.get(&parent).unwrap_or(&u32::MAX);
                         if g_parent != u32::MAX {
                             let shortcut = g_parent
@@ -428,7 +513,8 @@ pub fn search(
                                 .saturating_add(
                                     grid.cost_along(cost_map, parent, next_p)
                                         .saturating_mul(SCALE),
-                                );
+                                )
+                                .saturating_add(share_along);
                             if shortcut < best_g {
                                 best_g = shortcut;
                                 best_parent = parent;
