@@ -795,3 +795,331 @@ pub(crate) fn trace_len_mm(t: &Trace) -> f64 {
     let dy = t.end.y.to_mm() - t.start.y.to_mm();
     (dx * dx + dy * dy).sqrt()
 }
+
+#[cfg(test)]
+mod tests {
+    //! Acceptance tests for the global escape-slot assignment.
+    //!
+    //! They live in the crate (not in `tests/`) because the point of the
+    //! first one is to run the SAME footprint down both paths, and the
+    //! greedy ladder is unreachable from outside once a part is fine-pitch
+    //! enough to qualify for the matching (`SLOT_ASSIGN_MIN_PADS`).
+
+    use super::*;
+    use crate::fanout::{pad_rects, plan_footprint, plan_footprint_greedy};
+    use pcb_core::{CopperLayer, Footprint, Pad, Rect};
+
+    fn pad(num: &str, off_x: f64, off_y: f64, w: f64, h: f64, net: &str) -> Pad {
+        Pad {
+            number: num.into(),
+            name: String::new(),
+            offset: Point::new(Length::from_mm(off_x), Length::from_mm(off_y)),
+            size: (Length::from_mm(w), Length::from_mm(h)),
+            layer: CopperLayer::Top,
+            net: Some(net.to_string()),
+            drill: None,
+        }
+    }
+
+    fn footprint(reference: &str, x_mm: f64, y_mm: f64, pads: Vec<Pad>) -> Footprint {
+        Footprint {
+            id: Id::new(),
+            reference: reference.into(),
+            value: String::new(),
+            library: "test".into(),
+            position: Point::new(Length::from_mm(x_mm), Length::from_mm(y_mm)),
+            rotation: 0.0,
+            layer: CopperLayer::Top,
+            pads,
+            key: String::new(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: Vec::new(),
+        }
+    }
+
+    /// The script layer's fine-pitch numbers (see `tests/fine_pitch_fanout.rs`):
+    /// a 0.20 mm cell, 0.25 mm traces and a 0.20 mm clearance. The default
+    /// 0.40 mm clearance no fine-pitch board ever passes through.
+    fn opts() -> RouteOptions {
+        RouteOptions {
+            cell: Length::from_mm(0.20),
+            trace_width: Length::from_mm(0.25),
+            clearance: Length::from_mm(0.20),
+            ..RouteOptions::default()
+        }
+    }
+
+    /// One 2-pin landing part per pin net, on a ring around the package, so
+    /// every escape has a real direction to travel in (the assignment's
+    /// direction term reads the net's partner centroid).
+    fn landing_ring(board: &mut Board, count: usize) {
+        for i in 0..count {
+            let angle = std::f64::consts::TAU * i as f64 / count as f64;
+            let (x, y) = (20.0 + 13.0 * angle.cos(), 20.0 + 13.0 * angle.sin());
+            board.add_footprint(footprint(
+                &format!("R{i}"),
+                x,
+                y,
+                vec![
+                    pad("1", -0.8, 0.0, 0.9, 0.9, &format!("N{i}")),
+                    pad("2", 0.8, 0.0, 0.9, 0.9, "GND"),
+                ],
+            ));
+        }
+    }
+
+    fn empty_board() -> Board {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(40.0), Length::from_mm(40.0)),
+        ));
+        board
+    }
+
+    /// Two facing rows of `per_row` pads at `pitch`, 0.50 × 0.20 mm each —
+    /// the classic fine-pitch escape problem: the barrel does not fit in the
+    /// pad (0.30 mm via vs a 0.20 mm-wide pad) so every pin needs a dogbone,
+    /// and the sites those dogbones can occupy are the scarce resource.
+    fn two_facing_rows(per_row: usize, pitch: f64) -> Board {
+        let mut board = empty_board();
+        let (pad_len, pad_w) = (0.50, 0.20);
+        let ring = 3.5 - pad_len / 2.0; // pad centre, half a pad inside the body edge
+        let span = (per_row as f64 - 1.0) * pitch;
+        let mut pads = Vec::new();
+        let mut n = 0usize;
+        for side in 0..2 {
+            for i in 0..per_row {
+                let along = -span / 2.0 + i as f64 * pitch;
+                let net = format!("N{n}");
+                n += 1;
+                let x = if side == 0 { -ring } else { ring };
+                pads.push(pad(&format!("{n}"), x, along, pad_len, pad_w, &net));
+            }
+        }
+        pads.push(pad("EP", 0.0, 0.0, 1.6, 1.6, "GND"));
+        board.add_footprint(footprint("U1", 20.0, 20.0, pads));
+        landing_ring(&mut board, per_row * 2);
+        board
+    }
+
+    /// A 0.4 mm-pitch QFN: `per_side` pins on all four sides plus a shrunk
+    /// thermal pad. Exercises the per-side decomposition (four independent
+    /// matchings, each legalised against the copper the previous ones left).
+    fn qfn(per_side: usize) -> Board {
+        let mut board = empty_board();
+        let (pitch, pad_len, pad_w) = (0.40, 0.50, 0.20);
+        let ring = 3.5 - pad_len / 2.0;
+        let span = (per_side as f64 - 1.0) * pitch;
+        let mut pads = Vec::new();
+        let mut n = 0usize;
+        for side in 0..4 {
+            for i in 0..per_side {
+                let along = -span / 2.0 + i as f64 * pitch;
+                let net = format!("N{n}");
+                n += 1;
+                let num = format!("{n}");
+                pads.push(match side {
+                    0 => pad(&num, -ring, along, pad_len, pad_w, &net),
+                    1 => pad(&num, ring, along, pad_len, pad_w, &net),
+                    2 => pad(&num, along, -ring, pad_w, pad_len, &net),
+                    _ => pad(&num, along, ring, pad_w, pad_len, &net),
+                });
+            }
+        }
+        pads.push(pad("EP", 0.0, 0.0, 1.6, 1.6, "GND"));
+        board.add_footprint(footprint("U1", 20.0, 20.0, pads));
+        landing_ring(&mut board, per_side * 4);
+        board
+    }
+
+    /// Plan the escape of ONE footprint exactly the way `escape::plan_escapes`
+    /// does (same foreign-pad set, same rule resolver, same working board),
+    /// with a choice of assignment path. Nothing else runs — no grid, no
+    /// search, no clock — so the result is a pure function of the geometry.
+    fn plan_one(board: &Board, reference: &str, greedy: bool) -> FanoutPlan {
+        let o = opts();
+        let rects = pad_rects(board);
+        let foreign: Vec<&PadRect> = rects.iter().collect();
+        let resolver = pcb_core::RuleResolver::new(
+            &board.rule_areas,
+            pcb_core::RuleDefaults {
+                clearance: o.clearance,
+                trace_width: o.trace_width,
+                via_diameter: o.via_diameter,
+                via_drill: o.via_drill,
+            },
+        );
+        let fp = board
+            .footprints_in_order()
+            .find(|f| f.reference == reference)
+            .expect("footprint not on the board");
+        let mut work = board.clone();
+        let fab = board.fab_rules.as_ref();
+        if greedy {
+            plan_footprint_greedy(fp, &foreign, &mut work, &o, &resolver, fab)
+        } else {
+            plan_footprint(fp, &foreign, &mut work, &o, &resolver, fab)
+        }
+    }
+
+    /// The feature's reason to exist: choosing the escape sites TOGETHER
+    /// beats choosing them one pad at a time.
+    ///
+    /// Both runs see byte-identical geometry; the only difference is that
+    /// the greedy one commits the first barrel each pad happens to fit
+    /// (which walls off its neighbours) while the matched one solves the
+    /// whole side at once.
+    #[test]
+    fn matching_beats_greedy() {
+        for (per_row, pitch) in [(8usize, 0.40), (12, 0.40)] {
+            let board = two_facing_rows(per_row, pitch);
+            let greedy = plan_one(&board, "U1", true);
+            let matched = plan_one(&board, "U1", false);
+            assert!(
+                matched.through_pads.len() > greedy.through_pads.len(),
+                "{per_row}x2 @ {pitch} mm: matching escaped {} pad(s), greedy {} — \
+                 the fixture stopped exercising the assignment problem",
+                matched.through_pads.len(),
+                greedy.through_pads.len()
+            );
+            // Every escape the matching claims has to be real copper: a
+            // barrel plus the stub that ties the pad to it. A dogbone with
+            // no stub is a via the pad is not connected to.
+            assert_eq!(
+                matched.vias.len(),
+                matched.through_pads.len(),
+                "escaped pads and barrels disagree"
+            );
+            assert_eq!(
+                matched.stubs.len(),
+                matched.dogbone_pads.len(),
+                "a dogbone barrel with no pad -> via stub"
+            );
+            // There IS room on this board for every pin — the greedy path
+            // just spends it badly. The matching escapes them all, so it
+            // has nothing to strand; the pads greedy left behind are not
+            // reported anywhere at all (the old path has no such list).
+            assert!(
+                matched.stranded_pads.is_empty(),
+                "matching stranded {:?} on a board with room for every pin",
+                matched.stranded_pads
+            );
+        }
+    }
+
+    /// The assignment must be a pure function of the board. It runs before
+    /// any search, so nothing here is allowed to depend on wall-clock time,
+    /// on hash iteration order, or on `Id`s (which are fresh UUIDs every
+    /// run — hence the comparison on geometry, not on identity).
+    #[test]
+    fn slot_assignment_is_deterministic() {
+        /// Everything the assignment decided, in an exactly comparable
+        /// form: barrels as (pad ref, x nm, y nm) integers — no epsilon,
+        /// a sub-nanometre drift is still a difference — plus the stub
+        /// segments and the stranded list.
+        type Signature = (Vec<(String, i64, i64)>, Vec<String>, Vec<String>);
+        let signature = |plan: &FanoutPlan| -> Signature {
+            let mut vias: Vec<(String, i64, i64)> = plan
+                .via_positions
+                .iter()
+                .map(|(k, p)| (k.clone(), p.x.0, p.y.0))
+                .collect();
+            vias.sort();
+            let mut stubs: Vec<String> = plan
+                .stubs
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{} L{} {},{} -> {},{} w{}",
+                        t.net,
+                        t.layer.index,
+                        t.start.x.0,
+                        t.start.y.0,
+                        t.end.x.0,
+                        t.end.y.0,
+                        t.width.0
+                    )
+                })
+                .collect();
+            stubs.sort();
+            let mut stranded = plan.stranded_pads.clone();
+            stranded.sort();
+            (vias, stubs, stranded)
+        };
+
+        // Two shapes: the QFN exercises the four-sided decomposition (each
+        // side legalised against the previous sides' copper), the jammed
+        // part exercises the stranded list.
+        for (name, build) in [
+            ("qfn", (|| qfn(8)) as fn() -> Board),
+            ("jammed", (|| jammed_package(4)) as fn() -> Board),
+        ] {
+            // Rebuilt from scratch each time: fresh `Id`s, fresh maps, fresh
+            // insertion order.
+            let first = signature(&plan_one(&build(), "U1", false));
+            let second = signature(&plan_one(&build(), "U1", false));
+            assert_eq!(first, second, "{name}: slot assignment is not reproducible");
+            assert!(
+                !first.0.is_empty() || !first.2.is_empty(),
+                "{name}: the fixture produced neither an escape nor a strand"
+            );
+        }
+    }
+
+    /// A package whose escape sites are all occupied: a ground shield frame
+    /// 0.15 mm off the pad row kills every OUTWARD barrel site, and a
+    /// thermal pad grown to 0.05 mm from the pads' inner faces kills every
+    /// INWARD one. Nothing is left for a 0.4 mm-pitch pin that cannot host a
+    /// via-in-pad. Mirrored by `tests/escape_slots.rs`, which drives the
+    /// same geometry through the public `route()` to check the strand
+    /// reaches the report's hints.
+    fn jammed_package(per_side: usize) -> Board {
+        let mut board = empty_board();
+        let (pitch, pad_len, pad_w) = (0.40, 0.50, 0.20);
+        let ring = 3.5 - pad_len / 2.0;
+        let span = (per_side as f64 - 1.0) * pitch;
+        let mut pads = Vec::new();
+        let mut n = 0usize;
+        for side in 0..4 {
+            for i in 0..per_side {
+                let along = -span / 2.0 + i as f64 * pitch;
+                let net = format!("N{n}");
+                n += 1;
+                let num = format!("{n}");
+                pads.push(match side {
+                    0 => pad(&num, -ring, along, pad_len, pad_w, &net),
+                    1 => pad(&num, ring, along, pad_len, pad_w, &net),
+                    2 => pad(&num, along, -ring, pad_w, pad_len, &net),
+                    _ => pad(&num, along, ring, pad_w, pad_len, &net),
+                });
+            }
+        }
+        // Unshrunk thermal pad: its edge sits 0.05 mm from the pad row's
+        // inner face, so the inward channel the assignment normally uses
+        // does not exist.
+        pads.push(pad("EP", 0.0, 0.0, 5.9, 5.9, "GND"));
+        board.add_footprint(footprint("U1", 20.0, 20.0, pads));
+        // Shield frame: four bars from 3.65 mm to 6.25 mm out, i.e. starting
+        // 0.15 mm past the pad row's outer face — closer than a 0.15 mm
+        // barrel plus 0.20 mm of clearance, so no outward rank fits either.
+        let (inner, outer) = (3.65, 6.25);
+        let mid = f64::midpoint(inner, outer);
+        let (thick, long) = (outer - inner, 2.0 * outer);
+        board.add_footprint(footprint(
+            "SH1",
+            20.0,
+            20.0,
+            vec![
+                pad("1", -mid, 0.0, thick, long, "SHIELD"),
+                pad("2", mid, 0.0, thick, long, "SHIELD"),
+                pad("3", 0.0, -mid, long, thick, "SHIELD"),
+                pad("4", 0.0, mid, long, thick, "SHIELD"),
+            ],
+        ));
+        landing_ring(&mut board, per_side * 4);
+        board
+    }
+}

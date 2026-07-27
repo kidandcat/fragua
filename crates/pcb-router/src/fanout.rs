@@ -513,6 +513,39 @@ pub(crate) fn plan_footprint(
     resolver: &RuleResolver<'_>,
     fab: Option<&pcb_core::FabRules>,
 ) -> FanoutPlan {
+    plan_footprint_inner(fp, foreign, work, opts, resolver, fab, false)
+}
+
+/// Test hook: plan one footprint with the HISTORICAL greedy per-pad
+/// dogbone ladder, regardless of how many pads need a dogbone.
+///
+/// The greedy path is still production code below
+/// `slots::SLOT_ASSIGN_MIN_PADS`; this only lets a test drive a
+/// fine-pitch footprint (which production sends to the global
+/// assignment) down the same ladder, so the two can be compared on
+/// identical geometry. No production call site passes `true`.
+#[cfg(test)]
+pub(crate) fn plan_footprint_greedy(
+    fp: &pcb_core::Footprint,
+    foreign: &[&PadRect],
+    work: &mut Board,
+    opts: &RouteOptions,
+    resolver: &RuleResolver<'_>,
+    fab: Option<&pcb_core::FabRules>,
+) -> FanoutPlan {
+    plan_footprint_inner(fp, foreign, work, opts, resolver, fab, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_footprint_inner(
+    fp: &pcb_core::Footprint,
+    foreign: &[&PadRect],
+    work: &mut Board,
+    opts: &RouteOptions,
+    resolver: &RuleResolver<'_>,
+    fab: Option<&pcb_core::FabRules>,
+    force_greedy: bool,
+) -> FanoutPlan {
     let mut plan = FanoutPlan::default();
     let tw = opts.trace_width.to_mm();
     {
@@ -585,7 +618,7 @@ pub(crate) fn plan_footprint(
                     || !can_escape_surface(cx, cy, hw, hh, net, foreign, tw, &rules)
             })
             .count();
-        let use_slots = dogbone_needed >= crate::slots::SLOT_ASSIGN_MIN_PADS;
+        let use_slots = !force_greedy && dogbone_needed >= crate::slots::SLOT_ASSIGN_MIN_PADS;
         // Where each net has to travel, for the escape-direction cost term.
         let net_targets = if use_slots {
             net_partner_centroids(work, &fp.reference)
