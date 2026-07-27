@@ -4244,9 +4244,9 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
     project.log(
         ActivityLevel::Info,
         format!(
-            "route.run: {} traces, {} vias, {:.1} mm wire (detour {:.2}×), {} pass(es), {} net(s) failed; DRC {}E {}W",
-            report.trace_count,
-            report.via_count,
+            "route.run: {} traces, {} vias on board, {:.1} mm wire (detour {:.2}×), {} pass(es), {} net(s) failed; DRC {}E {}W",
+            report.board_trace_count,
+            report.board_via_count,
             report.total_length_mm,
             total_detour,
             report.iterations,
@@ -4277,15 +4277,49 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
             )
         })
         .unwrap_or_default();
+    // Connectivity as the FINAL board sees it — same computation `view`
+    // and `nets` use, so the three never disagree. Agents only ever see
+    // this text, so the headline numbers must be the board's own.
+    let (nets_total, nets_full) = {
+        let snap = project.read();
+        let statuses = collect_net_status(snap.board(), snap.schematic());
+        let total = statuses.len();
+        let full = statuses
+            .iter()
+            .filter(|n| {
+                n["unconnected_pads"]
+                    .as_array()
+                    .is_some_and(|a| a.is_empty())
+            })
+            .count();
+        (total, full)
+    };
     Ok(text_result(format!(
-        "Routed: {} traces, {} vias, {:.1} mm wire, {} failed (detour {:.2}× over {:.1} mm lower bound), {} pass(es){}{}; DRC: {} error(s), {} warning(s){}",
+        "Routed: {} traces, {} vias on board ({} fanout via(s), {} dogbone, {} escape stub(s)); \
+         search laid {} trace segment(s) + {} via(s); {:.1} mm wire, {} of {} routable net(s) failed \
+         (detour {:.2}× over {:.1} mm lower bound), {} pass(es); connectivity: {}/{} net(s) fully connected; \
+         {:.1}s elapsed{}{}{}; DRC: {} error(s), {} warning(s){}",
+        report.board_trace_count,
+        report.board_via_count,
+        report.fanout_via_count,
+        report.dogbone_via_count,
+        report.escape_stub_count,
         report.trace_count,
         report.via_count,
         report.total_length_mm,
         failed.len(),
+        report.routable_net_count,
         total_detour,
         report.total_lower_bound_mm,
         report.iterations,
+        nets_full,
+        nets_total,
+        report.elapsed_seconds,
+        if report.budget_hit {
+            " (BUDGET HIT — result is best-so-far, raise max_seconds for more)"
+        } else {
+            ""
+        },
         if failed.is_empty() {
             String::new()
         } else {
@@ -4299,6 +4333,16 @@ fn tool_route_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
     .with_data(json!({
         "trace_count": report.trace_count,
         "via_count": report.via_count,
+        "board_trace_count": report.board_trace_count,
+        "board_via_count": report.board_via_count,
+        "fanout_via_count": report.fanout_via_count,
+        "dogbone_via_count": report.dogbone_via_count,
+        "escape_stub_count": report.escape_stub_count,
+        "routable_net_count": report.routable_net_count,
+        "nets_total": nets_total,
+        "nets_fully_connected": nets_full,
+        "elapsed_seconds": round2(report.elapsed_seconds),
+        "budget_hit": report.budget_hit,
         "total_length_mm": round2(report.total_length_mm),
         "total_lower_bound_mm": round2(report.total_lower_bound_mm),
         "total_detour_ratio": round2(total_detour),
@@ -4384,10 +4428,46 @@ fn tool_drc_run(project: &Project, args: &Value) -> Result<Value, ToolError> {
             report.error_count, report.warning_count
         ),
     );
-    let summary = format!(
+    // Agents only ever see this text, so list the errors (and a warning
+    // histogram) instead of making them guess what the counts mean.
+    let mut summary = format!(
         "DRC: {} error(s), {} warning(s)",
         report.error_count, report.warning_count
     );
+    const MAX_LISTED: usize = 25;
+    let errors: Vec<&pcb_drc::Violation> = report
+        .violations
+        .iter()
+        .filter(|v| v.severity == pcb_drc::Severity::Error)
+        .collect();
+    if !errors.is_empty() {
+        summary.push_str("\nerrors:");
+        for v in errors.iter().take(MAX_LISTED) {
+            summary.push_str(&format!(
+                "\n  - {:?} @ {:.2},{:.2} mm: {}",
+                v.kind, v.x_mm, v.y_mm, v.message
+            ));
+        }
+        if errors.len() > MAX_LISTED {
+            summary.push_str(&format!("\n  … {} more", errors.len() - MAX_LISTED));
+        }
+    }
+    let mut warn_kinds: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for v in report
+        .violations
+        .iter()
+        .filter(|v| v.severity == pcb_drc::Severity::Warning)
+    {
+        *warn_kinds.entry(format!("{:?}", v.kind)).or_default() += 1;
+    }
+    if !warn_kinds.is_empty() {
+        let parts: Vec<String> = warn_kinds
+            .iter()
+            .map(|(k, n)| format!("{k} ×{n}"))
+            .collect();
+        summary.push_str(&format!("\nwarnings by kind: {}", parts.join(", ")));
+    }
     Ok(text_result(summary).with_data(serde_json::to_value(&report).unwrap_or(json!({}))))
 }
 
