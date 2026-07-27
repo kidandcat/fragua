@@ -383,7 +383,7 @@ pub fn run(board: &Board, opts: &DrcOptions) -> DrcReport {
         .clone()
         .or_else(|| board.fab_rules.as_ref().map(profile_from_fab_rules));
     if let Some(profile) = profile.as_ref() {
-        check_fab_profile(board, profile, &mut report);
+        check_fab_profile(board, profile, &resolver, &mut report);
         check_rule_areas_vs_fab(board, profile, &mut report);
     }
     report
@@ -496,18 +496,36 @@ fn check_impedance(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
 /// vias whose drill or annular ring is below the profile, and pads
 /// whose drill is below the profile. Board outline area larger than
 /// the profile's max gets a single warning.
-fn check_fab_profile(board: &Board, profile: &FabProfile, report: &mut DrcReport) {
+fn check_fab_profile(
+    board: &Board,
+    profile: &FabProfile,
+    resolver: &RuleResolver<'_>,
+    report: &mut DrcReport,
+) {
+    // A rule area that declares its own geometry SUPERSEDES the fab
+    // minimum for the copper inside it: the designer said "here I build
+    // at these numbers", and `check_rule_areas_vs_fab` already warns
+    // once per area value the fab cannot make. Erroring per item on top
+    // of that would make the warning meaningless and would leave no way
+    // to express a deliberately tighter escape zone.
     for trace in &board.traces {
         let w = trace.width.to_mm();
-        if w + 1e-6 < profile.min_trace_width_mm {
+        let mid = mm_point((
+            f64::midpoint(trace.start.x.to_mm(), trace.end.x.to_mm()),
+            f64::midpoint(trace.start.y.to_mm(), trace.end.y.to_mm()),
+        ));
+        let min_w = resolver
+            .area_trace_width(mid, Some(trace.layer))
+            .map_or(profile.min_trace_width_mm, |l| l.to_mm());
+        if w + 1e-6 < min_w {
             let mx = f64::midpoint(trace.start.x.to_mm(), trace.end.x.to_mm());
             let my = f64::midpoint(trace.start.y.to_mm(), trace.end.y.to_mm());
             report.push(Violation {
                 kind: ViolationKind::FabProfileMin,
                 severity: Severity::Error,
                 message: format!(
-                    "trace {} width {w:.3} mm < {} min {:.3} mm",
-                    trace.net, profile.name, profile.min_trace_width_mm,
+                    "trace {} width {w:.3} mm < {} min {min_w:.3} mm",
+                    trace.net, profile.name,
                 ),
                 x_mm: mx,
                 y_mm: my,
@@ -517,13 +535,30 @@ fn check_fab_profile(board: &Board, profile: &FabProfile, report: &mut DrcReport
     }
     for via in &board.vias {
         let d = via.drill.to_mm();
-        if d + 1e-6 < profile.min_drill_mm {
+        // A via is a barrel through every layer, so the area rule that
+        // governs it is the layer-agnostic one at its centre.
+        let area_drill = resolver
+            .area_via_drill(via.position, None)
+            .map(|l| l.to_mm());
+        let area_dia = resolver
+            .area_via_diameter(via.position, None)
+            .map(|l| l.to_mm());
+        let min_drill = area_drill.unwrap_or(profile.min_drill_mm);
+        let min_dia = area_dia.unwrap_or(profile.min_via_diameter_mm);
+        // When the area pins both numbers it also pins the ring they
+        // imply; anything else would reject the very geometry it asked
+        // for.
+        let min_ring = match (area_dia, area_drill) {
+            (Some(dia), Some(drill)) => ((dia - drill) / 2.0).min(profile.min_annular_ring_mm),
+            _ => profile.min_annular_ring_mm,
+        };
+        if d + 1e-6 < min_drill {
             report.push(Violation {
                 kind: ViolationKind::FabProfileMin,
                 severity: Severity::Error,
                 message: format!(
-                    "via on {} drilled at {d:.3} mm < {} min {:.3} mm",
-                    via.net, profile.name, profile.min_drill_mm,
+                    "via on {} drilled at {d:.3} mm < {} min {min_drill:.3} mm",
+                    via.net, profile.name,
                 ),
                 x_mm: via.position.x.to_mm(),
                 y_mm: via.position.y.to_mm(),
@@ -531,29 +566,28 @@ fn check_fab_profile(board: &Board, profile: &FabProfile, report: &mut DrcReport
             });
         }
         let ring = (via.diameter.to_mm() - d) / 2.0;
-        if ring + 1e-6 < profile.min_annular_ring_mm {
+        if ring + 1e-6 < min_ring {
             report.push(Violation {
                 kind: ViolationKind::FabProfileMin,
                 severity: Severity::Error,
                 message: format!(
-                    "via on {} annular ring {ring:.3} mm < {} min {:.3} mm",
-                    via.net, profile.name, profile.min_annular_ring_mm,
+                    "via on {} annular ring {ring:.3} mm < {} min {min_ring:.3} mm",
+                    via.net, profile.name,
                 ),
                 x_mm: via.position.x.to_mm(),
                 y_mm: via.position.y.to_mm(),
                 involved: vec![via.net.clone()],
             });
         }
-        if via.diameter.to_mm() + 1e-6 < profile.min_via_diameter_mm {
+        if via.diameter.to_mm() + 1e-6 < min_dia {
             report.push(Violation {
                 kind: ViolationKind::FabProfileMin,
                 severity: Severity::Error,
                 message: format!(
-                    "via on {} diameter {:.3} mm < {} min {:.3} mm",
+                    "via on {} diameter {:.3} mm < {} min {min_dia:.3} mm",
                     via.net,
                     via.diameter.to_mm(),
                     profile.name,
-                    profile.min_via_diameter_mm,
                 ),
                 x_mm: via.position.x.to_mm(),
                 y_mm: via.position.y.to_mm(),

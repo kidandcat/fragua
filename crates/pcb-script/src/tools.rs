@@ -5679,12 +5679,13 @@ fn tool_fab_rules_set(project: &Project, args: &Value) -> Result<Value, ToolErro
         ))
     })?;
     let text = format!(
-        "fab rules `{}`: trace/space {:.3} mm, via drill {:.3} mm, via dia {:.3} mm, annular {:.3} mm, edge {:.3} mm, max {:.0}×{:.0} mm\nDRC now gates every minimum against this preset; the fanout uses the smallest via it allows.",
+        "fab rules `{}`: trace {:.3} mm, space {:.3} mm, via drill {:.3} mm, via dia {:.3} mm, annular {:.3} mm, edge {:.3} mm, max {:.0}×{:.0} mm\nDRC now gates every minimum against this preset; the fanout uses the smallest via it allows.",
         rules.preset,
         rules.min_trace_width_mm,
         rules.min_clearance_mm,
         rules.min_via_drill_mm,
         rules.min_via_diameter_mm,
+        rules.min_annular_ring_mm,
         rules.min_edge_clearance_mm,
         rules.max_board_size_mm.0,
         rules.max_board_size_mm.1,

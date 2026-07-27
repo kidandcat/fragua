@@ -73,17 +73,28 @@ impl<'a> PadRules<'a> {
         // the fab's floor (a 0.30/0.15 barrel is below JLCPCB's standard
         // tier, so a board that adopted a preset must not fan out with
         // one), else the historical minimum.
-        let fab_dia = fab.map_or(0.0, |f| f.min_via_diameter_mm);
-        let fab_drill = fab.map_or(0.0, |f| f.min_via_drill_mm);
+        let via_drill = resolver.area_via_drill(at, layer).map_or_else(
+            || FANOUT_VIA_DRILL_MM.max(fab.map_or(0.0, |f| f.min_via_drill_mm)),
+            |l| l.to_mm(),
+        );
+        // The pad must satisfy the fab's annular ring around that drill,
+        // not just its headline minimum via diameter — a 0.45 mm pad on a
+        // 0.20 mm drill is a 0.125 mm ring, which JLCPCB's own 0.13 mm
+        // rule rejects.
+        let fab_dia = fab.map_or(0.0, |f| {
+            f.min_via_diameter_mm
+                .max(via_drill + 2.0 * f.min_annular_ring_mm)
+        });
         let via_diameter = resolver
             .area_via_diameter(at, layer)
             .map_or_else(|| FANOUT_VIA_DIAMETER_MM.max(fab_dia), |l| l.to_mm());
-        let via_drill = resolver
-            .area_via_drill(at, layer)
-            .map_or_else(|| FANOUT_VIA_DRILL_MM.max(fab_drill), |l| l.to_mm());
-        let min_stub_width = resolver
-            .area_trace_width(at, layer)
-            .map_or(STUB_MIN_WIDTH_MM, |l| l.to_mm());
+        // Narrowest legal stub here: an area override wins, else the
+        // fab's floor — a 0.12 mm stub on a board that adopted JLCPCB's
+        // 0.127 mm tier is copper the fab would reject.
+        let min_stub_width = resolver.area_trace_width(at, layer).map_or_else(
+            || STUB_MIN_WIDTH_MM.max(fab.map_or(0.0, |f| f.min_trace_width_mm)),
+            |l| l.to_mm(),
+        );
         Self {
             resolver: Some(resolver),
             net,
@@ -556,9 +567,20 @@ pub(crate) fn plan_footprint(
             // the coarse router has no lane to approach any of them and the
             // pins fail to land. Staggering adjacent pins to opposite ends of
             // their pads opens a clear approach lane down the pad's long axis.
-            let vip = pick_via_position(
-                cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, &rules, foreign, work,
-            );
+            // A via-in-pad has to sit INSIDE the pad's copper — that is
+            // what makes it a VIP rather than a barrel floating over the
+            // solder joint. Without this the fit test alone would accept
+            // a 0.30 mm barrel centred on a 0.20 mm-wide QFN pad as soon
+            // as a tight rule area let it clear the neighbours, and the
+            // whole row would drop dogbones for overhanging via-in-pads
+            // that block every approach lane.
+            let vip = if via_r <= hw.min(hh) + 1e-9 {
+                pick_via_position(
+                    cx, cy, hw, hh, fp_cx, fp_cy, net, via_r, &rules, foreign, work,
+                )
+            } else {
+                None
+            };
             // Dogbone fallback: pad too small for a true via-in-pad
             // (typical 0.4 mm-pitch QFN pads are ~0.20 mm wide — a
             // 0.30 mm barrel does not fit). Place the via just past the
