@@ -115,7 +115,12 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
     // Otherwise fall through to plan_fanout, which now also runs on 2-layer
     // and places dogbone vias for pads too small for via-in-pad.
     if board.stackup.layer_count() < 3 || opts.cell.to_mm() > FINE_ESCAPE_MAX_CELL_MM {
-        plan.fanout = fanout::plan_fanout(board, opts);
+        let mut f = fanout::plan_fanout(board, opts);
+        // The dogbone path lays its own pad → via stubs; hoist them into
+        // the plan's stub list so the router stamps and commits them
+        // exactly like the fine-escape stubs.
+        plan.stubs = std::mem::take(&mut f.stubs);
+        plan.fanout = f;
         return plan;
     }
     let rects = pad_rects_owned(board);

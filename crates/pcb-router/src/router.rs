@@ -289,11 +289,39 @@ pub enum Outcome {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RouteReport {
     pub per_net: Vec<(String, Outcome)>,
+    /// Trace segments the coarse per-net search laid. This is a SEARCH
+    /// statistic: it excludes the fanout stubs, and it predates the
+    /// organic pass (which re-splits polylines). Use
+    /// `board_trace_count` for "what is actually on the board".
     pub trace_count: usize,
+    /// Vias the coarse per-net search laid — excludes fanout/dogbone and
+    /// pour-stitching vias. See `board_via_count`.
     pub via_count: usize,
+    /// Traces on the FINAL board once every pass has committed: coarse
+    /// routing + escape/dogbone stubs + organic re-segmentation. This is
+    /// the number a `view`/`status` of the saved project will agree with.
+    pub board_trace_count: usize,
+    /// Vias on the FINAL board: coarse routing + fanout/dogbone +
+    /// pour stitching.
+    pub board_via_count: usize,
+    /// Vias contributed by the fanout/escape pre-pass.
+    pub fanout_via_count: usize,
+    /// Of those, how many are dogbones (barrel outside the pad, fed by a
+    /// copper stub) rather than true via-in-pad.
+    pub dogbone_via_count: usize,
+    /// Pre-laid escape/dogbone stub segments committed to the board.
+    pub escape_stub_count: usize,
+    /// Nets the router actually attempted (pour-only nets are skipped by
+    /// design and are not counted here).
+    pub routable_net_count: usize,
+    /// Wall-clock seconds the whole `route()` call took.
+    pub elapsed_seconds: f64,
+    /// True when the `max_seconds` budget was exhausted, so the result is
+    /// "best so far" rather than "best the router can do".
+    pub budget_hit: bool,
     /// Sum of `length_mm` over every successfully-routed net.
     pub total_length_mm: f64,
     /// Sum of `lower_bound_mm` over the same set.
@@ -420,14 +448,10 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     if nets.is_empty() {
         board.clear_routing();
         return RouteReport {
-            per_net: Vec::new(),
-            trace_count: 0,
-            via_count: 0,
-            total_length_mm: 0.0,
-            total_lower_bound_mm: 0.0,
-            iterations: 0,
-            hints: Vec::new(),
-            organic: None,
+            fanout_via_count: fanout.vias.len(),
+            dogbone_via_count: fanout.dogbone_pads.len(),
+            elapsed_seconds: started.elapsed().as_secs_f64(),
+            ..RouteReport::default()
         };
     }
 
@@ -682,13 +706,25 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         crate::stitching::add_stitching_vias(board, opts);
         hit_deadline = true;
     }
+    // Truthful totals: everything above (coarse routing, fanout vias,
+    // escape stubs, organic re-segmentation, pour stitching) has now been
+    // committed, so read the counts back off the board rather than
+    // trusting the coarse search's own tally.
+    best_report.board_trace_count = board.traces.len();
+    best_report.board_via_count = board.vias.len();
+    best_report.fanout_via_count = fanout.vias.len();
+    best_report.dogbone_via_count = fanout.dogbone_pads.len();
+    best_report.escape_stub_count = escape_stubs.len();
+    best_report.routable_net_count = best_report.per_net.len();
+    best_report.elapsed_seconds = started.elapsed().as_secs_f64();
+    best_report.budget_hit = hit_deadline;
     progress(
         opts,
         format!(
-            "route: done in {:.1}s — {} traces, {} vias, {} failed net(s){}",
-            started.elapsed().as_secs_f64(),
-            best_report.trace_count,
-            best_report.via_count,
+            "route: done in {:.1}s — {} traces, {} vias on board, {} failed net(s){}",
+            best_report.elapsed_seconds,
+            best_report.board_trace_count,
+            best_report.board_via_count,
             count_failed(&best_report),
             if hit_deadline { " (budget hit)" } else { "" }
         ),
@@ -736,6 +772,7 @@ fn post_passes(board: &mut Board, opts: &RouteOptions, report: &mut RouteReport)
 /// Drive the topological engine and shape its outcomes into the same
 /// report the grid driver produces (hints included).
 fn route_topo(board: &mut Board, opts: &RouteOptions) -> RouteReport {
+    let started = Instant::now();
     let nets = collect_nets(board);
     let results = crate::topo::route_all(board, opts);
     let mut per_net: Vec<(String, Outcome)> = Vec::new();
@@ -769,11 +806,14 @@ fn route_topo(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         total_length_mm,
         total_lower_bound_mm,
         iterations: 1,
-        hints: Vec::new(),
-        organic: None,
+        ..RouteReport::default()
     };
     report.hints = generate_hints(&report, &nets);
     post_passes(board, opts, &mut report);
+    report.board_trace_count = board.traces.len();
+    report.board_via_count = board.vias.len();
+    report.routable_net_count = report.per_net.len();
+    report.elapsed_seconds = started.elapsed().as_secs_f64();
     report
 }
 
@@ -1159,8 +1199,7 @@ fn route_pass(
         total_length_mm,
         total_lower_bound_mm,
         iterations: 0,
-        hints: Vec::new(),
-        organic: None,
+        ..RouteReport::default()
     }
 }
 

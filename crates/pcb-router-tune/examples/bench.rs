@@ -175,16 +175,7 @@ fn main() {
 
     let t0 = std::time::Instant::now();
     let report = if std::env::var("NOROUTE").is_ok() {
-        pcb_router::RouteReport {
-            per_net: vec![],
-            trace_count: 0,
-            via_count: 0,
-            total_length_mm: 0.0,
-            total_lower_bound_mm: 0.0,
-            iterations: 0,
-            hints: vec![],
-            organic: None,
-        }
+        pcb_router::RouteReport::default()
     } else {
         pcb_router::route(&mut board, &opts)
     };
