@@ -867,10 +867,9 @@ impl Project {
         };
 
         let mut inner = self.inner.write().expect("project lock poisoned");
-        let outline = inner
-            .board
-            .outline
-            .ok_or_else(|| "edge-place: board has no outline — call `outline W H` first".to_string())?;
+        let outline = inner.board.outline.ok_or_else(|| {
+            "edge-place: board has no outline — call `outline W H` first".to_string()
+        })?;
         let idx = inner
             .palette
             .iter()
@@ -950,7 +949,10 @@ impl Project {
                 "{reference} body edge-place at ({x_mm:.2}, {y_mm:.2}) mm would overlap {other} body"
             ));
         }
-        if let Some(reason) = inner.board.body_outline_violation(&probe, margin_for(&probe)) {
+        if let Some(reason) = inner
+            .board
+            .body_outline_violation(&probe, margin_for(&probe))
+        {
             return Err(format!("{reference} {reason}"));
         }
         if let Some(reason) = inner.board.edge_mount_violation(&probe) {

@@ -14,6 +14,7 @@ pub mod hershey;
 pub mod library;
 pub mod project;
 pub mod rectify;
+pub mod rules;
 pub mod schematic;
 pub mod silk_clip;
 pub mod stitch;
@@ -37,6 +38,7 @@ pub use project::{
     ProjectSnapshot,
 };
 pub use rectify::{rectify_image, Rectified};
+pub use rules::{FabRules, RuleArea, RuleDefaults, RuleResolver};
 pub use schematic::{
     is_power_named_net, FlatSchematic, Net, NetClass, NetConnection, PinRole, PinSide, Port,
     PortDirection, ResolvedNetRules, SchPin, Schematic, Sheet, Symbol, SymbolKind,

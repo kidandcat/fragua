@@ -1110,6 +1110,17 @@ pub struct Board {
     /// impedance from a trace width. Defaults to FR-4 1.5 mm 1 oz.
     #[serde(default, skip_serializing_if = "is_default_stackup")]
     pub stackup: LayerStackup,
+    /// Rectangular design-rule overrides (fine-pitch escape zones, HV
+    /// moats). Resolved through `pcb_core::RuleResolver` by the router,
+    /// the fanout pass and DRC alike — see `rules.rs`. Empty by default
+    /// so older `.fragua` files load unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_areas: Vec<crate::rules::RuleArea>,
+    /// Adopted fab capability floor (`fab-rules jlcpcb-2l`). DRC gates
+    /// its minimum-style checks against it and warns when a rule area
+    /// asks for less than the fab can make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fab_rules: Option<crate::rules::FabRules>,
 }
 
 /// Serde helper: omit the corner-radius field when it's the default
@@ -1560,6 +1571,26 @@ impl Board {
         let before = self.keepouts.len();
         self.keepouts.retain(|k| k.id != id);
         self.keepouts.len() != before
+    }
+
+    /// Add a rule area, replacing any existing one with the same name
+    /// (the name is the agent's handle, so re-declaring it is an edit,
+    /// not a duplicate). Returns the id of the stored area.
+    pub fn set_rule_area(&mut self, area: crate::rules::RuleArea) -> Id {
+        let id = area.id;
+        if let Some(slot) = self.rule_areas.iter_mut().find(|a| a.name == area.name) {
+            *slot = area;
+        } else {
+            self.rule_areas.push(area);
+        }
+        id
+    }
+
+    /// Remove the rule area with this name. Returns whether one went.
+    pub fn remove_rule_area(&mut self, name: &str) -> bool {
+        let before = self.rule_areas.len();
+        self.rule_areas.retain(|a| a.name != name);
+        self.rule_areas.len() != before
     }
 
     /// Remove a pour matching this (net, layer). Returns true if one was removed.
