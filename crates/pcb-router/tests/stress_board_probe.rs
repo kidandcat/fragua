@@ -1,0 +1,113 @@
+//! Manual probe: route the RP2040 stress board (`stress/rp2040-minimal.fragua`)
+//! in-process, on any stackup, with the script layer's route defaults and a
+//! progress log stamped with wall-clock offsets. This is how the O8
+//! (multi-layer regression) numbers in `stress/AGENT-HANDOFF.md` are taken —
+//! it reproduces what the HTTP `route` verb does without a server, an
+//! autosave, or a client timeout.
+//!
+//! `#[ignore]`d: it costs a full route budget, so CI never runs it.
+//!
+//! ```text
+//! O8_LAYERS=4 O8_SECS=180 cargo test --release -p pcb-router \
+//!     --test stress_board_probe -- --ignored --nocapture
+//! ```
+//!
+//! `O8_LAYERS` (default 2) appends inner signal layers exactly like the
+//! script's `layer add In1.Cu signal`; `O8_SECS` (default 90) is the budget.
+//! Connectivity is reported as failed/routable — the same count the script's
+//! `N/39 net(s) fully connected` headline is derived from.
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use pcb_core::{Board, Dielectric, LayerKind, LayerSpec, Length, Schematic};
+use pcb_router::{route, Outcome, RouteOptions};
+
+struct ProjectFile {
+    board: Board,
+    schematic: Schematic,
+}
+
+fn opts(sch: &Schematic, secs: f64) -> RouteOptions {
+    let started = Instant::now();
+    RouteOptions {
+        cell: Length::from_mm(0.20),
+        trace_width: Length::from_mm(0.25),
+        clearance: Length::from_mm(0.20),
+        via_cost: 8,
+        via_drill: Length::from_mm(0.30),
+        via_diameter: Length::from_mm(0.60),
+        schematic: Some(Arc::new(sch.clone())),
+        organic: true,
+        organic_fillet_mm: 3.0,
+        max_seconds: Some(secs),
+        on_progress: Some(Arc::new(move |m: &str| {
+            println!("[{:7.2}s] {m}", started.elapsed().as_secs_f64());
+        })),
+        ..RouteOptions::default()
+    }
+}
+
+#[test]
+#[ignore]
+fn stress_board_probe() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../stress/rp2040-minimal.fragua"
+    );
+    let bytes = std::fs::read(path).expect("stress board");
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("parse");
+    let pf = ProjectFile {
+        board: serde_json::from_value(v["board"].clone()).expect("board"),
+        schematic: serde_json::from_value(v["schematic"].clone()).expect("schematic"),
+    };
+    let mut board = pf.board;
+    board.clear_routing(); // the script recipe always runs `clear-route` first
+    let layers: u8 = std::env::var("O8_LAYERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let secs: f64 = std::env::var("O8_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(90.0);
+    while board.stackup.layer_count() < layers {
+        let n = board.stackup.layer_count();
+        board.stackup.push_layer(
+            LayerSpec {
+                name: format!("In{n}.Cu"),
+                kind: LayerKind::Signal,
+                copper_thickness_mm: 0.035,
+            },
+            Dielectric {
+                thickness_mm: 0.5,
+                er: 4.5,
+            },
+        );
+    }
+    println!(
+        "layers={} — routing with a {secs}s budget",
+        board.stackup.layer_count()
+    );
+    let o = opts(&pf.schematic, secs);
+    let t = Instant::now();
+    let rep = route(&mut board, &o);
+    let failed: Vec<&str> = rep
+        .per_net
+        .iter()
+        .filter_map(|(n, out)| matches!(out, Outcome::Failed { .. }).then_some(n.as_str()))
+        .collect();
+    println!(
+        "RESULT layers={} elapsed={:.1}s passes={} traces={} vias={} search_traces={} failed={}/{} budget_hit={}",
+        board.stackup.layer_count(),
+        t.elapsed().as_secs_f64(),
+        rep.iterations,
+        rep.board_trace_count,
+        rep.board_via_count,
+        rep.trace_count,
+        failed.len(),
+        rep.routable_net_count,
+        rep.budget_hit
+    );
+    println!("FAILED: {}", failed.join(", "));
+}
