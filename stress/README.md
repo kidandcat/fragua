@@ -79,6 +79,57 @@ compute time. **4-layer probe:** fixed in the O8 pass — `layer add In1/In2`
 now gives 22/39 at 180 s (was a 1/39 collapse), so extra copper layers help,
 barely; they are not the answer either.
 
+### v6 (2026-07-27) — PathFinder negotiated congestion, and what it proved
+
+`route negotiate=true` swaps the rip-up-and-reroute driver for
+**negotiated congestion**: every net takes its shortest path first (foreign
+traces are shareable at a price, foreign pads are not), the corridors they
+fight over get progressively more expensive, and only the nets that share
+copper are ripped and rerouted. It converges to legal copper or falls back
+to the classic passes with the budget it has left — the better board wins
+either way, and a shared (illegal) state is never offered as a result.
+
+| Run (2-layer, `route max_seconds=180`, same binary, back to back) | Copper | Fully connected | Passes / iterations | DRC |
+|---|---|---|---|---|
+| default driver (RR&R) | 951 traces / 46 vias | **20/39** | 4 passes | 4E / 74W, **0 clearance errors** |
+| `route negotiate=true` | 777 traces / 41 vias | **17/39** | 5 iterations | 4E / 78W, **0 clearance errors** |
+
+**Negotiation loses here, and the reason is the interesting part.** With
+sharing allowed — i.e. every net free to route straight through every other
+net's copper — **12–13 of the 39 nets still cannot be routed at all**:
+
+```
+congestion: net GPIO0 is blocked even when allowed to share every foreign
+            trace — no path to pad U1.2 at (36.55, 21.80) mm
+congestion: net SWCLK  ... no path to pad U1.23 at (40.60, 27.45) mm
+congestion: net QSPI_SS ... no path to pad U1.54 at (38.20, 20.55) mm
+congestion: layer 1 around (41.0, 23.0) mm — 85 over-subscribed cell-iteration(s)
+```
+
+Every one of them is a U1 pad, and the over-subscribed cells are all on the
+bottom layer inside a ~4 × 4 mm patch centred on U1 (40–43, 21–27 mm). So
+the wall is **not** inter-net contention, which is exactly what PathFinder
+exists to resolve — it is **fixed geometry**: the QFN's own pad halos and
+the fanout's 25 dogbone via landings, which are stamped on every layer and
+cannot be ripped up. Do the arithmetic and it is unavoidable: a 0.25 mm
+trace at the area's 0.12 mm rule needs 0.245 mm from its centreline to any
+foreign copper edge, while two adjacent 0.4 mm-pitch pads leave a 0.2 mm
+channel. **No trace can pass between two QFN pins**, so every escape has to
+be a via, and the vias then wall each other off.
+
+That is a result for the *escape planner*, not the router: the dogbone
+landings are chosen per pad without checking that a legal lane survives to
+each one. Assigning escape slots so that lanes exist (a flow / matching
+problem) is the next lever — negotiation cannot help until the lanes are
+there.
+
+Negotiation is therefore **opt-in**, not the default: it is the right
+algorithm when the wall really is contention (see
+`crates/pcb-router/tests/negotiated_congestion.rs`, where it takes the
+corridor away from the net that can afford a detour and gives it to the one
+that cannot — from either routing order), and on this board it is worth
+running for the autopsy alone.
+
 ### What works
 
 - End-to-end agent loop: libs → confirm → schematic → place → route → screenshot
@@ -92,10 +143,12 @@ barely; they are not the answer either.
 
 1. **QFN-56 full connectivity on 2 layers** — dogbone stubs + no fine-pitch
    body moat took us 5→21/39, and it plateaus there regardless of budget.
-   Rule areas (v5) made the escape *legal* but not *routable*: the wall is
-   escape-corridor congestion, so the next levers are PathFinder-style
-   negotiated congestion and rip-up that can evict the fat +3V3 ring, not
-   another rule.
+   Rule areas (v5) made the escape *legal* but not *routable*, and
+   negotiated congestion (v6) proved the remaining wall is not contention
+   at all: a dozen nets cannot reach their U1 pads even when allowed to
+   share every foreign trace. The next lever is escape-slot assignment
+   (which pad gets which dogbone, so that a legal lane survives), not the
+   router.
 2. **4-layer path** — fixed (O8): 3L/4L now reach 22/39 inside budget, one
    net better than 2L. Extra layers cost ~1.5× per pass, so they buy far
    less than the fine-pitch wall costs.
@@ -110,6 +163,11 @@ barely; they are not the answer either.
 - **Router:** 2-layer dogbone fanout; `max_seconds` + progress; scaled A*
   pop cap; skip organic when budget hit
 - **Placer:** pull passives toward net anchors after SA
+- **v6 pass:** PathFinder-style negotiated congestion in
+  `pcb-router/src/negotiate.rs` (`route negotiate=true`) — sharing-aware
+  A* mode, per-cell history, conflict-driven rip-up, legal extraction,
+  corridor autopsy in the route hints; regression tests for the
+  order-dependence it fixes and for determinism
 - **v5 pass:** `RuleArea` + one shared clearance resolver in `pcb-core`
   (router grid, fanout, organic and DRC all read it); pairwise per-net
   clearance in the search (a net now honours its neighbour's stricter
