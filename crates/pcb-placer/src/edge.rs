@@ -25,6 +25,22 @@
 //! more independent edge connectors is rare, and greedy on this objective
 //! is still far better than "nearest edge".
 //!
+//! Two rules keep a real (crowded) board from making every assignment
+//! infeasible, which would hand the decision back to "nearest edge":
+//!
+//! * **The seed is a preference, not the only candidate.** If the seeded
+//!   along-edge position collides with something, the part scans the whole
+//!   edge on a 1 mm grid, nearest-to-seed first, and only when NO along
+//!   position is legal does the side become infeasible.
+//! * **Parts the SA is about to move do not get a veto.** Run from
+//!   `place()`, the planner ignores body clearance against movable
+//!   non-edge footprints (`ignore`): they are re-placed by the global
+//!   stage seconds later, so their stale scatter must not decide which
+//!   edge a connector lives on. Fixed parts and the other planned edge
+//!   parts are still checked in full. The standalone `edge-plan` verb
+//!   passes an empty `ignore`: there the rest of the board is settled and
+//!   every collision is real.
+//!
 //! No randomness anywhere: the same board always produces the same plan.
 
 use std::collections::HashSet;
@@ -32,8 +48,8 @@ use std::collections::HashSet;
 use pcb_core::{Board, EdgeSide, Footprint, Id, Length, Point, Rect};
 
 use crate::{
-    bundle::crossings_involving, margin_for_fp, net_hpwl, pads_inside_outline, probe_min_gap,
-    MarginMap, PlaceOptions,
+    aabb_gap_mm, bundle::crossings_involving, fp_bounds_with_margin, margin_for_fp, net_hpwl,
+    pads_inside_outline, MarginMap, PlaceOptions,
 };
 
 /// Sides in the order the planner enumerates them. Fixed, so combination
@@ -50,6 +66,12 @@ const SIDES: [EdgeSide; 4] = [
 /// reference order.
 const EXACT_MAX_PARTS: usize = 4;
 
+/// Grid step (mm) of the along-edge scan used when the seeded position is
+/// blocked. 1 mm is finer than any body-to-body clearance we enforce, so
+/// if a legal slot exists on the edge the scan lands in it; an 80 mm edge
+/// is still only ~80 candidates, each a bbox sweep.
+const ALONG_STEP_MM: f64 = 1.0;
+
 /// What the planner decided for one part.
 #[derive(Debug, Clone)]
 pub struct EdgePlacement {
@@ -60,6 +82,12 @@ pub struct EdgePlacement {
     pub along_mm: f64,
     pub position: Point,
     pub rotation: f32,
+    /// The footprint's `edge_side` after planning: the LOCAL side now
+    /// against the outline. The planner re-declares it when the library's
+    /// value would have forced an end-on pose (a 1×10 header declared
+    /// `left`), so `edge_mount_violation` — the rule the SA and the DRC
+    /// enforce — agrees with the pose that was committed.
+    pub edge_side: Option<EdgeSide>,
 }
 
 /// Outcome of a planning pass.
@@ -105,19 +133,28 @@ pub fn plan_edge_sides(
             Some(fp) => ids.push(fp.id),
         }
     }
-    let mut report = plan_movable_edges(board, &ids, opts, margins, outline);
+    // Empty `ignore`: on the verb path the caller asked for these refs and
+    // nothing else, so every other footprint on the board is settled and
+    // its clearance is a real constraint.
+    let mut report = plan_movable_edges(board, &ids, opts, margins, outline, &HashSet::new());
     report.skipped.splice(0..0, skipped);
     Ok(report)
 }
 
 /// Core pass, id-based: used both by the verb wrapper above and by
 /// `place()` before its global stage.
+///
+/// `ignore` lists footprints whose body clearance must NOT block a
+/// candidate pose — the movable non-edge parts `place()` is about to
+/// re-place. Everything else (fixed parts, and the planned edge parts
+/// against each other) is checked in full.
 pub(crate) fn plan_movable_edges(
     board: &mut Board,
     movable_ids: &[Id],
     opts: &PlaceOptions,
     margins: &MarginMap,
     outline: Rect,
+    ignore: &HashSet<Id>,
 ) -> EdgePlanReport {
     let hard_clearance = opts.min_clearance_mm.max(opts.solder_gap_mm);
     let mut report = EdgePlanReport::default();
@@ -149,54 +186,89 @@ pub(crate) fn plan_movable_edges(
     // has a pad on. Everything else contributes a constant, so leaving it
     // out makes the numbers comparable and the evaluation cheap.
     let nets = affected_nets(board, &planned);
-    let originals: Vec<(Id, Point, f32)> = ids
+    let originals: Vec<Original> = ids
         .iter()
         .filter_map(|id| {
             board
                 .footprints
                 .get(id)
-                .map(|fp| (*id, fp.position, fp.rotation))
+                .map(|fp| (*id, fp.position, fp.rotation, fp.edge_side))
         })
         .collect();
     report.initial_cost = cost(board, &nets, &ids, opts.crossing_penalty_factor);
 
     // --- Per (part, side): the pose we would use -----------------------------
     // Rotation is decided here, once, so the assignment search below is
-    // over sides only (4^n, not 16^n). For a part that declares its
-    // wire/plug side there is exactly one legal rotation per edge; for an
-    // undeclared one we keep the orientations that run its long axis
-    // ALONG the edge (a connector across the board edge is never right)
-    // and pick between them on the same objective, evaluated with every
-    // other part still where it is.
+    // over sides only (4^n, not 16^n). All four 90° steps are candidates
+    // and GEOMETRY picks between them: the winner is the one with the
+    // smallest extent PERPENDICULAR to the edge, i.e. the one that lays the
+    // part's pad row ALONG the cut. A 1×10 header spanning 23 mm must never
+    // be planned end-on, sticking through the middle of the board — which
+    // is exactly what deriving the rotation from the declared `edge_side`
+    // alone produces for a row authored along local x (its local "left" is
+    // the END of the row). The declaration is only a tie-break here: among
+    // the equally-parallel rotations we keep the one that honours it, which
+    // is what puts a USB-C's plug face outward rather than inward.
     #[allow(clippy::needless_range_loop)] // `parts[pi]` is written inside
     for pi in 0..parts.len() {
         for (si, side) in SIDES.iter().enumerate() {
             let Some(fp) = board.footprints.get(&parts[pi].id).cloned() else {
                 continue;
             };
-            let mut best: Option<(bool, f64, Pose)> = None;
-            for rot in rotation_candidates(&fp, *side) {
-                let Some(pose) = pose_for(&fp, rot, *side, board, &planned, outline) else {
+            let mut best: Option<Cand> = None;
+            for q in 0..4u32 {
+                let rot = (q as f32) * 90.0;
+                let Some(mut pose) = pose_for(&fp, rot, *side, board, &planned, outline) else {
                     continue;
                 };
-                let along = clamp_along(pose.seed_along, &pose, *side, outline);
+                // When the declared local side would NOT be the one against
+                // this edge, the pose stays legal only if the footprint's
+                // declaration is updated to name the side that actually
+                // faces the cut — `edge_mount_violation` (SA, DRC) checks
+                // exactly that. `None` = nothing to change.
+                let honoured = fp
+                    .edge_side
+                    .is_none_or(|local| local.world_side(rot) == *side);
+                pose.local_side = if fp.edge_side.is_some() && !honoured {
+                    Some(EdgeSide::local_facing(*side, rot))
+                } else {
+                    None
+                };
+                // Legality here means "legal SOMEWHERE on this edge", so a
+                // blocked seed does not make every rotation look equally
+                // bad; the cost is still read at the position the part
+                // would actually take.
+                let along = scan_along(
+                    board,
+                    parts[pi].id,
+                    &pose,
+                    *side,
+                    outline,
+                    margins,
+                    hard_clearance,
+                    opts,
+                    ignore,
+                );
+                let ok = along.is_some();
+                let along =
+                    along.unwrap_or_else(|| clamp_along(pose.seed_along, &pose, *side, outline));
                 let pos = position_for(*side, along, &pose, outline);
-                let legal = apply_probe(board, parts[pi].id, pos, rot);
-                let ok =
-                    legal && is_legal(board, parts[pi].id, outline, margins, hard_clearance, opts);
+                apply_probe(board, parts[pi].id, pos, rot, pose.local_side);
                 let c = cost(board, &nets, &ids, opts.crossing_penalty_factor);
                 restore(board, &originals);
-                // Prefer legal poses; among equals, the cheaper one; ties
-                // go to the first candidate (lowest rotation).
-                let better = match &best {
-                    None => true,
-                    Some((bl, bc, _)) => (ok, -c) > (*bl, -*bc),
+                let cand = Cand {
+                    ok,
+                    perp: pose.half_perp(*side) * 2.0,
+                    honoured,
+                    cost: c,
+                    rot,
+                    pose,
                 };
-                if better {
-                    best = Some((ok, c, pose));
+                if best.as_ref().is_none_or(|b| cand.beats(b)) {
+                    best = Some(cand);
                 }
             }
-            parts[pi].poses[si] = best.map(|(_, _, p)| p);
+            parts[pi].poses[si] = best.map(|c| c.pose);
         }
     }
 
@@ -223,6 +295,7 @@ pub(crate) fn plan_movable_edges(
                 margins,
                 hard_clearance,
                 opts,
+                ignore,
             ) else {
                 continue;
             };
@@ -253,6 +326,7 @@ pub(crate) fn plan_movable_edges(
                     margins,
                     hard_clearance,
                     opts,
+                    ignore,
                 ) else {
                     continue;
                 };
@@ -279,6 +353,7 @@ pub(crate) fn plan_movable_edges(
             margins,
             hard_clearance,
             opts,
+            ignore,
         );
         if let Some(score) = score {
             best_assign = Some((score, assign));
@@ -290,43 +365,66 @@ pub(crate) fn plan_movable_edges(
         restore(board, &originals);
         report.final_cost = report.initial_cost;
         for p in &parts {
-            report
-                .skipped
-                .push(format!("{}: no legal edge found", p.reference));
+            report.skipped.push(no_legal_edge(&p.reference));
         }
         return report;
     };
 
     // --- Apply the winner ----------------------------------------------------
+    // `realise` is the SAME routine the search scored with (spread + along
+    // repair), so what lands on the board is exactly what won — no second,
+    // subtly different layout pass.
     let decided: Vec<usize> = (0..parts.len())
         .filter(|k| assign[*k] != usize::MAX)
         .collect();
-    let placements = poses_for_assignment(&parts, &assign, &decided, outline, hard_clearance);
     restore(board, &originals);
+    let placements = realise(
+        board,
+        &parts,
+        &assign,
+        &decided,
+        outline,
+        margins,
+        hard_clearance,
+        opts,
+        ignore,
+    );
     if let Some(placements) = placements {
-        for (k, side, along, pos, rot) in placements {
-            if let Some(fp) = board.footprints.get_mut(&parts[k].id) {
-                fp.position = pos;
-                fp.rotation = rot;
-            }
+        for p in placements {
             report.placed.push(EdgePlacement {
-                reference: parts[k].reference.clone(),
-                side,
-                along_mm: along,
-                position: pos,
-                rotation: rot,
+                reference: parts[p.part].reference.clone(),
+                side: p.side,
+                along_mm: p.along,
+                position: p.pos,
+                rotation: p.rot,
+                // What the footprint's declaration IS now, so a caller
+                // holding its own copy of the board (the script tools do)
+                // can keep it in sync.
+                edge_side: board
+                    .footprints
+                    .get(&parts[p.part].id)
+                    .and_then(|f| f.edge_side),
             });
         }
     }
     for k in 0..parts.len() {
         if assign[k] == usize::MAX {
-            report
-                .skipped
-                .push(format!("{}: no legal edge found", parts[k].reference));
+            report.skipped.push(no_legal_edge(&parts[k].reference));
         }
     }
     report.final_cost = score;
     report
+}
+
+/// Skip line for a part with no legal pose anywhere. The scan already
+/// walked every along position on all four edges, so the only way out is
+/// to free room — say so instead of leaving the agent guessing.
+fn no_legal_edge(reference: &str) -> String {
+    format!(
+        "{reference}: no legal edge found — every along position on all four edges collides \
+         with a part that is not being placed; run `auto-place` (which lets the interior parts \
+         move too) or clear the edge first"
+    )
 }
 
 /// A part being planned, with the pose it would take on each side.
@@ -349,6 +447,13 @@ struct Pose {
     /// centroid of the pads it connects to (excluding other planned
     /// parts, whose positions are still in flux).
     seed_along: f64,
+    /// New value for the footprint's `edge_side` (the LOCAL side that ends
+    /// up against the cut), or `None` to leave the declaration alone.
+    /// Written whenever a part declares a side that this rotation does not
+    /// put on the outline — the geometry wins, and the declaration is
+    /// corrected so `edge_mount_violation` still passes for the pose we
+    /// commit. See the pre-pass in `plan_movable_edges`.
+    local_side: Option<EdgeSide>,
 }
 
 impl Pose {
@@ -359,42 +464,70 @@ impl Pose {
             EdgeSide::Top | EdgeSide::Bottom => self.half[0],
         }
     }
-}
 
-/// Absolute rotations worth trying for `fp` on `side`.
-///
-/// A part that declares `edge_side` (the wire entry / plug face) has
-/// exactly one: the rotation that turns that local side toward this board
-/// edge — same arithmetic `Project::place_edge_from_palette` uses, so the
-/// planner and the manual verb agree. Otherwise we keep the orientations
-/// whose long axis is parallel to the edge; if the bbox is square, all
-/// four are candidates.
-fn rotation_candidates(fp: &Footprint, side: EdgeSide) -> Vec<f32> {
-    if let Some(local) = fp.edge_side {
-        let q = (side.ccw_index() + 4 - local.ccw_index()) % 4;
-        return vec![(q as f32) * 90.0];
-    }
-    let mut out: Vec<f32> = Vec::new();
-    for q in 0..4u32 {
-        let rot = (q as f32) * 90.0;
-        let mut probe = fp.clone();
-        probe.rotation = rot;
-        let Some(b) = probe.bounds() else { continue };
-        let w = b.max.x.to_mm() - b.min.x.to_mm();
-        let h = b.max.y.to_mm() - b.min.y.to_mm();
-        let along_edge = match side {
-            EdgeSide::Left | EdgeSide::Right => h >= w - 1e-6,
-            EdgeSide::Top | EdgeSide::Bottom => w >= h - 1e-6,
-        };
-        if along_edge {
-            out.push(rot);
+    /// Half extent PERPENDICULAR to the edge — how far the part reaches
+    /// into the board. Minimising it is what keeps a pin header's pad row
+    /// parallel to the cut instead of driving it through the middle of the
+    /// board.
+    fn half_perp(&self, side: EdgeSide) -> f64 {
+        match side {
+            EdgeSide::Left | EdgeSide::Right => self.half[0],
+            EdgeSide::Top | EdgeSide::Bottom => self.half[1],
         }
     }
-    if out.is_empty() {
-        out = (0..4).map(|q| (q as f32) * 90.0).collect();
-    }
-    out
 }
+
+/// One rotation candidate for a (part, side), with everything the ranking
+/// needs. See `Cand::beats` for the order.
+struct Cand {
+    /// Some along position on this edge is legal at this rotation.
+    ok: bool,
+    /// Full extent perpendicular to the edge, mm (smaller = more parallel).
+    perp: f64,
+    /// The footprint's declared `edge_side` already faces this edge, so no
+    /// re-declaration is needed.
+    honoured: bool,
+    cost: f64,
+    rot: f32,
+    pose: Pose,
+}
+
+impl Cand {
+    /// Ranking, most significant first: the pose that reaches LEAST far into
+    /// the board (pad row along the cut); then legality; then the one that
+    /// honours the library's declared side (this is what flips a USB-C's
+    /// plug face outward); then cost; then the lowest rotation, so ties are
+    /// always resolved the same way.
+    ///
+    /// Geometry outranks legality ON PURPOSE. Legality here is measured with
+    /// the OTHER planned parts still at their old positions, so a connector
+    /// that will happily share the top edge once both are spread looks
+    /// "blocked" now — and ranking legality first then buys a legal-looking
+    /// pose by turning a 24 mm header end-on through the middle of the
+    /// board. Orientation relative to the cut is a hard design property;
+    /// collisions are what the spread and the along-scan in `realise` exist
+    /// to resolve, and a side that truly cannot hold the part is rejected
+    /// there (or, in the last resort, reported as skipped).
+    fn beats(&self, other: &Self) -> bool {
+        if (self.perp - other.perp).abs() > 1e-6 {
+            return self.perp < other.perp;
+        }
+        if self.ok != other.ok {
+            return self.ok;
+        }
+        if self.honoured != other.honoured {
+            return self.honoured;
+        }
+        if (self.cost - other.cost).abs() > 1e-9 {
+            return self.cost < other.cost;
+        }
+        self.rot < other.rot
+    }
+}
+
+/// A planned part's pose before the pass touched it: `(id, position,
+/// rotation, declared edge side)`. All four are restored between probes.
+type Original = (Id, Point, f32, Option<EdgeSide>);
 
 /// Geometry + along-edge seed of one (part, rotation, side) candidate.
 fn pose_for(
@@ -438,6 +571,7 @@ fn pose_for(
         half,
         bb_off,
         seed_along,
+        local_side: None,
     })
 }
 
@@ -476,14 +610,20 @@ fn connected_centroid(board: &Board, fp: &Footprint, planned: &HashSet<Id>) -> O
     Some([sx / n, sy / n])
 }
 
+/// Along-edge range the part's bbox centre may take and still fit inside
+/// the outline on that axis.
+fn along_limits(pose: &Pose, side: EdgeSide, outline: Rect) -> (f64, f64) {
+    let h = pose.half_along(side);
+    match side {
+        EdgeSide::Left | EdgeSide::Right => (outline.min.y.to_mm() + h, outline.max.y.to_mm() - h),
+        EdgeSide::Top | EdgeSide::Bottom => (outline.min.x.to_mm() + h, outline.max.x.to_mm() - h),
+    }
+}
+
 /// Clamp an along-edge coordinate so the part's bbox stays inside the
 /// outline on that axis.
 fn clamp_along(along: f64, pose: &Pose, side: EdgeSide, outline: Rect) -> f64 {
-    let h = pose.half_along(side);
-    let (lo, hi) = match side {
-        EdgeSide::Left | EdgeSide::Right => (outline.min.y.to_mm() + h, outline.max.y.to_mm() - h),
-        EdgeSide::Top | EdgeSide::Bottom => (outline.min.x.to_mm() + h, outline.max.x.to_mm() - h),
-    };
+    let (lo, hi) = along_limits(pose, side, outline);
     if lo > hi {
         f64::midpoint(lo, hi) // part wider than the board: centre it
     } else {
@@ -555,9 +695,19 @@ fn spread(
     Some(out)
 }
 
-/// One decided pose: `(part index, side, along-edge coordinate, footprint
-/// position, rotation)`.
-type Placement = (usize, EdgeSide, f64, Point, f32);
+/// One decided pose, as laid out on the board.
+#[derive(Clone)]
+struct Placement {
+    /// Index into `parts`.
+    part: usize,
+    side: EdgeSide,
+    /// Bbox-centre coordinate along the edge, mm.
+    along: f64,
+    pos: Point,
+    rot: f32,
+    /// `edge_side` re-declaration this pose needs, if any.
+    local_side: Option<EdgeSide>,
+}
 
 /// Poses for a whole assignment. `None` when some side cannot hold the
 /// parts assigned to it.
@@ -568,7 +718,7 @@ fn poses_for_assignment(
     outline: Rect,
     clearance: f64,
 ) -> Option<Vec<Placement>> {
-    let mut out: Vec<(usize, EdgeSide, f64, Point, f32)> = Vec::new();
+    let mut out: Vec<Placement> = Vec::new();
     for (si, side) in SIDES.iter().enumerate() {
         let mut items: Vec<(usize, f64, f64)> = Vec::new();
         for k in decided {
@@ -588,38 +738,152 @@ fn poses_for_assignment(
         let spread = spread(&mut items, lo, hi, clearance)?;
         for (k, along) in spread {
             let pose = parts[k].poses[si].as_ref()?;
-            out.push((
-                k,
-                *side,
+            out.push(Placement {
+                part: k,
+                side: *side,
                 along,
-                position_for(*side, along, pose, outline),
-                pose.rot,
-            ));
+                pos: position_for(*side, along, pose, outline),
+                rot: pose.rot,
+                local_side: pose.local_side,
+            });
         }
     }
     // Reference order (== part index order) keeps the report stable.
-    out.sort_by_key(|(k, _, _, _, _)| *k);
+    out.sort_by_key(|p| p.part);
     Some(out)
 }
 
+/// Lay an assignment out on the board for real: spread the parts on each
+/// side, then repair — with an along-edge scan — anyone the spread left
+/// illegal. Returns the placements ACTUALLY used (their `along` reflects
+/// any repair) and leaves the board holding them; `None` = infeasible.
+///
+/// Search and apply both go through here, so what the winner scored is
+/// exactly what lands on the board.
+#[allow(clippy::too_many_arguments)]
+fn realise(
+    board: &mut Board,
+    parts: &[Part],
+    assign: &[usize],
+    decided: &[usize],
+    outline: Rect,
+    margins: &MarginMap,
+    clearance: f64,
+    opts: &PlaceOptions,
+    ignore: &HashSet<Id>,
+) -> Option<Vec<Placement>> {
+    let mut placements = poses_for_assignment(parts, assign, decided, outline, clearance)?;
+    for p in &placements {
+        apply_probe(board, parts[p.part].id, p.pos, p.rot, p.local_side);
+    }
+    // Repair in part order. Moving a part can only ever free space for the
+    // ones after it (clearance is symmetric), so a single pass suffices and
+    // a part whose blocker has already moved away needs no scan at all.
+    for p in &mut placements {
+        let id = parts[p.part].id;
+        if is_legal(board, id, outline, margins, clearance, opts, ignore) {
+            continue;
+        }
+        let pose = parts[p.part].poses[assign[p.part]].as_ref()?;
+        let along = scan_along(
+            board, id, pose, p.side, outline, margins, clearance, opts, ignore,
+        )?;
+        p.along = along;
+        p.pos = position_for(p.side, along, pose, outline);
+        apply_probe(board, id, p.pos, p.rot, p.local_side);
+    }
+    Some(placements)
+}
+
+/// First legal along-edge position for `id` at `pose` on `side`, searched
+/// nearest-to-seed first. Leaves the board holding that pose when it finds
+/// one (the caller re-applies anyway); `None` = the whole edge is blocked.
+///
+/// This is what stops a crowded board from silently falling back to
+/// "nearest edge": one blocked seed used to make the entire side — and
+/// therefore, often, every assignment — infeasible.
+#[allow(clippy::too_many_arguments)]
+fn scan_along(
+    board: &mut Board,
+    id: Id,
+    pose: &Pose,
+    side: EdgeSide,
+    outline: Rect,
+    margins: &MarginMap,
+    clearance: f64,
+    opts: &PlaceOptions,
+    ignore: &HashSet<Id>,
+) -> Option<f64> {
+    let (before_pos, before_rot, before_side) = {
+        let fp = board.footprints.get(&id)?;
+        (fp.position, fp.rotation, fp.edge_side)
+    };
+    let (lo, hi) = along_limits(pose, side, outline);
+    let mut found = None;
+    for along in along_candidates(pose.seed_along, lo, hi) {
+        let pos = position_for(side, along, pose, outline);
+        apply_probe(board, id, pos, pose.rot, pose.local_side);
+        if is_legal(board, id, outline, margins, clearance, opts, ignore) {
+            found = Some(along);
+            break;
+        }
+    }
+    if found.is_none() {
+        apply_probe(board, id, before_pos, before_rot, None);
+        if let Some(fp) = board.footprints.get_mut(&id) {
+            fp.edge_side = before_side;
+        }
+    }
+    found
+}
+
+/// Along-edge candidates: the seed first, then a `ALONG_STEP_MM` grid over
+/// the legal range, ordered by distance from the seed (ties resolve to the
+/// lower coordinate). Deterministic and independent of where the part
+/// currently sits.
+fn along_candidates(seed: f64, lo: f64, hi: f64) -> Vec<f64> {
+    if lo > hi {
+        // Part longer than the edge: only the centred pose exists, and the
+        // legality check will decide whether it is usable.
+        return vec![f64::midpoint(lo, hi)];
+    }
+    let mut out = vec![seed.clamp(lo, hi)];
+    let steps = ((hi - lo) / ALONG_STEP_MM).floor().max(0.0) as usize;
+    for i in 0..=steps {
+        out.push((lo + i as f64 * ALONG_STEP_MM).min(hi));
+    }
+    out.push(hi);
+    out.sort_by(|a, b| {
+        (a - seed)
+            .abs()
+            .total_cmp(&(b - seed).abs())
+            .then(a.total_cmp(b))
+    });
+    out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    out
+}
+
 /// Score one full assignment; `None` = infeasible (does not fit, or some
-/// part ends up illegal). Leaves the board as it found it.
+/// part has no legal along position anywhere on its side). Leaves the
+/// board as it found it.
 #[allow(clippy::too_many_arguments)]
 fn evaluate(
     board: &mut Board,
     parts: &[Part],
     assign: &[usize],
-    originals: &[(Id, Point, f32)],
+    originals: &[Original],
     nets: &[String],
     ids: &[Id],
     outline: Rect,
     margins: &MarginMap,
     clearance: f64,
     opts: &PlaceOptions,
+    ignore: &HashSet<Id>,
 ) -> Option<f64> {
     let decided: Vec<usize> = (0..parts.len()).collect();
     evaluate_subset(
         board, parts, assign, &decided, originals, nets, ids, outline, margins, clearance, opts,
+        ignore,
     )
 }
 
@@ -631,33 +895,19 @@ fn evaluate_subset(
     parts: &[Part],
     assign: &[usize],
     decided: &[usize],
-    originals: &[(Id, Point, f32)],
+    originals: &[Original],
     nets: &[String],
     ids: &[Id],
     outline: Rect,
     margins: &MarginMap,
     clearance: f64,
     opts: &PlaceOptions,
+    ignore: &HashSet<Id>,
 ) -> Option<f64> {
-    let placements = poses_for_assignment(parts, assign, decided, outline, clearance)?;
-    for (k, _, _, pos, rot) in &placements {
-        if let Some(fp) = board.footprints.get_mut(&parts[*k].id) {
-            fp.position = *pos;
-            fp.rotation = *rot;
-        }
-    }
-    let mut ok = true;
-    for (k, _, _, _, _) in &placements {
-        if !is_legal(board, parts[*k].id, outline, margins, clearance, opts) {
-            ok = false;
-            break;
-        }
-    }
-    let score = if ok {
-        Some(cost(board, nets, ids, opts.crossing_penalty_factor))
-    } else {
-        None
-    };
+    let score = realise(
+        board, parts, assign, decided, outline, margins, clearance, opts, ignore,
+    )
+    .map(|_| cost(board, nets, ids, opts.crossing_penalty_factor));
     restore(board, originals);
     score
 }
@@ -687,12 +937,22 @@ fn affected_nets(board: &Board, planned: &HashSet<Id>) -> Vec<String> {
     nets
 }
 
-/// Move a footprint to a probe pose. False when the id is gone.
-fn apply_probe(board: &mut Board, id: Id, pos: Point, rot: f32) -> bool {
+/// Move a footprint to a probe pose, re-declaring its `edge_side` when the
+/// pose needs it (`local_side = Some`). False when the id is gone.
+fn apply_probe(
+    board: &mut Board,
+    id: Id,
+    pos: Point,
+    rot: f32,
+    local_side: Option<EdgeSide>,
+) -> bool {
     match board.footprints.get_mut(&id) {
         Some(fp) => {
             fp.position = pos;
             fp.rotation = rot;
+            if local_side.is_some() {
+                fp.edge_side = local_side;
+            }
             true
         }
         None => false,
@@ -704,6 +964,12 @@ fn apply_probe(board: &mut Board, id: Id, pos: Point, rot: f32) -> bool {
 /// hard body-to-body clearance against everything else (including the
 /// other planned parts, which are already moved at this point), and the
 /// edge-mount rule that makes an edge part legal at all.
+///
+/// Footprints in `ignore` are exempt from the clearance check only — the
+/// outline and edge-mount rules are about the board itself and always
+/// hold. See the module header for why a movable non-edge part must not
+/// get a veto here.
+#[allow(clippy::too_many_arguments)]
 fn is_legal(
     board: &Board,
     id: Id,
@@ -711,6 +977,7 @@ fn is_legal(
     margins: &MarginMap,
     clearance: f64,
     opts: &PlaceOptions,
+    ignore: &HashSet<Id>,
 ) -> bool {
     let Some(fp) = board.footprints.get(&id) else {
         return false;
@@ -724,7 +991,7 @@ fn is_legal(
     {
         return false;
     }
-    if probe_min_gap(board, fp, margins) < clearance {
+    if min_body_gap(board, fp, margins, ignore) < clearance {
         return false;
     }
     if board.edge_mount_violation(fp).is_some() {
@@ -733,12 +1000,28 @@ fn is_legal(
     true
 }
 
-/// Put every planned part back where the pass found it.
-fn restore(board: &mut Board, originals: &[(Id, Point, f32)]) {
-    for (id, pos, rot) in originals {
+/// Smallest body-to-body gap (mm, margins folded in) between `fp` and
+/// every other footprint except the ones in `ignore`. Same measure as the
+/// placer's `probe_min_gap`, with the exemption set added.
+fn min_body_gap(board: &Board, fp: &Footprint, margins: &MarginMap, ignore: &HashSet<Id>) -> f64 {
+    let Some(b) = fp_bounds_with_margin(fp, margins) else {
+        return f64::INFINITY;
+    };
+    board
+        .footprints_in_order()
+        .filter(|o| o.id != fp.id && !ignore.contains(&o.id))
+        .filter_map(|o| fp_bounds_with_margin(o, margins).map(|ob| aabb_gap_mm(b, ob)))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Put every planned part back exactly as the pass found it — pose AND
+/// declared edge side, since a probe may have re-declared the latter.
+fn restore(board: &mut Board, originals: &[Original]) {
+    for (id, pos, rot, side) in originals {
         if let Some(fp) = board.footprints.get_mut(id) {
             fp.position = *pos;
             fp.rotation = *rot;
+            fp.edge_side = *side;
         }
     }
 }

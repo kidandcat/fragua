@@ -363,7 +363,19 @@ pub fn place(
     // same objective (weighted HPWL + bundle crossings), and let the SA
     // refine the along-edge position afterwards. See `edge.rs`.
     if opts.edge_plan && opts.global_stage {
-        let _ = edge::plan_movable_edges(board, &movable_ids, opts, margins, outline);
+        // Movable NON-edge parts are re-placed by the global stage and the
+        // SA moments from now, so their current scatter (a previous
+        // layout, a spawn pile) must not veto the correct edge for a
+        // connector — the planner ignores body clearance against them.
+        // Fixed parts and the planned edge parts are still checked in
+        // full, so what the planner commits stays legal against everything
+        // that is not about to move.
+        let ignore: std::collections::HashSet<Id> = movable_ids
+            .iter()
+            .copied()
+            .filter(|id| board.footprints.get(id).is_none_or(|fp| !fp.edge_mounted))
+            .collect();
+        let _ = edge::plan_movable_edges(board, &movable_ids, opts, margins, outline, &ignore);
     }
 
     // Edge-mounted connectors (screw terminals, USB modules, headers…)

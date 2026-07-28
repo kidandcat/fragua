@@ -3922,6 +3922,21 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
             + (target.position.y.to_mm() - live_pos.y.to_mm()).abs()
             >= 0.01;
         let rot_changed = (target.rotation - live_rot).abs() > 0.5;
+        // The edge planner can re-declare which local side of an
+        // edge-mounted part faces the cut (see `pcb_placer::EdgePlacement`);
+        // keep the live board in step so DRC / a later move agree with the
+        // pose we are applying.
+        if target.edge_mounted {
+            let live_side = project
+                .read()
+                .board()
+                .footprints
+                .get(&id)
+                .and_then(|fp| fp.edge_side);
+            if live_side != target.edge_side {
+                project.set_footprint_edge_mount(id, true, target.edge_side);
+            }
+        }
         if pos_changed && project.move_footprint(id, target.position) {
             applied_moves += 1;
         }
@@ -4079,17 +4094,37 @@ fn tool_placement_edge_plan(project: &Project, args: &Value) -> Result<Value, To
     let report = pcb_placer::plan_edge_sides(&mut work, &input.refs, &opts, &margins)
         .map_err(|e| ToolError::invalid_params(format!("edge-plan: {e}")))?;
 
-    let live_by_ref: HashMap<String, (pcb_core::Id, pcb_core::Point, f32)> = project
+    let live_by_ref: HashMap<
+        String,
+        (
+            pcb_core::Id,
+            pcb_core::Point,
+            f32,
+            Option<pcb_core::EdgeSide>,
+        ),
+    > = project
         .read()
         .board()
         .footprints_in_order()
-        .map(|fp| (fp.reference.clone(), (fp.id, fp.position, fp.rotation)))
+        .map(|fp| {
+            (
+                fp.reference.clone(),
+                (fp.id, fp.position, fp.rotation, fp.edge_side),
+            )
+        })
         .collect();
     let mut applied = 0usize;
     for p in &report.placed {
-        let Some(&(id, live_pos, live_rot)) = live_by_ref.get(&p.reference) else {
+        let Some(&(id, live_pos, live_rot, live_side)) = live_by_ref.get(&p.reference) else {
             continue;
         };
+        // The planner may have re-declared WHICH local side faces the cut
+        // (the library's hint would have left a pin header end-on). Push
+        // that back or the live board fails `edge_mount_violation` on the
+        // pose we just committed.
+        if p.edge_side != live_side {
+            project.set_footprint_edge_mount(id, true, p.edge_side);
+        }
         let pos_changed = (p.position.x.to_mm() - live_pos.x.to_mm()).abs()
             + (p.position.y.to_mm() - live_pos.y.to_mm()).abs()
             >= 0.01;
