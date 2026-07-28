@@ -304,6 +304,192 @@ pub struct PlaceReport {
     /// Refs the caller listed but the placer couldn't touch (unknown,
     /// or no `bounds()` because they have no pads).
     pub skipped: Vec<String>,
+    /// Which search stage produced the returned layout — see
+    /// [`Checkpoint`]. `Checkpoint::Entry` means no stage beat the layout
+    /// the caller passed in, so it was handed back untouched (modulo the
+    /// deterministic decoupling-ring post-pass, which is idempotent on a
+    /// layout it already seated).
+    pub kept: Checkpoint,
+}
+
+/// Search stage a placement snapshot was taken at.
+///
+/// `place` runs three search stages in a row and keeps the best legal
+/// one under a single composite score, so callers (and tests) can see
+/// which stage actually earned the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checkpoint {
+    /// The layout the caller passed in, before any stage ran.
+    Entry,
+    /// After edge planning + the edge-mount snap, before global/SA.
+    EdgePlan,
+    /// After the global solve and the SA, which restores its own best.
+    Anneal,
+}
+
+impl Checkpoint {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Checkpoint::Entry => "input layout (no stage improved on it)",
+            Checkpoint::EdgePlan => "edge plan",
+            Checkpoint::Anneal => "anneal",
+        }
+    }
+}
+
+/// Positions + rotations of the movable footprints — one candidate
+/// layout for the best-seen clamp.
+type Layout = Vec<(Id, Point, f32)>;
+
+fn snapshot_layout(board: &Board, ids: &[Id]) -> Layout {
+    ids.iter()
+        .filter_map(|id| board.footprints.get(id).map(|fp| (*id, fp.position, fp.rotation)))
+        .collect()
+}
+
+fn restore_layout(board: &mut Board, layout: &Layout) {
+    for (id, pos, rot) in layout {
+        if let Some(fp) = board.footprints.get_mut(id) {
+            fp.position = *pos;
+            fp.rotation = *rot;
+        }
+    }
+}
+
+/// The placer's objective, evaluated on a whole board instead of as an
+/// incremental delta: weighted wirelength + soft-gap penalty + routing
+/// congestion + bundle crossings, all in mm-equivalent units. This is
+/// the same sum the SA accumulates move by move (`delta` in the loop),
+/// which is what makes it a legitimate yardstick for comparing two
+/// layouts produced by different stages of the pipeline.
+fn composite_score(
+    board: &Board,
+    outline: pcb_core::Rect,
+    opts: &PlaceOptions,
+    margins: &MarginMap,
+) -> f64 {
+    let congestion = if opts.congestion_resolution > 0 {
+        congestion_overflow(board, outline, opts.congestion_resolution)
+    } else {
+        0.0
+    };
+    total_hpwl(board)
+        + opts.gap_penalty_factor * total_gap_penalty(board, opts.min_gap_mm, margins)
+        + opts.congestion_penalty_factor * congestion
+        + opts.crossing_penalty_factor * bundle::bundle_crossings(board) as f64
+}
+
+/// True if every movable footprint satisfies the hard constraints the SA
+/// enforces move by move: pads on copper, body inside the outline,
+/// edge-mounted parts touching the cut, and the solder-access gap to
+/// every neighbour.
+///
+/// A candidate layout that fails this is never returned in preference to
+/// a legal one — the entry layout of a `compact` probe (parts clamped
+/// into a smaller outline, bodies possibly overlapping) is exactly that
+/// case, and handing it back would defeat the shrink.
+fn layout_is_legal(
+    board: &Board,
+    ids: &[Id],
+    outline: pcb_core::Rect,
+    opts: &PlaceOptions,
+    margins: &MarginMap,
+) -> bool {
+    let hard_clearance = opts.min_clearance_mm.max(opts.solder_gap_mm);
+    for id in ids {
+        let Some(fp) = board.footprints.get(id) else {
+            continue;
+        };
+        if !pads_inside_outline(fp, outline, opts.edge_clearance_mm) {
+            return false;
+        }
+        if board
+            .body_outline_violation(fp, margin_for_fp(fp, margins))
+            .is_some()
+        {
+            return false;
+        }
+        if board.edge_mount_violation(fp).is_some() {
+            return false;
+        }
+        // 1 µm of slack: the snapshots are re-derived from the same
+        // fixed-point coordinates, so this only absorbs float noise in
+        // the AABB gap, never a real sub-margin placement.
+        if footprint_min_gap(board, *id, margins) < hard_clearance - 1e-3 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Best-seen clamp over the placement search stages.
+///
+/// Only the SA stage ever tracked its own best, and it tracked it
+/// relative to the *post-global* board — so edge planning and the
+/// electrostatic global solve could each hand the next stage something
+/// worse than what they got, and `place` could (and on the stress board
+/// did) return a layout worse than its input on every headline metric at
+/// once: HPWL +78 mm, congestion +606 cells, crossings 4 → 5. Every
+/// search stage now offers its result here and the best legal one is
+/// restored, which makes "auto-place never makes the board worse under
+/// its own objective" a property of the API instead of a hope about SA
+/// convergence.
+///
+/// The decoupling ring is deliberately NOT a candidate: it seats a cap
+/// against its power pin *on purpose*, inside the soft `min_gap_mm`
+/// preference that the composite charges for, so the composite is not a
+/// fair judge of it. It runs as a deterministic post-pass on whichever
+/// layout wins here.
+struct BestSeen {
+    layout: Layout,
+    score: f64,
+    legal: bool,
+    kept: Checkpoint,
+}
+
+impl BestSeen {
+    fn new(
+        board: &Board,
+        ids: &[Id],
+        outline: pcb_core::Rect,
+        opts: &PlaceOptions,
+        margins: &MarginMap,
+    ) -> Self {
+        Self {
+            layout: snapshot_layout(board, ids),
+            score: composite_score(board, outline, opts, margins),
+            legal: layout_is_legal(board, ids, outline, opts, margins),
+            kept: Checkpoint::Entry,
+        }
+    }
+
+    /// Offer the board's current layout as the result of `stage`. A legal
+    /// candidate always beats an illegal one; between two of the same
+    /// legality the lower composite score wins. Ties go to the incumbent,
+    /// so an equal-scoring later stage never churns the board for nothing.
+    fn offer(
+        &mut self,
+        board: &Board,
+        ids: &[Id],
+        outline: pcb_core::Rect,
+        opts: &PlaceOptions,
+        margins: &MarginMap,
+        stage: Checkpoint,
+    ) {
+        let legal = layout_is_legal(board, ids, outline, opts, margins);
+        let score = composite_score(board, outline, opts, margins);
+        let better = match (legal, self.legal) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => score < self.score,
+        };
+        if better {
+            self.layout = snapshot_layout(board, ids);
+            self.score = score;
+            self.legal = legal;
+            self.kept = stage;
+        }
+    }
 }
 
 /// Run the SA placer in-place on `board`. Only footprints whose
@@ -352,8 +538,14 @@ pub fn place(
             accepted: 0,
             moved: Vec::new(),
             skipped,
+            kept: Checkpoint::Entry,
         });
     }
+
+    // Best-seen clamp, seeded with the caller's layout: from here on
+    // every stage offers its result and the best legal one is what we
+    // return. See `BestSeen` for why this is not the SA's job.
+    let mut best_seen = BestSeen::new(board, &movable_ids, outline, opts, margins);
 
     // Stage 0: edge planning. WHICH edge an edge-mounted connector goes
     // to is the most consequential decision on the board and the SA
@@ -416,6 +608,14 @@ pub fn place(
         0.0
     };
     let initial_crossings = bundle::bundle_crossings(board);
+    best_seen.offer(
+        board,
+        &movable_ids,
+        outline,
+        opts,
+        margins,
+        Checkpoint::EdgePlan,
+    );
 
     // Stage 1: electrostatic global placement. Finds the layout
     // structure analytically; may leave small residual overlaps that
@@ -654,6 +854,18 @@ pub fn place(
             fp.rotation = *rot;
         }
     }
+    best_seen.offer(
+        board,
+        &movable_ids,
+        outline,
+        opts,
+        margins,
+        Checkpoint::Anneal,
+    );
+    // Install the winner of the search before the post-pass runs on it.
+    restore_layout(board, &best_seen.layout);
+    let pre_decouple = best_seen.layout.clone();
+    let pre_decouple_legal = best_seen.legal;
 
     // Decoupling ring for small passives (caps/resistors/LEDs): give each
     // movable 2-pad part its OWN anchor pin on a same-net IC/connector pad
@@ -663,6 +875,11 @@ pub fn place(
     // pass recovers the "one cap per power pin, short loop" layout humans
     // expect without fighting the global stage. See `decouple.rs`.
     decouple::pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
+    // The ring may spend the soft gap, never the hard constraints: if it
+    // somehow lands an illegal pose, the search winner stands.
+    if pre_decouple_legal && !layout_is_legal(board, &movable_ids, outline, opts, margins) {
+        restore_layout(board, &pre_decouple);
+    }
 
     let final_hpwl = total_hpwl(board);
     let final_congestion = if opts.congestion_resolution > 0 {
@@ -697,6 +914,7 @@ pub fn place(
         accepted,
         moved,
         skipped,
+        kept: best_seen.kept,
     })
 }
 

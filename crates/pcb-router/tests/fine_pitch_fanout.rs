@@ -280,9 +280,14 @@ fn organic_smoothing_keeps_the_rule_area_clearance() {
     area.via_diameter_mm = Some(0.45);
     board.rule_areas.push(area);
 
+    // Generous budget on purpose: the assertion below is vacuous unless the
+    // organic pass actually RUNS, and it is skipped when the budget is
+    // exhausted. At 60 s this board finished routing with ~2 s to spare, so
+    // the test was a coin flip on machine load rather than a statement
+    // about smoothing.
     let opts = RouteOptions {
         organic: true,
-        ..script_opts(60.0)
+        ..script_opts(400.0)
     };
     let report = route(&mut board, &opts);
     assert!(

@@ -816,7 +816,8 @@ fn unstamp_disk(grid: &mut Grid, center: Point, copper: i32) {
 }
 
 /// Rip the escape barrels of `pads` and ask the assignment for different
-/// sites, with the sites they had EXCLUDED.
+/// sites, with the sites they had EXCLUDED — and give a barrel to any
+/// listed pad that has none.
 ///
 /// The driver calls this between rip-up-and-reroute passes for nets that
 /// keep failing at a fanned pad. A barrel is fixed copper for the whole
@@ -827,9 +828,19 @@ fn unstamp_disk(grid: &mut Grid, center: Point, copper: i32) {
 /// matching makes; here it is made again with better information (which
 /// pad actually could not get out).
 ///
+/// A listed pad with no barrel at all is the other half of the same
+/// problem. The planner skips a pad whose surface escape looks possible in
+/// exact millimetres, but the router searches a 0.20 mm grid whose
+/// clearance disk is coarser than that — so a USB-C pin can be declared
+/// surface-escapable and then have no legal cell to step onto. When the
+/// reachability flood proves such a pad sealed in, asking the slot
+/// assignment for a barrel is the repair, and it is why this takes a pad
+/// list rather than a barrel list.
+///
 /// Conservative by construction: a pad whose re-assignment finds no legal
-/// site gets its ORIGINAL barrel and stub back, so the board is never
-/// worse than before the attempt. Returns how many pads actually moved.
+/// site gets its ORIGINAL barrel and stub back (or stays unfanned), so the
+/// board is never worse than before the attempt. Returns how many pads
+/// gained or moved a barrel.
 pub(crate) fn reassign_escapes(
     board: &Board,
     opts: &RouteOptions,
@@ -872,6 +883,13 @@ pub(crate) fn reassign_escapes(
         };
         let (fp_cx, fp_cy) = fanout::pad_centroid(fp);
         let net_targets = fanout::net_partner_centroids(board, &fp.reference);
+        // Pads on this footprint that were asked for but own no barrel:
+        // candidates for a NEW one rather than a move.
+        let unfanned: Vec<String> = numbers
+            .iter()
+            .filter(|n| !plan.via_positions.contains_key(&format!("{reference}.{n}")))
+            .cloned()
+            .collect();
         // Rip: drop the old barrels and stubs out of the plan, remembering
         // them so a failed re-assignment can put them back untouched.
         let mut ripped: Vec<(String, Via, Option<Trace>)> = Vec::new();
@@ -896,7 +914,7 @@ pub(crate) fn reassign_escapes(
             banned.push((pos.x.to_mm(), pos.y.to_mm()));
             ripped.push((key, via, stub));
         }
-        if ripped.is_empty() {
+        if ripped.is_empty() && unfanned.is_empty() {
             continue;
         }
         // The board the assignment sees: every escape that is still
@@ -909,11 +927,7 @@ pub(crate) fn reassign_escapes(
         let targets: Vec<crate::slots::SlotTarget> = fp
             .pads
             .iter()
-            .filter(|p| {
-                ripped
-                    .iter()
-                    .any(|(k, _, _)| *k == format!("{reference}.{}", p.number))
-            })
+            .filter(|p| numbers.contains(&p.number))
             .filter_map(|p| {
                 fanout::slot_target_of(
                     fp,
@@ -933,6 +947,11 @@ pub(crate) fn reassign_escapes(
             fp, &targets, &foreign, &mut work, opts, &resolver, fab, fp_cx, fp_cy, &banned,
             &mut sub,
         );
+        for num in &unfanned {
+            if sub.via_positions.contains_key(&format!("{reference}.{num}")) {
+                moved += 1;
+            }
+        }
         for (key, via, stub) in ripped {
             if sub.via_positions.contains_key(&key) {
                 moved += 1;

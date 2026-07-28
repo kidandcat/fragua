@@ -192,7 +192,10 @@ fn stress_board_probe() {
             .filter(|v| v.severity == pcb_drc::Severity::Warning)
             .count()
     );
-    for h in rep.hints.iter().filter(|h| h.starts_with("congestion:")) {
-        println!("{h}");
+    // Every hint: the `escape:`/`entombed:` verdicts classify the
+    // survivors as geometry-bound or budget-bound, which is the number
+    // the campaign is actually chasing.
+    for h in &rep.hints {
+        println!("HINT {h}");
     }
 }

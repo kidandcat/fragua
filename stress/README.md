@@ -235,6 +235,138 @@ area — an honest compactness↔connectivity trade-off, not a regression.
   while shrinking) — growing a board needs `outline` + `edge-plan` +
   `auto-place`, there is no single re-place-at-size verb yet.
 
+### v9 (2026-07-28) — prove the escape plan, then route it
+
+v8's honest trade-off left the compact board at **25/39**, and the v8
+review named three problems: auto-place could return a worse layout than
+its input, the `usb` rule area over J1 was not unlocking anything, and the
+router was budget-bound at 4–8 passes. v9 answers all three, and the
+answer to the third turned out to be a proof rather than a speed-up.
+
+**Where the budget was going.** Timing the passes said it plainly: a
+rip-up-enabled pass cost **30–44 s** against **6–8 s** for a plain one, at
+a 180 s budget. The difference was nets that could never route. A search
+that cannot reach its target explores the grid to its A\* pop cap
+(`grid_cells × 8`), and in the clean-board pass each such failure then
+buys a cascade of up to four blockers ripped, rerouted and restored, two
+levels deep — every one of them another full search.
+
+**Escape reachability (`pcb-router/src/reach.rs`).** Strip the board back
+to the copper no pass can move — pads, bodies, keep-outs, and the escape
+plan's own barrels and stubs — and flood the cells a net may legally stand
+on. Routed traces only ever *remove* cells from that set, so a pad in a
+closed component holding none of its net's other pads is unreachable in
+**every** pass on that plan, at any budget, in any net order. Floods are
+capped at 512 cells, so the analysis is milliseconds and one-sided by
+construction: a component bigger than the cap is called reachable, and an
+entombment can never be invented.
+
+That proof is used three ways:
+
+1. **Plan legalisation, before the first net is routed.** The v7 slot
+   assignment *prices* barrel tightness, but pricing is not proof — it was
+   committing plans with 19 pads sealed in pockets. The flood names each
+   pocket AND the barrels forming its wall; those go back to the slot
+   assignment with their sites banned, and the loop runs to a fixpoint in
+   seconds. Best-seen by entombed count, so a round that makes the plan
+   worse is discarded.
+2. **Dead searches skipped.** An entombed spoke fails instantly with no
+   corridor (rip-up moves traces; a pocket walled by pads and barrels has
+   none to give). Entombed spokes sort last so their reachable siblings
+   still lay copper, and an entombed pad is never chosen as a net's seed.
+3. **An honest verdict in the report.** `entombed:` in the route hints
+   separates "needs more seconds" from "needs different geometry" — the
+   classification this campaign had been doing by hand with the test-only
+   flood autopsy.
+
+**The clearance was lying by 42 %.** The search-time clearance radius
+rounded the required distance up to a whole cell, added a whole guard
+cell, then squared that — three roundings compounding. At the board's fine
+rule (0.12 mm clearance, 0.25 mm trace, 0.20 mm cell) the honest
+requirement including the guard is 0.445 mm; the code demanded 0.632 mm,
+of every escape lane on a 0.4 mm-pitch QFN. The physical guard is
+unchanged — only the rounding is gone — and it alone dropped the initial
+entombed count from 19 to 9.
+
+**The J1 answer, and it was not the rule area.** The `usb` area was fine.
+The escape planner skips a pad whose surface escape looks possible in
+*exact millimetres*, but the router searches a 0.20 mm grid whose
+clearance disk is coarser than that — so a USB-C pin was declared
+surface-escapable and then had no legal cell to step onto. All four
+remaining entombed pads were J1 (VBUS ×2, USB_DP, CC2). `reassign_escapes`
+now takes a pad list rather than a barrel list: a listed pad with a barrel
+gets a different site, a listed pad with **no** barrel gets one. Escapes
+went 33 → 40, and every J1 pin now fans out.
+
+**Determinism cost two real bugs**, both found by running the same file
+through the same server twice:
+
+- The plan-legalisation loop was wall-clock bounded, so a loaded machine
+  legalised to a different plan. Every other stop in this driver is a
+  fixpoint precisely so a converged board does not depend on machine
+  speed; this one is now bounded by a round cap and a stall counter and
+  reads no clock.
+- The blame map was built by iterating `FanoutPlan::via_positions`, a
+  `HashMap` whose iteration order varies *per instance within one
+  process*. Two barrels whose copper overlaps a cell took turns owning it,
+  so alternate calls produced alternate boards — 12 passes / 33 nets, then
+  4 passes / 31 nets, then 12 again. Sorted now.
+- The RR&R loop only stopped on a true fixpoint (no net routed AND no
+  barrel moved) and the lever can nearly always move *something*, so on a
+  hard board the wall clock decided when to stop. A clock-free stall rule
+  (4 rounds without improving the best failed count) puts the stop back
+  under the router's control.
+
+**A cosmetic pass may not make the board illegal.** The organic smoother
+validates each rewrite against the obstacles collected when its net's turn
+began — which is not the same as being legal at the end, because a net
+smoothed early is judged against copper later nets then move. On the
+compact escape ring that produced 13 clearance errors and a `NetShort`
+that the router itself never laid. `organic_pass` now re-checks every
+chain against the finished geometry and, if anything fails, discards the
+whole pass and keeps the router's copper (reported as `rolled_back`, not
+silently as "no smoothing").
+
+| Run (2-layer, `route max_seconds=180`, **--release**, idle box) | Copper | Fully connected | DRC |
+|---|---|---|---|
+| v8 baseline | 25/39 | **25/39** | 5E (NetSplit), 0 clearance |
+| **v9** | 290 traces / 80 vias (40 escapes, 0 stranded) | **32/39** | 3E (NetSplit), **0 clearance** |
+
+143.1 s of the 180 s budget, 12 passes, deterministic — three consecutive
+runs of the same file through the same server produced byte-identical
+copper (290 traces / 80 vias / 12 passes / the same 7 failed nets).
+
+**What is left, classified by the flood rather than by guesswork:**
+
+- **Geometry (3 pads):** `U1.49` (QSPI_SD3), `U1.6` (GPIO4), `U1.8`
+  (GPIO6) have no legal path on the winning plan's bare copper. Only a
+  different escape plan, placement, rule area or stackup moves them.
+- **Budget (4 nets):** QSPI_SS, +1V1, +3V3, HDRB3 — congestion under the
+  180 s budget.
+
+**Measured and deliberately NOT kept: negotiation as a closer.** With the
+plan proved reachable, the v6 verdict ("negotiation loses because the wall
+is fixed geometry") no longer applies for its original reason — the
+survivors are contention by elimination, exactly what PathFinder exists to
+arbitrate. Handed the legalised plan and the ~95 s a converged loop had
+left, negotiation still reached **11** failed nets against the classic
+loop's **9**. The verdict survives for a new reason: a global reroute
+priced by congestion is worse at these survivors than targeted rip-up is.
+The code stays out of the driver.
+
+**auto-place best-seen clamp (pcb-placer).** The v8 bug is fixed: `place`
+runs a best-seen clamp over its three search stages (entry, edge plan,
+anneal), scores each with the same composite the SA optimises move by move
+(weighted HPWL + soft-gap penalty + congestion proxy + bundle crossings)
+and restores the best **legal** one — legality being the SA's own hard
+constraint set, so a `compact` probe whose entry layout was clamped into a
+smaller outline cannot win by being illegal-but-cheap. The decoupling ring
+is deliberately not a candidate: it seats a cap against its power pin on
+purpose, inside the soft `min_gap_mm` the composite charges for, so the
+composite cannot judge it fairly; it runs as a deterministic post-pass on
+the winner. `PlaceReport::kept` names the stage that earned the result and
+the `auto-place` text says so when the input layout survived untouched.
+
 ### What works
 
 - End-to-end agent loop: libs → confirm → schematic → place → route → screenshot

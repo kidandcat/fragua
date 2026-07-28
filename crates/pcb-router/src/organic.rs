@@ -55,6 +55,9 @@ pub struct OrganicReport {
     pub segments_after: usize,
     pub length_before_mm: f64,
     pub length_after_mm: f64,
+    /// The whole pass was discarded because the smoothed board did not
+    /// pass the final legality sweep — see `organic_pass`.
+    pub rolled_back: bool,
 }
 
 pub(crate) type P2 = [f64; 2];
@@ -447,6 +450,13 @@ where
     )
     .with_schematic(schematic.as_deref());
 
+    // The copper as the router committed it. The smoothing below is
+    // cosmetic — it must never be the reason a board fails DRC — so if the
+    // final sweep finds a violation the whole pass is discarded and this is
+    // what stands. See the sweep at the end for why per-chain validation is
+    // not enough on its own.
+    let before: Vec<Trace> = board.traces.clone();
+
     for net in &nets {
         let (_class_width, clearance) = rules(route_opts, net);
         let clr = clearance.to_mm();
@@ -486,6 +496,44 @@ where
                 replace_chain(board, net, layer, &chain, &smooth, width);
             }
         }
+    }
+
+    // Final legality sweep over the FINISHED board.
+    //
+    // Each rewrite is validated against the obstacles collected when its
+    // net's turn began, and that is not the same thing as being legal at
+    // the end: a net smoothed early is judged against copper that later
+    // nets then move. On a sparse board the difference never shows;
+    // on the compact RP2040 escape ring it produced overlapping copper and
+    // a NetShort that the router itself had never laid. Re-collect against
+    // the finished geometry and check every chain again — and if anything
+    // fails, drop the whole pass rather than ship prettier illegal copper.
+    let mut legal = true;
+    'sweep: for net in &nets {
+        let (_class_width, clearance) = rules(route_opts, net);
+        let clr = clearance.to_mm();
+        for layer in [CopperLayer::Top, CopperLayer::Bottom] {
+            let obstacles =
+                collect_obstacles(board, net, layer, route_opts, &rules, clr, outline, &resolver);
+            for (chain, width) in extract_chains(board, net, layer) {
+                let pts: Vec<P2> = chain.iter().map(|p| to_mm(*p)).collect();
+                if !obstacles.polyline_clear(&pts, width.to_mm() / 2.0, clr) {
+                    legal = false;
+                    break 'sweep;
+                }
+            }
+        }
+    }
+    if !legal {
+        board.traces = before;
+        // Truthful, not silent: the pass ran and looked at every chain, it
+        // just kept none of them. Zeroing the counters here would make the
+        // driver report `organic: None` — indistinguishable from "smoothing
+        // was disabled or skipped for budget" — and that is exactly the
+        // signal a caller needs to see.
+        report.rolled_back = true;
+        report.segments_after = report.segments_before;
+        report.length_after_mm = report.length_before_mm;
     }
     report
 }
