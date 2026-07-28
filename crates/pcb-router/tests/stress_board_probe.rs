@@ -41,6 +41,10 @@ fn opts(sch: &Schematic, secs: f64) -> RouteOptions {
         organic: true,
         organic_fillet_mm: 3.0,
         max_seconds: Some(secs),
+        // `O8_NEG=1` turns on PathFinder negotiation, whose corridor
+        // autopsy prints "blocked even when allowed to share" — the direct
+        // measure of escape-slot progress (see AGENT-HANDOFF §6.5).
+        negotiate: std::env::var("O8_NEG").is_ok(),
         on_progress: Some(Arc::new(move |m: &str| {
             println!("[{:7.2}s] {m}", started.elapsed().as_secs_f64());
         })),
@@ -110,6 +114,65 @@ fn stress_board_probe() {
         rep.budget_hit
     );
     println!("FAILED: {}", failed.join(", "));
+    // The acceptance metric the script reports as "N/39 net(s) fully
+    // connected": a net counts when DRC finds no unconnected pad on it.
+    // Same source of truth (`pcb_drc::run`), so the probe and the server
+    // cannot drift apart.
+    let drc = pcb_drc::run(&board, &pcb_drc::DrcOptions::default());
+    let mut bad_nets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for v in &drc.violations {
+        if v.kind == pcb_drc::ViolationKind::UnconnectedPad {
+            if let Some(rp) = v.involved.first() {
+                if let Some((r, p)) = rp.split_once('.') {
+                    if let Some(fp) = board.footprints_in_order().find(|f| f.reference == r) {
+                        if let Some(pad) = fp.pads.iter().find(|q| q.number == p) {
+                            if let Some(n) = pad.net.as_deref() {
+                                bad_nets.insert(n.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let total_nets = pf.schematic.nets.len();
+    let errors = drc
+        .violations
+        .iter()
+        .filter(|v| v.severity == pcb_drc::Severity::Error)
+        .count();
+    let clearance_errors = drc
+        .violations
+        .iter()
+        .filter(|v| {
+            v.severity == pcb_drc::Severity::Error
+                && matches!(
+                    v.kind,
+                    pcb_drc::ViolationKind::PadPadClearance
+                        | pcb_drc::ViolationKind::TraceTraceClearance
+                        | pcb_drc::ViolationKind::TracePadClearance
+                        | pcb_drc::ViolationKind::EdgeClearance
+                )
+        })
+        .count();
+    for v in drc
+        .violations
+        .iter()
+        .filter(|v| v.severity == pcb_drc::Severity::Error)
+    {
+        println!("DRC {:?} {:?} — {}", v.kind, v.involved, v.message);
+    }
+    println!(
+        "CONNECTIVITY {}/{} fully connected — DRC {} error(s) ({} clearance), {} warning(s)",
+        total_nets.saturating_sub(bad_nets.len()),
+        total_nets,
+        errors,
+        clearance_errors,
+        drc.violations
+            .iter()
+            .filter(|v| v.severity == pcb_drc::Severity::Warning)
+            .count()
+    );
     for h in rep.hints.iter().filter(|h| h.starts_with("congestion:")) {
         println!("{h}");
     }

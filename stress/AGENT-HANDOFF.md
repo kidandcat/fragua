@@ -19,16 +19,24 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 | Schematic + ERC | Solid (0 ERC errors on the stress board) |
 | Library + placement | Usable; edge-mount was hard, now has `edge-place` |
 | Router on **module-style** boards (ESP32-S3-Zero, etc.) | Previously proven (fecha gateway) |
-| Router on **bare 0.4 mm QFN-56, 2-layer** | **Still the wall** — partial copper only |
+| Router on **bare 0.4 mm QFN-56, 2-layer** | **Plateau broken in v7** — 28/39; the residue is 2 entombed pads + a J1 rule-area gap + budget (O1) |
 | Wall-clock / agent hang risk | **Fixed** with `max_seconds` + A* caps (was 6–10+ min silent hangs) |
 
-**Latest board metrics** (`stress/rp2040-minimal.fragua`, **v6 pass — negotiated congestion measured, default driver unchanged**; the saved file now carries `fab-rules jlcpcb-2l` + the `fine` rule area around U1 as design intent):
+**Latest board metrics** (`stress/rp2040-minimal.fragua`, **v7 pass — escape-slot matching + whole-board grid + rip-and-reassign**; the saved file carries `fab-rules jlcpcb-2l` + the `fine` rule area around U1 as design intent):
 
 - Outline **80 × 45 mm**, 36 footprints, 39 nets, 36 symbols
-- Saved state: **951 traces**, **46 vias** (25 fanout, 25 dogbones with copper stubs), **20/39 nets fully connected** @ `max_seconds=180`
-- DRC **4 errors / 74 warnings** — **zero clearance errors** (was 7, all 0.125–0.175 mm at the QFN). The 4 are `NetSplit`: a fanned-out pad whose net the router still fails to finish is an isolated copper island. Same O1 wall, different symptom.
+- Saved state: **1310 traces**, **58 vias** (33 fanout dogbones with copper stubs, 0 stranded), **28/39 nets fully connected** @ `max_seconds=180`, 12/39 routable nets failed, deterministic to the trace (probe = server, twice; 300 s lands on the same board)
+- DRC **3 errors / 61 warnings** — **zero clearance errors**. The 3 are `NetSplit` islands of the still-failing nets +1V1, RUN, +3V3.
 - One `RuleBelowFabLimit` warning: the area's 0.12 mm clearance is 5 µm under JLCPCB's 0.127 standard tier. Deliberate, and re-reported by every `drc` / `view`.
-- **Back-to-back baseline on the same binary with the area removed: 1544 traces / 57 vias, 21/39, 7E / 70W** — i.e. the rule area traded one net of connectivity for legality. See §5 O10.
+- Failed nets: QSPI_SD2, SWCLK, SWDIO, RUN, +1V1, +3V3, CC2, HDRB4, USB_DP, VBUS, GPIO1, GPIO3 — see O1 for which of those are geometry and which are budget.
+
+**v7 measurement ladder (2026-07-27, 2-layer, `max_seconds=180`, idle box, back-to-back):**
+
+| Stage | Copper | Fully connected | Escapes | DRC |
+|-------|--------|-----------------|---------|-----|
+| v6 baseline (greedy dogbones) | 951 / 46 | 20-21/39 | 25 / — | 4E / 74W, 0 clearance |
+| + escape-slot matching (`slots.rs`) | 1150 / 63 | **26/39** | 32 / 0 stranded | 3E / 65W, 0 clearance |
+| + whole-board grid, edge escapes, rip-and-reassign | 1310 / 58 | **28/39** | 33 / 0 stranded | 3E / 61W, 0 clearance |
 
 **v6 measurement (2026-07-27, same binary, back to back, idle machine, 2-layer, `max_seconds=180`):**
 
@@ -84,6 +92,12 @@ below.
 
 16. `828140a` — PathFinder-style negotiated congestion (`route negotiate=true`)
 17. `030da22` — regression tests: order-dependence fixed, routing reproducible
+
+**v7 commits (escape-slot matching, 2026-07-27):**
+
+18. `3a94962` — global escape-slot assignment for fine-pitch packages (`slots.rs`)
+19. `acea898` — tests: matching beats greedy, stranded pads reported, deterministic
+20. `30d437a` — whole-board grid, edge-aware escapes, rip-and-reassign for stuck barrels
 
 **Related pre-existing product TODO** (not finished here): PCB compaction for fecha-gateway-v3 — see root `TODO.md`.
 
@@ -352,7 +366,7 @@ See §5.
 | ID | Problem | Evidence | Suggested direction |
 |----|---------|----------|---------------------|
 | O10 | **Rule areas make fine pitch legal, not routable** | With `fab-rules jlcpcb-2l` + `rule-area-around U1 fine margin=1.5 clearance=0.12 via_drill=0.20 via_dia=0.45`: clearance errors **7 → 0**, connectivity **21 → 20/39**, and 4 new `NetSplit` errors (a fanned pad whose net still fails is an isolated island). At the default 0.20 mm cell a 0.12 mm rule quantises to the SAME 3-cell search radius as 0.20 mm for a 0.25 mm signal (`ceil((clr + w/2)/cell) + 1` guard cell), so the search sees no extra room; only 0.5 mm power nets drop a cell. `cell=0.15` does exploit it geometrically but starves the budget (2 passes instead of 4) → 19/39 | The rule was never the binding constraint. Nor is escape-corridor *congestion*: v6's negotiation (O1) showed a dozen nets cannot reach their pads even with unlimited sharing. What is left is escape-slot geometry. A cheaper follow-up: drop fanout copper for pads the router never lands on, which would delete the `NetSplit` class outright (deliberately NOT done here — it would change the no-rule-area baseline) |
-| O1 | **Cannot fully route bare QFN-56 on 2L** — **20/39**, plateaued. v5 ruled out the clearance rule (O10); **v6 ruled out inter-net congestion** | With PathFinder negotiation (`route negotiate=true`) every net may route straight THROUGH every other net's copper, and **12–13 nets still fail**, all at U1 pads (`GPIO0→U1.2`, `GPIO3→U1.5`, `SWCLK→U1.23`, `SWDIO→U1.24`, `XOUT→U1.20`, `QSPI_SS→U1.54`, `QSPI_SD2→U1.52`, `QSPI_SD3→U1.49`, `+3V3→U1.46`, `HDRB1→U1.26`, plus `USB_DM/USB_DP/VBUS/CC2` at their series resistors). The over-subscribed cells are all on the BOTTOM layer in a ~4 × 4 mm patch centred on U1 (40–43, 21–27 mm) | **It is fixed geometry, not contention.** A 0.25 mm trace at the area's 0.12 mm rule needs 0.245 mm from centreline to any foreign copper edge; two adjacent 0.4 mm-pitch pads leave a 0.2 mm channel — *no trace can pass between two QFN pins*, so every escape must be a via, and the 25 dogbone landings (stamped on every layer, un-rippable) then wall each other off. The next lever is **escape-slot assignment**: choose which pad gets which dogbone, at which depth, so a legal lane survives to each one (a flow / matching problem over the escape ring). Negotiation cannot help until the lanes exist |
+| O1 | **Bare QFN-56 on 2L: plateau BROKEN in v7** — 20-21/39 → **28/39** (escape-slot matching `slots.rs` + whole-board grid + edge escapes + rip-and-reassign, commits `3a94962`/`30d437a`). What remains is three distinct residues, measured with the flood autopsy (`src/diag.rs`) | (1) **Entombed barrels (true geometry):** SWCLK — U1.23's barrel sits in a 19-cell pocket (0.6 × 1.4 mm) walled by +1V1/SWDIO pads, RUN/SWDIO barrels and +1V1/XOUT stubs; every alternative site on that side is occupied or fails via-to-via clearance. +3V3 — U1.21, same shape (17 cells), and the net needs all 23 of its pads. (2) **J1 pocket:** USB_DP/VBUS pins sit in pockets of the USB-C pad field — at 0.7 mm pitch a 0.46 mm barrel + 0.20 mm clearance leaves one rank of legal sites, fewer than the pins that need them. (3) **Budget:** the GPIO/QSPI churn (and the nets the negotiation still flags as "blocked when sharing" that the flood proves connectable — foreign barrels are hard in negotiate mode, so its verdict over-reports) | (1) is real 2-layer geometry: only a placement/EP change or more layers moves it. (2) is a board edit: declare a `fine`-style rule area over J1 (smaller barrel / tighter clearance) — deliberately not done by the router. (3) is compute: cheaper passes or a longer budget. The escape stage itself now reports `N pad(s) escaped, M stranded` per run — trust it: 0 stranded means every fine-pitch pad HAS a barrel and a legal stub |
 | O2 | ~~Report vs board copper counts diverge~~ **FIXED** (`489c1af`, `8448a2d`) | route/drc text now reports final board copper, per-net failures, hints, budget flag | — |
 | O3 | ~~Body stamp moat fights fine-pitch escape~~ **FIXED** (`71cf4ef`) | No body stamp for SMD packages with pad pitch < 0.5 mm; modules/TH keep it | — |
 | O8 | ~~**≥3-layer path regresses instead of helping**~~ **FIXED** (2026-07-27, commits `8d9fc9e` / `a14c26a` / `62726aa`) | Was: `layer add In1.Cu/In2.Cu signal` + `route max_seconds=180` → **1/39**, search laid 0 segments, elapsed 214 s. Now (same board, same budget, back-to-back on one machine): **2L 21/39 in 4 passes, 3L 22/39, 4L 22/39 in 3 passes**, elapsed 180.0–180.2 s. Root cause was **not** grid size or pop caps: `plan_escapes` swapped strategy at 3 layers and ran the fine-grid stub escape **instead of** the VIP/dogbone fanout. On a 0.4 mm QFN-56 the fan cannot fit (one 14-pin row would need ~13 mm of perpendicular room at the 1.0 mm breakout spread), so it spent **24 s of a 90 s budget to free 5 pads** where the fanout frees **25 in 10 ms** — the coarse router then had nothing to land on. The 34 s overrun was a second bug: the budget was only checked BETWEEN nets, so one long A* ran past it. Fix: the fanout is the baseline on **every** stackup (`fanout::plan_footprint` per footprint); fine escape is an optional per-footprint improvement, kept only when the fanout left pads stranded AND the fan fits AND it frees ≥ as many pads, bounded by a per-footprint time slice and a per-search pop cap — and, since it did not earn its keep on any board we measure, it is now **opt-in** (`route fine_escape=true` / `RouteOptions::fine_escape`, default off). A* searches now also carry the pass deadline (`astar::Limits`), so `max_seconds` is honoured to the second. Pinned by `crates/pcb-router/tests/layer_count_monotonic.rs`. Gotcha still applies: `clear-route` BEFORE `layer remove`, else copper left on the inner layer blocks the removal |
@@ -407,8 +421,10 @@ See §5.
 
 | File | Role |
 |------|------|
-| `crates/pcb-router/src/router.rs` | Driver, `RouteOptions`, budget, progress |
-| `crates/pcb-router/src/fanout.rs` | VIP + **dogbone**, cluster detection |
+| `crates/pcb-router/src/router.rs` | Driver, `RouteOptions`, budget, progress, **rip-and-reassign lever**, whole-board `compute_region` |
+| `crates/pcb-router/src/fanout.rs` | VIP + **dogbone**, cluster detection, `escape_axis` (edge-aware) |
+| `crates/pcb-router/src/slots.rs` | **Global escape-slot assignment** — per-side candidate lattice, min-cost matching, exit-lane pricing, stranded reporting |
+| `crates/pcb-router/src/diag.rs` | Test-only flood-fill escape autopsy (`DIAG_FP=U1` / `DIAG_NETS=A,B`) — names the copper walling a net in |
 | `crates/pcb-router/src/escape.rs` | Fine-grid stubs (3L+); budget fraction for escape |
 | `crates/pcb-router/src/astar.rs` | Search + pop cap; `Negotiate` = sharing-aware mode |
 | `crates/pcb-router/src/negotiate.rs` | **PathFinder negotiated congestion** — sharing, history, conflict-driven rip-up, legal extraction, corridor autopsy |
@@ -492,18 +508,17 @@ cells, so at `cell=0.20` a 0.12 and a 0.20 rule are the same 3 cells for a
    congestion is the general form of this (every net can evict every other,
    by price) and it does not move the number: what fails, fails against
    fixed copper.
-3. **Escape-slot assignment (the actual next step).** `fanout::plan_footprint`
-   picks a dogbone per pad in isolation. It should pick the *set* — which pad
-   escapes at which depth/direction — so that a legal lane survives to every
-   landing: a flow / matching problem over the escape ring, with the lane
-   width taken from the resolved rule (0.245 mm centreline clearance at the
-   `fine` area, versus a 0.2 mm inter-pad channel — so lanes must be vias,
-   and the vias must be staggered to leave routing space between them).
-   Verify with `route negotiate=true`: the count of "blocked even when
-   allowed to share" is the direct measure of progress, and it should fall
-   toward zero before any effort goes back into the search.
+3. ~~**Escape-slot assignment (the actual next step).**~~ **DONE (v7,
+   `3a94962` + `30d437a`).** `slots.rs` picks the *set* — min-cost
+   max-cardinality matching over a per-side candidate lattice, with
+   exit-lane pricing — and the driver can rip and re-assign a stuck
+   barrel between passes. 21 → 28/39; "blocked even when allowed to
+   share" fell 12–13 → ~5, and the flood autopsy (`src/diag.rs`) shows
+   part of that residue is the verdict over-reporting (foreign barrels
+   are hard even in negotiate mode). What is left in O1 is two entombed
+   pads, a J1 rule-area gap, and budget.
 3. ~~**Reduced clearance class near fine-pitch.**~~ **DONE (v5, see O10).** `rule-area` + `fab-rules` shipped and the 7 clearance errors are gone, but connectivity did not move: the tighter rule quantises away at a 0.20 mm cell, so it removes the *legality* problem and leaves the *congestion* problem. Do 1/2 (corridor autopsy, evicting rip-up) next.
-4. **More dogbone depth slots.** 24 dogbones landed; U1 alone has ~34 signal pads. Widen `dogbone_via_candidates` depth ladder so a full QFN row fans out.
+4. ~~**More dogbone depth slots.**~~ **SUBSUMED (v7).** The slot lattice (5 outward + 3 inward ranks × 13 lateral offsets per pad) is that ladder, generalised; 33 escapes land with 0 stranded.
 
 ### Priority A2 — Fix the 4-layer path (O8) — **DONE 2026-07-27**
 
@@ -608,7 +623,7 @@ Suggested acceptance criteria an agent can optimize toward:
 
 ## 11. Quick “if you only read one section”
 
-Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The **hard open problem** is **2-layer fine-pitch QFN routing**, not the script API. The v4 pass (true dogbone stubs, rank-staggered fanout, no body stamp under fine-pitch, board-truthful reports) took connectivity **5/39 → 21/39 @ 180 s**, but it **plateaus**: 600 s returns the identical 18 failed nets, and 4 layers only buy one more net (22/39, O8 — the collapse to 1/39 is fixed, but extra copper layers are not the answer either). v6 then settled *what* the wall is: PathFinder-style negotiated congestion (`route negotiate=true`) lets every net route through every other net's copper, and **a dozen nets still cannot reach their U1 pads**. So it is not contention and not the rule — it is the **escape geometry** (0.4 mm pins leave a 0.2 mm channel where a legal trace needs 0.245 mm, so every escape is a via, and the 25 dogbone landings wall each other off). Next step is escape-slot assignment (§7 Priority A.3), not another search.
+Fragua **can** do agent-driven schematic + place + partial route on a Pico-class design. The long wall — **2-layer fine-pitch QFN routing** — moved in v7: v4 took connectivity 5/39 → 21/39 and plateaued; v6 proved the plateau was **escape geometry** (greedy dogbones walling their own pins off), and v7 fixed exactly that with **global escape-slot matching** (`slots.rs`: per-side candidate lattice + min-cost matching + exit-lane pricing), a **whole-board grid** (edge-header pads used to fall OUT of the routing region — a silent, high-side-only bug), **edge-aware escapes** (USB-C pins finally fan out), and a **rip-and-reassign lever** for barrels that trapped their own net. Result: **28/39 @ 180 s, 0 clearance errors, 0 stranded pads, deterministic**. What is left (O1): SWCLK and +3V3 barrels genuinely entombed by neighbouring pads+barrels, USB_DP/VBUS needing a rule area over J1 (board edit), and the rest budget-bound — the first time the limit is compute, not geometry. Use the flood autopsy (`src/diag.rs`) before believing any "blocked" verdict, and trust the route text's `N pad(s) escaped, M stranded` line.
 
 ---
 
@@ -637,4 +652,4 @@ curl -s http://127.0.0.1:7878/script -H 'content-type: application/json' \
 
 ---
 
-*Document written 2026-07-27 for handoff; v6 (negotiated congestion) folded in the same day. Update this file when O1 (full QFN route) moves.*
+*Document written 2026-07-27 for handoff; v6 (negotiated congestion) and v7 (escape-slot matching, 28/39) folded in the same day. Update this file when O1 (full QFN route) moves.*

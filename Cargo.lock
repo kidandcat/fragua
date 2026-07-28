@@ -2708,6 +2708,7 @@ name = "pcb-router"
 version = "1.0.5"
 dependencies = [
  "pcb-core",
+ "pcb-drc",
  "serde_json",
  "spade",
 ]

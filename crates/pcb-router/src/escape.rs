@@ -215,10 +215,15 @@ pub fn plan_escapes(board: &Board, opts: &RouteOptions) -> EscapePlan {
         }
     }
 
-    // The dogbone path lays its own pad → via stubs; hoist them into the
-    // plan's stub list so the router stamps and commits them exactly like
-    // the fine-escape stubs.
-    plan.stubs = std::mem::take(&mut plan.fanout.stubs);
+    // The dogbone path's pad → via stubs deliberately STAY inside the
+    // fanout plan. A barrel and the stub that ties its pad to it are one
+    // indivisible piece of geometry: the driver snapshots the plan that
+    // produced its best board and can move barrels between passes
+    // (`reassign_escapes`), and a stub list living somewhere else would
+    // then be committed against barrels it was never planned for — stale
+    // copper crossing whatever moved, i.e. a DRC clearance error emitted
+    // by the router itself. `EscapePlan::stubs` is the fine-escape stubs
+    // and nothing else.
     // Emit the accepted fine-escape stubs as real traces.
     for esc in &accepted {
         for w in esc.points.windows(2) {
@@ -307,6 +312,8 @@ fn fine_escape_footprint(
                     foreign,
                     tw,
                     &fanout::PadRules::uniform(clearance),
+                    opts.cell.to_mm(),
+                    board.outline,
                 )
             {
                 continue;
@@ -806,6 +813,143 @@ fn unstamp_disk(grid: &mut Grid, center: Point, copper: i32) {
             }
         }
     }
+}
+
+/// Rip the escape barrels of `pads` and ask the assignment for different
+/// sites, with the sites they had EXCLUDED.
+///
+/// The driver calls this between rip-up-and-reroute passes for nets that
+/// keep failing at a fanned pad. A barrel is fixed copper for the whole
+/// route — it is stamped on every layer and no amount of rerouting moves
+/// it — so a net whose barrel landed in a pocket its own neighbours walled
+/// off can never recover, no matter how many passes run. Moving the barrel
+/// is the only lever left, and it is exactly the decision the escape-slot
+/// matching makes; here it is made again with better information (which
+/// pad actually could not get out).
+///
+/// Conservative by construction: a pad whose re-assignment finds no legal
+/// site gets its ORIGINAL barrel and stub back, so the board is never
+/// worse than before the attempt. Returns how many pads actually moved.
+pub(crate) fn reassign_escapes(
+    board: &Board,
+    opts: &RouteOptions,
+    plan: &mut FanoutPlan,
+    escape_stubs: &[Trace],
+    pads: &[String],
+) -> usize {
+    if pads.is_empty() || board.stackup.layer_count() < 2 {
+        return 0;
+    }
+    let rects = pad_rects_owned(board);
+    let foreign: Vec<&PadRect> = rects.iter().collect();
+    let resolver = pcb_core::RuleResolver::new(
+        &board.rule_areas,
+        pcb_core::RuleDefaults {
+            clearance: opts.clearance,
+            trace_width: opts.trace_width,
+            via_diameter: opts.via_diameter,
+            via_drill: opts.via_drill,
+        },
+    )
+    .with_schematic(opts.schematic.as_deref());
+    let fab = board.fab_rules.as_ref();
+
+    // Group the requests by footprint, deterministically.
+    let mut by_fp: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for pad_ref in pads {
+        if let Some((r, n)) = pad_ref.split_once('.') {
+            by_fp.entry(r.to_string()).or_default().push(n.to_string());
+        }
+    }
+    let mut moved = 0usize;
+    for (reference, numbers) in by_fp {
+        let Some(fp) = board
+            .footprints_in_order()
+            .find(|f| f.reference == reference)
+        else {
+            continue;
+        };
+        let (fp_cx, fp_cy) = fanout::pad_centroid(fp);
+        let net_targets = fanout::net_partner_centroids(board, &fp.reference);
+        // Rip: drop the old barrels and stubs out of the plan, remembering
+        // them so a failed re-assignment can put them back untouched.
+        let mut ripped: Vec<(String, Via, Option<Trace>)> = Vec::new();
+        let mut banned: Vec<(f64, f64)> = Vec::new();
+        for num in &numbers {
+            let key = format!("{reference}.{num}");
+            let Some(pos) = plan.via_positions.get(&key).copied() else {
+                continue;
+            };
+            let Some(vi) = plan.vias.iter().position(|v| v.position == pos) else {
+                continue;
+            };
+            let via = plan.vias.remove(vi);
+            let stub = plan
+                .stubs
+                .iter()
+                .position(|t| t.net == via.net && (t.end == pos || t.start == pos))
+                .map(|si| plan.stubs.remove(si));
+            plan.via_positions.remove(&key);
+            plan.through_pads.remove(&key);
+            plan.dogbone_pads.remove(&key);
+            banned.push((pos.x.to_mm(), pos.y.to_mm()));
+            ripped.push((key, via, stub));
+        }
+        if ripped.is_empty() {
+            continue;
+        }
+        // The board the assignment sees: every escape that is still
+        // standing, and nothing of what we just ripped.
+        let mut work = board.clone();
+        work.vias.extend(plan.vias.iter().cloned());
+        work.traces.extend(plan.stubs.iter().cloned());
+        work.traces.extend(escape_stubs.iter().cloned());
+        let outline = board.outline;
+        let targets: Vec<crate::slots::SlotTarget> = fp
+            .pads
+            .iter()
+            .filter(|p| {
+                ripped
+                    .iter()
+                    .any(|(k, _, _)| *k == format!("{reference}.{}", p.number))
+            })
+            .filter_map(|p| {
+                fanout::slot_target_of(
+                    fp,
+                    p,
+                    opts,
+                    &resolver,
+                    fab,
+                    &net_targets,
+                    fp_cx,
+                    fp_cy,
+                    outline,
+                )
+            })
+            .collect();
+        let mut sub = FanoutPlan::default();
+        crate::slots::assign_escape_slots(
+            fp, &targets, &foreign, &mut work, opts, &resolver, fab, fp_cx, fp_cy, &banned,
+            &mut sub,
+        );
+        for (key, via, stub) in ripped {
+            if sub.via_positions.contains_key(&key) {
+                moved += 1;
+                continue;
+            }
+            // No better site exists: restore exactly what was there.
+            plan.via_positions.insert(key.clone(), via.position);
+            plan.through_pads.insert(key.clone());
+            if let Some(t) = stub {
+                plan.dogbone_pads.insert(key);
+                plan.stubs.push(t);
+            }
+            plan.vias.push(via);
+        }
+        fanout::merge_plan(plan, sub);
+    }
+    moved
 }
 
 fn pad_rects_owned(board: &Board) -> Vec<PadRect> {
