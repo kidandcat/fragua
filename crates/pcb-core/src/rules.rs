@@ -33,7 +33,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::board::{CopperLayer, Id};
+use crate::board::{Board, CopperLayer, Footprint, Id};
 use crate::geometry::{Point, Rect};
 use crate::schematic::Schematic;
 use crate::units::Length;
@@ -72,6 +72,22 @@ pub struct RuleArea {
     /// area — the more specific statement about that spot.
     #[serde(default)]
     pub priority: i32,
+    /// Footprint reference this area was declared *around*
+    /// (`rule-area-around REF NAME margin=…`). When set, `rect` is a
+    /// DERIVED value — the anchor footprint's world bounds inflated by
+    /// `anchor_margin_mm` — and anything that moves footprints (compaction
+    /// re-places every part, the trim phase slides all copper) must
+    /// re-derive it through [`reanchor_rule_areas`]. Without the anchor an
+    /// area declared to legalise a 0.4 mm QFN escape silently stops
+    /// covering that QFN after a shrink, quietly changing router/DRC
+    /// semantics. `None` = a plain `rule-area` at fixed board coordinates,
+    /// which is rigidly translated instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_ref: Option<String>,
+    /// Inflation (mm) applied to the anchor footprint's bounds. Only
+    /// meaningful together with `anchor_ref`; `None` there means 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_margin_mm: Option<f64>,
 }
 
 impl RuleArea {
@@ -88,7 +104,27 @@ impl RuleArea {
             via_drill_mm: None,
             via_diameter_mm: None,
             priority: 0,
+            anchor_ref: None,
+            anchor_margin_mm: None,
         }
+    }
+
+    /// Area named `name` covering `fp`'s bounds inflated by `margin_mm`,
+    /// *anchored* to that footprint so the rect follows the part when it
+    /// moves. This is what `rule-area-around` builds; the geometry itself
+    /// comes from [`anchor_rect`] so declaration time and re-anchoring can
+    /// never disagree. `None` when the footprint has no pads to bound.
+    #[must_use]
+    pub fn around_footprint(
+        name: impl Into<String>,
+        fp: &Footprint,
+        margin_mm: f64,
+    ) -> Option<Self> {
+        let rect = anchor_rect(fp, margin_mm)?;
+        let mut area = Self::new(name, rect);
+        area.anchor_ref = Some(fp.reference.clone());
+        area.anchor_margin_mm = Some(margin_mm);
+        Some(area)
     }
 
     /// True if the area governs `layer`. `None` = the caller's check is
@@ -130,6 +166,58 @@ impl RuleArea {
             && self.via_drill_mm.is_none()
             && self.via_diameter_mm.is_none()
     }
+}
+
+/// **The** "rect around this footprint" math: the footprint's world-frame
+/// pad bounds inflated by `margin_mm` on every side. `None` when the
+/// footprint has no pads.
+///
+/// Deliberately the single implementation shared by `rule-area-around`
+/// (declaration) and [`reanchor_rule_areas`] (every later re-derive). If
+/// the two ever computed the rect differently, a compaction pass would
+/// silently resize an area the user had tuned by hand.
+#[must_use]
+pub fn anchor_rect(fp: &Footprint, margin_mm: f64) -> Option<Rect> {
+    Some(fp.bounds()?.expand(Length::from_mm(margin_mm)))
+}
+
+/// Re-derive the rect of every *anchored* rule area from its anchor
+/// footprint's current pose. Returns how many areas actually moved.
+///
+/// Call this after ANY operation that moves footprints without moving the
+/// areas with them (re-placement inside a smaller outline, a rigid trim
+/// slide, a manual `move`). Areas whose anchor footprint is gone from the
+/// board — or has no pads — are left untouched: dropping or zeroing them
+/// would throw away a rule the user declared, and a stale rect is easier
+/// to notice than a vanished one. Un-anchored areas are never touched.
+pub fn reanchor_rule_areas(board: &mut Board) -> usize {
+    // Two passes: resolve fresh rects while only *reading* the board, then
+    // write them back. Keeps the borrow checker happy without cloning the
+    // footprint table (a QFN-heavy board makes that measurably expensive
+    // when compaction re-anchors on every one of its ~40 candidates).
+    let mut updates: Vec<(usize, Rect)> = Vec::new();
+    for (i, area) in board.rule_areas.iter().enumerate() {
+        let Some(reference) = area.anchor_ref.as_deref() else {
+            continue;
+        };
+        let Some(fp) = board
+            .footprints_in_order()
+            .find(|f| f.reference == reference)
+        else {
+            continue;
+        };
+        let Some(rect) = anchor_rect(fp, area.anchor_margin_mm.unwrap_or(0.0)) else {
+            continue;
+        };
+        if rect != area.rect {
+            updates.push((i, rect));
+        }
+    }
+    let moved = updates.len();
+    for (i, rect) in updates {
+        board.rule_areas[i].rect = rect;
+    }
+    moved
 }
 
 /// Fab capability floor adopted by the board (`fab-rules jlcpcb-2l`).
@@ -685,6 +773,125 @@ mod tests {
         assert_eq!(board.rule_areas.len(), 1);
         assert!(board.remove_rule_area("fine"));
         assert!(!board.remove_rule_area("fine"));
+    }
+
+    /// One-pad footprint at `(x, y)` with a 1 × 1 mm pad, so its bounds
+    /// are exactly `(x±0.5, y±0.5)`.
+    fn anchor_footprint(reference: &str, x: f64, y: f64) -> crate::board::Footprint {
+        use crate::board::{Footprint, Pad};
+        Footprint {
+            id: Id::new(),
+            reference: reference.into(),
+            value: String::new(),
+            library: "test".into(),
+            position: pt(x, y),
+            rotation: 0.0,
+            layer: CopperLayer::TOP,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: String::new(),
+                offset: pt(0.0, 0.0),
+                size: (Length::from_mm(1.0), Length::from_mm(1.0)),
+                layer: CopperLayer::TOP,
+                net: Some("N".into()),
+                drill: None,
+            }],
+            key: String::new(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn around_footprint_uses_the_shared_anchor_math() {
+        let fp = anchor_footprint("U1", 10.0, 10.0);
+        let area = RuleArea::around_footprint("fine", &fp, 1.5).expect("has pads");
+        // 1 × 1 mm pad at (10, 10) → bounds 9.5..10.5, +1.5 margin.
+        assert_eq!(area.rect, rect(8.0, 8.0, 12.0, 12.0));
+        assert_eq!(area.anchor_ref.as_deref(), Some("U1"));
+        assert_eq!(area.anchor_margin_mm, Some(1.5));
+        // The free function is the same math the constructor used.
+        assert_eq!(anchor_rect(&fp, 1.5), Some(area.rect));
+    }
+
+    #[test]
+    fn reanchor_follows_the_anchor_footprint_and_skips_plain_areas() {
+        use crate::board::Board;
+        let mut board = Board::new();
+        board.add_footprint(anchor_footprint("U1", 10.0, 10.0));
+        let mut anchored = RuleArea::around_footprint(
+            "fine",
+            board.footprints_in_order().next().expect("U1"),
+            1.0,
+        )
+        .expect("has pads");
+        anchored.clearance_mm = Some(0.13);
+        board.set_rule_area(anchored);
+        let mut plain = RuleArea::new("moat", rect(0.0, 0.0, 5.0, 5.0));
+        plain.clearance_mm = Some(0.5);
+        board.set_rule_area(plain);
+
+        // Move U1 by (+20, +5): only the anchored area re-derives.
+        let id = board.footprints_in_order().next().expect("U1").id;
+        board.footprints.get_mut(&id).expect("U1").position = pt(30.0, 15.0);
+        assert_eq!(reanchor_rule_areas(&mut board), 1);
+        assert_eq!(board.rule_areas[0].rect, rect(28.5, 13.5, 31.5, 16.5));
+        assert_eq!(board.rule_areas[1].rect, rect(0.0, 0.0, 5.0, 5.0));
+        // Idempotent: a second call finds nothing to move.
+        assert_eq!(reanchor_rule_areas(&mut board), 0);
+
+        // A dangling anchor (footprint deleted) leaves the rect as-is
+        // rather than dropping the rule the user declared.
+        board.remove_footprint(id);
+        assert_eq!(reanchor_rule_areas(&mut board), 0);
+        assert_eq!(board.rule_areas[0].rect, rect(28.5, 13.5, 31.5, 16.5));
+    }
+
+    #[test]
+    fn anchored_rule_areas_round_trip_and_stay_optional_on_disk() {
+        use crate::board::Board;
+        let mut board = Board::new();
+        let fp = anchor_footprint("U1", 10.0, 10.0);
+        let mut a = RuleArea::around_footprint("fine", &fp, 1.5).expect("has pads");
+        a.clearance_mm = Some(0.13);
+        board.add_footprint(fp);
+        board.set_rule_area(a.clone());
+
+        let json = serde_json::to_string(&board).expect("serialise");
+        assert!(json.contains("anchor_ref"), "{json}");
+        let back: Board = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.rule_areas, vec![a]);
+
+        // An un-anchored area must NOT gain the new keys on disk, so files
+        // written before the anchor feature stay byte-identical.
+        let mut plain_board = Board::new();
+        let mut plain = RuleArea::new("moat", rect(0.0, 0.0, 5.0, 5.0));
+        plain.clearance_mm = Some(0.5);
+        plain_board.set_rule_area(plain);
+        let json = serde_json::to_string(&plain_board).expect("serialise");
+        assert!(!json.contains("anchor_ref"), "{json}");
+        assert!(!json.contains("anchor_margin_mm"), "{json}");
+    }
+
+    #[test]
+    fn rule_areas_saved_before_anchors_still_load() {
+        // A pre-anchor project file: a rule area with no anchor fields.
+        let legacy = r#"{"outline":null,"footprints":{},"footprint_order":[],
+                         "traces":[],"vias":[],
+                         "rule_areas":[{"id":"00000000-0000-0000-0000-000000000001",
+                                        "name":"fine",
+                                        "rect":{"min":{"x":10000000,"y":10000000},
+                                                "max":{"x":20000000,"y":20000000}},
+                                        "clearance_mm":0.13}]}"#;
+        let board: crate::board::Board =
+            serde_json::from_str(legacy).expect("legacy rule area must load");
+        let a = &board.rule_areas[0];
+        assert_eq!(a.name, "fine");
+        assert_eq!(a.clearance_mm, Some(0.13));
+        assert!(a.anchor_ref.is_none(), "legacy area must load un-anchored");
+        assert!(a.anchor_margin_mm.is_none());
     }
 
     #[test]

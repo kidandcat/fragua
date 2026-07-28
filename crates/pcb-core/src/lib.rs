@@ -38,7 +38,7 @@ pub use project::{
     ProjectSnapshot,
 };
 pub use rectify::{rectify_image, Rectified};
-pub use rules::{FabRules, RuleArea, RuleDefaults, RuleResolver};
+pub use rules::{anchor_rect, reanchor_rule_areas, FabRules, RuleArea, RuleDefaults, RuleResolver};
 pub use schematic::{
     is_power_named_net, FlatSchematic, Net, NetClass, NetConnection, PinRole, PinSide, Port,
     PortDirection, ResolvedNetRules, SchPin, Schematic, Sheet, Symbol, SymbolKind,

@@ -2,7 +2,13 @@
 //!
 //! Given a routed, DRC-clean board, `compact` searches for the smallest
 //! rectangular outline that still lets the placer + router produce a
-//! layout with **0 failed nets and 0 DRC errors**. The search never
+//! layout with **no more failed nets than the caller allows and 0 DRC
+//! errors** (`allow_failed = 0` — the default — means fully routed). The
+//! baseline-relative gate exists because a hard "0 failed nets" bar makes
+//! compaction useless on a board that does not fully route at ANY size
+//! (a fine-pitch QFN board may plateau at 28/39): such a board must still
+//! be shrinkable without pretending connectivity got worse. The search
+//! never
 //! trusts a candidate size on geometry alone: every candidate is proven
 //! by cloning the board, re-placing every footprint into the smaller
 //! outline, re-routing, and re-running DRC with the exact options the
@@ -21,7 +27,7 @@
 //! the `compact` verb and the headless `examples/compact.rs` binary share
 //! one implementation.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -74,6 +80,23 @@ pub struct CompactOptions {
     /// absolute area floor: `area_min = packing_factor * Σ component
     /// area`. > 1 leaves room for routing channels and imperfect packing.
     pub packing_factor: f64,
+    /// How many nets a candidate may leave unrouted and still count as
+    /// feasible. `0` (default) = the strict "everything routes" bar.
+    ///
+    /// Raise it for a board that cannot fully route at any size: the gate
+    /// then accepts up to `allow_failed` failed nets and, correspondingly,
+    /// ignores the `NetSplit` DRC errors those unrouted nets *necessarily*
+    /// produce — while still demanding zero clearance / edge / short
+    /// errors. Set it to the failure count the board already has at full
+    /// size so compaction can never make connectivity worse than the
+    /// baseline it started from.
+    pub allow_failed: usize,
+    /// Per-candidate router budget (seconds). Every feasibility check runs
+    /// one bounded route, so total wall clock ≈ `checks × route_seconds`
+    /// (still capped by `time_budget`). The 30 s default suits a ~15
+    /// footprint board; a fine-pitch QFN needs considerably more before a
+    /// probe is a fair verdict rather than a timeout.
+    pub route_seconds: f64,
 }
 
 impl Default for CompactOptions {
@@ -94,6 +117,8 @@ impl Default for CompactOptions {
             time_budget: Duration::from_secs(240),
             edge_clearance_mm: 0.3,
             packing_factor: 1.3,
+            allow_failed: 0,
+            route_seconds: 30.0,
         }
     }
 }
@@ -112,10 +137,13 @@ pub struct CompactMetrics {
     pub trace_count: usize,
     pub via_count: usize,
     pub total_length_mm: f64,
-    /// Always 0 on a successful shrink (a size with any failed net is
-    /// never accepted); carried for the report.
+    /// Failed nets on the accepted candidate. 0 with the default
+    /// `allow_failed = 0`; otherwise the actual count the gate accepted,
+    /// so the report never claims a board routes when it does not.
     pub failed_nets: usize,
-    /// Always 0 on a successful shrink.
+    /// DRC errors the gate had to reject. Always 0: a candidate is only
+    /// accepted with no error other than the `NetSplit` opens implied by
+    /// its own (allowed) failed nets.
     pub drc_errors: usize,
     /// Per-dimension geometric lower bound the search was clamped to.
     pub lower_bound_w_mm: f64,
@@ -143,6 +171,109 @@ struct Feasible {
     trace_count: usize,
     via_count: usize,
     total_length_mm: f64,
+    /// Nets the router gave up on for this candidate (empty unless
+    /// `allow_failed > 0`). Kept as names, not a count, because the trim
+    /// phase needs to know exactly which `NetSplit` errors it may excuse.
+    failed: BTreeSet<String>,
+}
+
+/// Map of `REF.PAD` → net name, matching the pad labels DRC puts in
+/// `Violation::involved`. Position-independent (references and nets do not
+/// change during compaction), so it is built once per run.
+fn pad_net_map(board: &Board) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for fp in board.footprints_in_order() {
+        for p in &fp.pads {
+            if let Some(net) = p.net.as_ref() {
+                out.insert(format!("{}.{}", fp.reference, p.number), net.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Nets the router reported as `Failed` on this pass.
+fn failed_nets_of(report: &pcb_router::RouteReport) -> BTreeSet<String> {
+    report
+        .per_net
+        .iter()
+        .filter(|(_, o)| matches!(o, Outcome::Failed { .. }))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
+/// The net a violation is about, or `None` when it cannot be attributed to
+/// exactly one net.
+///
+/// Primary source is `involved`: DRC labels pads `REF.PAD`, so resolving
+/// every label through the board's pad→net map is exact. The quoted name in
+/// the message is a fallback for reports whose pads are not in the map
+/// (a synthetic report in a unit test, a pad renamed mid-flight).
+fn violation_net(v: &pcb_drc::Violation, pad_nets: &HashMap<String, String>) -> Option<String> {
+    // Exact when every involved pad is known AND they all name one net; a
+    // missing pad or a second net makes the attribution ambiguous.
+    let mut resolved = v.involved.iter().map(|label| pad_nets.get(label));
+    if let Some(Some(first)) = resolved.next() {
+        if resolved.all(|net| net == Some(first)) {
+            return Some(first.clone());
+        }
+    }
+    // Fallback: `net "NAME" is split into …`.
+    let mut parts = v.message.split('"');
+    parts.next()?;
+    parts.next().map(str::to_string)
+}
+
+/// **The** DRC half of the feasibility gate, as a pure function of a
+/// report. `true` when nothing in it disqualifies the candidate.
+///
+/// Every `Error` fails the gate except a `NetSplit` on a net in `excused`:
+/// a net the router could not finish *necessarily* leaves its pads on
+/// separate copper islands, so counting that as a DRC failure would just
+/// re-reject the connectivity the caller already accepted via
+/// `allow_failed`. Nothing else is ever excused — clearance, edge, body
+/// and short errors are all things a shrink can *create*, and a short is
+/// never a consequence of an open. Warnings never gate.
+fn drc_gate_passes(
+    drc: &pcb_drc::DrcReport,
+    pad_nets: &HashMap<String, String>,
+    excused: &BTreeSet<String>,
+) -> bool {
+    // Fast path: the strict, overwhelmingly common case.
+    if drc.error_count == 0 {
+        return true;
+    }
+    if excused.is_empty() {
+        return false;
+    }
+    drc.violations.iter().all(|v| {
+        v.severity != pcb_drc::Severity::Error
+            || (v.kind == pcb_drc::ViolationKind::NetSplit
+                && violation_net(v, pad_nets).is_some_and(|n| excused.contains(&n)))
+    })
+}
+
+/// **The** feasibility gate for one candidate: connectivity budget plus
+/// the DRC gate above. Pure, so the policy can be unit-tested against
+/// synthetic route/DRC reports instead of only end-to-end.
+fn candidate_passes(
+    failed: &BTreeSet<String>,
+    drc: &pcb_drc::DrcReport,
+    pad_nets: &HashMap<String, String>,
+    allow_failed: usize,
+) -> bool {
+    failed.len() <= allow_failed && drc_gate_passes(drc, pad_nets, failed)
+}
+
+/// Nets a DRC report says are split into isolated islands. Used to seed
+/// the trim gate's excused set for a board whose routing was carried over
+/// rather than produced here (so there is no route report to read).
+fn split_nets(drc: &pcb_drc::DrcReport, pad_nets: &HashMap<String, String>) -> BTreeSet<String> {
+    drc.violations
+        .iter()
+        .filter(|v| v.kind == pcb_drc::ViolationKind::NetSplit)
+        .filter_map(|v| violation_net(v, pad_nets))
+        .collect()
 }
 
 /// Geometric lower bound on the outline. Returns `(w_min, h_min,
@@ -280,8 +411,11 @@ pub fn compact(
         initial_net_order: None,
         heuristic_weight: 1.0,
         // Compaction probes many candidates — keep each route bounded so
-        // a single bad candidate cannot burn the whole time budget.
-        max_seconds: Some(30.0),
+        // a single bad candidate cannot burn the whole time budget. The
+        // budget is a knob because a fine-pitch board needs more than the
+        // 30 s default before a probe means "infeasible" rather than
+        // "ran out of time".
+        max_seconds: Some(opts.route_seconds),
         // Compaction wants the cheapest reliable answer per candidate, not
         // the best one; the negotiation loop is an iterative process that
         // pays off over a full route budget, not a 30 s feasibility probe.
@@ -293,6 +427,7 @@ pub fn compact(
         .unwrap_or_else(|| PlaceOptions::default().min_gap_mm);
 
     let base_radius = base.outline_corner_radius;
+    let pad_nets = pad_net_map(base);
     let start = Instant::now();
     let mut checks = 0usize;
     let mut best: Option<(f64, f64, Feasible)> = None;
@@ -319,6 +454,7 @@ pub fn compact(
             drc_margins,
             fab_profile,
             schematic,
+            &pad_nets,
         )
     };
 
@@ -386,10 +522,15 @@ pub fn compact(
     // corners can nudge a just-trimmed edge into violation, so retry with
     // increasing slack a couple of times before giving up.
     //
+    // `excused` names the nets whose `NetSplit` opens the gate must ignore
+    // (see `drc_gate_passes`). A trim is a rigid translation, so it cannot
+    // change connectivity: excusing exactly the nets that were already
+    // open before the slide can hide nothing the trim itself introduced.
+    //
     // Bounded by `max_checks` only, NOT the wall-clock budget: a trim is
     // a single DRC run (no placer/router), so it must still run to hug
     // the edges even once the expensive search has burned the time budget.
-    let trim_apply = |b: &Board, checks: &mut usize| -> Option<Board> {
+    let trim_apply = |b: &Board, excused: &BTreeSet<String>, checks: &mut usize| -> Option<Board> {
         for &slack in &[0.05_f64, 0.10, 0.20] {
             if *checks >= opts.max_checks {
                 break;
@@ -401,7 +542,8 @@ pub fn compact(
                 return None;
             }
             *checks += 1;
-            if drc_ok(&cand, drc_margins, fab_profile, schematic) {
+            let drc = run_drc(&cand, drc_margins, fab_profile, schematic);
+            if drc_gate_passes(&drc, &pad_nets, excused) {
                 return Some(cand);
             }
         }
@@ -422,7 +564,8 @@ pub fn compact(
     let mut trimmed_last = false;
     if best.is_some() {
         while let Some((bw, bh, feas)) = best.take() {
-            let Some(tb) = trim_apply(&feas.board, &mut checks) else {
+            let excused = feas.failed.clone();
+            let Some(tb) = trim_apply(&feas.board, &excused, &mut checks) else {
                 // Content already hugs the edges — nothing to trim.
                 best = Some((bw, bh, feas));
                 break;
@@ -449,7 +592,8 @@ pub fn compact(
         // exited right after a greedy improvement (e.g. on the budget).
         if !trimmed_last {
             if let Some((bw, bh, feas)) = best.take() {
-                best = match trim_apply(&feas.board, &mut checks) {
+                let excused = feas.failed.clone();
+                best = match trim_apply(&feas.board, &excused, &mut checks) {
                     Some(tb) => {
                         let to = tb.outline.expect("trim keeps an outline");
                         Some((
@@ -478,7 +622,7 @@ pub fn compact(
                 trace_count: f.trace_count,
                 via_count: f.via_count,
                 total_length_mm: f.total_length_mm,
-                failed_nets: 0,
+                failed_nets: f.failed.len(),
                 drc_errors: 0,
                 lower_bound_w_mm: w_min,
                 lower_bound_h_mm: h_min,
@@ -495,7 +639,22 @@ pub fn compact(
             // of the ORIGINAL routed board may still pull the content off
             // the borders and shrink the outline — that alone satisfies
             // "compact the edges". Routing is carried over untouched.
-            if let Some(tb) = trim_apply(base, &mut checks) {
+            //
+            // There is no route report for the input board, so when the
+            // caller tolerates failures the excused set is measured from
+            // the board itself: whichever nets DRC already sees as split.
+            // Not counted as a check — it is a measurement of the input,
+            // not a candidate, and must not perturb `checks` (determinism
+            // tests compare it) or the budget.
+            let base_excused = if opts.allow_failed > 0 {
+                split_nets(
+                    &run_drc(base, drc_margins, fab_profile, schematic),
+                    &pad_nets,
+                )
+            } else {
+                BTreeSet::new()
+            };
+            if let Some(tb) = trim_apply(base, &base_excused, &mut checks) {
                 let to = tb.outline.expect("trim keeps an outline");
                 let (w, h) = (to.width().to_mm(), to.height().to_mm());
                 if w * h < old_area - 1e-6 {
@@ -511,7 +670,8 @@ pub fn compact(
                         trace_count: base.traces.len(),
                         via_count: base.vias.len(),
                         total_length_mm: sum_trace_length(base),
-                        failed_nets: 0,
+                        // Routing is the input's, so its open nets are too.
+                        failed_nets: base_excused.len(),
                         drc_errors: 0,
                         lower_bound_w_mm: w_min,
                         lower_bound_h_mm: h_min,
@@ -543,7 +703,9 @@ fn derive_seed(base: u64, check: usize) -> u64 {
 }
 
 /// Build one candidate board at `w_mm × h_mm`, re-place, re-route,
-/// re-DRC. `Some` iff every net routes and DRC is error-free.
+/// re-DRC. `Some` iff the candidate clears `candidate_passes` — with the
+/// default `allow_failed = 0` that is "every net routes and DRC is
+/// error-free".
 #[allow(clippy::too_many_arguments)]
 fn try_feasible(
     base: &Board,
@@ -560,6 +722,7 @@ fn try_feasible(
     drc_margins: &HashMap<String, PlacementMargin>,
     fab_profile: Option<&pcb_drc::FabProfile>,
     schematic: &Arc<Schematic>,
+    pad_nets: &HashMap<String, String>,
 ) -> Option<Feasible> {
     let mut b = base.clone();
     let new_outline = Rect::from_corners(
@@ -642,16 +805,23 @@ fn try_feasible(
         return None;
     }
 
+    // Every footprint just moved, so any rule area declared *around* a
+    // package (a fine-pitch escape zone) must follow it — otherwise the
+    // router below runs against a rect that no longer covers the QFN it
+    // was declared for, and the DRC gate judges the result under different
+    // rules than the router laid copper with. Must happen BEFORE routing.
+    pcb_core::reanchor_rule_areas(&mut b);
+
     let report = pcb_router::route(&mut b, route_opts);
-    let any_failed = report
-        .per_net
-        .iter()
-        .any(|(_, o)| matches!(o, Outcome::Failed { .. }));
-    if any_failed {
+    let failed = failed_nets_of(&report);
+    // Cheap pre-check: bail before paying for DRC when the connectivity
+    // budget is already blown.
+    if failed.len() > opts.allow_failed {
         return None;
     }
 
-    if !drc_ok(&b, drc_margins, fab_profile, schematic) {
+    let drc = run_drc(&b, drc_margins, fab_profile, schematic);
+    if !candidate_passes(&failed, &drc, pad_nets, opts.allow_failed) {
         return None;
     }
 
@@ -660,25 +830,27 @@ fn try_feasible(
         trace_count: report.trace_count,
         via_count: report.via_count,
         total_length_mm: report.total_length_mm,
+        failed,
     })
 }
 
-/// Run DRC with the exact options the feasibility check uses. `true`
-/// iff error-free. Factored out so the trim phase gates on the same
-/// rules `try_feasible` does.
-fn drc_ok(
+/// Run DRC with the exact options the feasibility check uses and hand back
+/// the whole report. Factored out so the trim phase gates on the same
+/// rules `try_feasible` does — and so both go through `drc_gate_passes`
+/// rather than each deciding what an "error" means.
+fn run_drc(
     board: &Board,
     drc_margins: &HashMap<String, PlacementMargin>,
     fab_profile: Option<&pcb_drc::FabProfile>,
     schematic: &Arc<Schematic>,
-) -> bool {
+) -> pcb_drc::DrcReport {
     let drc_opts = pcb_drc::DrcOptions {
         placement_margins: drc_margins.clone(),
         schematic: Some(schematic.clone()),
         fab_profile: fab_profile.cloned(),
         ..pcb_drc::DrcOptions::default()
     };
-    pcb_drc::run(board, &drc_opts).error_count == 0
+    pcb_drc::run(board, &drc_opts)
 }
 
 /// Tight world-frame bbox of everything the edge / body-off-board DRC
@@ -730,6 +902,15 @@ fn sum_trace_length(board: &Board) -> f64 {
 /// Board silk is re-clamped afterwards. The slack sits just above the
 /// DRC edge clearance so float rounding can't manufacture an edge
 /// violation. Returns `true` iff the outline actually got smaller.
+///
+/// Rule areas and keepouts move with the copper, because they are
+/// statements about *where the copper is*, not about the board's
+/// coordinate origin: an escape zone left behind would stop covering its
+/// QFN, and a keepout left behind would let a trace slide into the region
+/// the user fenced off. Anchored areas are re-derived from their footprint
+/// (one implementation, in `pcb_core::reanchor_rule_areas`); un-anchored
+/// ones and keepout polygons take the same rigid delta as the copper.
+/// Neither is clamped to the outline — an area may legally poke past it.
 fn trim_to_content(
     board: &mut Board,
     margins: &MarginMap,
@@ -759,6 +940,25 @@ fn trim_to_content(
     for v in &mut board.vias {
         v.position = v.position.translate(dx, dy);
     }
+    // Un-anchored rule areas: same rigid delta as the copper they govern.
+    for area in &mut board.rule_areas {
+        if area.anchor_ref.is_some() {
+            continue;
+        }
+        area.rect = Rect {
+            min: area.rect.min.translate(dx, dy),
+            max: area.rect.max.translate(dx, dy),
+        };
+    }
+    // Keepout polygons likewise (a keepout is a rectangle in practice, but
+    // the model stores an arbitrary closed polygon).
+    for k in &mut board.keepouts {
+        for p in &mut k.polygon {
+            *p = p.translate(dx, dy);
+        }
+    }
+    // Anchored areas re-derive from the footprints we just moved.
+    pcb_core::reanchor_rule_areas(board);
     // New outline: content size + a clearance ring on every side.
     let new_outline = Rect::from_corners(
         outline.min,
@@ -1105,6 +1305,337 @@ mod tests {
         ] {
             assert!((gap - pad).abs() < 1e-3, "gap {gap} != pad {pad}");
         }
+    }
+
+    /// Rule area anchored to `reference`, inflated by `margin`, declaring
+    /// the board-default clearance so it cannot perturb routing (this test
+    /// is about geometry bookkeeping, not about the rule itself).
+    fn anchored_area(
+        board: &Board,
+        reference: &str,
+        name: &str,
+        margin: f64,
+    ) -> pcb_core::RuleArea {
+        let fp = board
+            .footprints_in_order()
+            .find(|f| f.reference == reference)
+            .expect("anchor footprint");
+        let mut a = pcb_core::RuleArea::around_footprint(name, fp, margin).expect("has pads");
+        a.clearance_mm = Some(0.20);
+        a
+    }
+
+    /// The rect an anchored area *should* have for the given footprint.
+    fn expected_anchor_rect(board: &Board, reference: &str, margin: f64) -> Rect {
+        let fp = board
+            .footprints_in_order()
+            .find(|f| f.reference == reference)
+            .expect("anchor footprint");
+        pcb_core::anchor_rect(fp, margin).expect("has pads")
+    }
+
+    #[test]
+    fn trim_reanchors_a_rule_area_declared_around_a_part() {
+        // The bug this pins: `trim_to_content` slides every footprint but
+        // used to leave `rule_areas` at their old absolute rects, so a zone
+        // declared around a QFN silently stopped covering it.
+        let mut board = two_part_board(50.0, 50.0);
+        board.set_rule_area(anchored_area(&board, "R1", "fine", 1.0));
+        let before = board.rule_areas[0].rect;
+
+        assert!(trim_to_content(&mut board, &MarginMap::new(), 0.3, 0.1));
+        let area = &board.rule_areas[0];
+        assert_ne!(
+            area.rect, before,
+            "the trim moved R1, so the zone must move"
+        );
+        assert_eq!(area.rect, expected_anchor_rect(&board, "R1", 1.0));
+        // And it still *covers* the part it was declared for.
+        let r1 = board
+            .footprints_in_order()
+            .find(|f| f.reference == "R1")
+            .expect("R1")
+            .bounds()
+            .expect("bounds");
+        assert!(area.rect.min.x.0 <= r1.min.x.0 && area.rect.max.x.0 >= r1.max.x.0);
+        assert!(area.rect.min.y.0 <= r1.min.y.0 && area.rect.max.y.0 >= r1.max.y.0);
+        // The anchor metadata survives the trim.
+        assert_eq!(area.anchor_ref.as_deref(), Some("R1"));
+        assert_eq!(area.anchor_margin_mm, Some(1.0));
+    }
+
+    #[test]
+    fn trim_translates_unanchored_areas_and_keepouts() {
+        // A plain `rule-area` rect and a keepout are statements about where
+        // the copper is, so a rigid content slide must carry them along by
+        // the SAME delta — otherwise a trace can end up inside a keepout
+        // the user fenced off, with no DRC error to show for it.
+        let mut board = two_part_board(50.0, 50.0);
+        let mut plain = pcb_core::RuleArea::new(
+            "moat",
+            Rect::from_corners(
+                Point::new(Length::from_mm(18.0), Length::from_mm(18.0)),
+                Point::new(Length::from_mm(24.0), Length::from_mm(24.0)),
+            ),
+        );
+        plain.clearance_mm = Some(0.20);
+        board.set_rule_area(plain);
+        board.add_keepout(pcb_core::Keepout {
+            id: Id::new(),
+            polygon: vec![
+                Point::new(Length::from_mm(30.0), Length::from_mm(30.0)),
+                Point::new(Length::from_mm(34.0), Length::from_mm(30.0)),
+                Point::new(Length::from_mm(34.0), Length::from_mm(33.0)),
+            ],
+            layers: Vec::new(),
+            nets_allowed: Vec::new(),
+            label: "fence".into(),
+        });
+        let area_before = board.rule_areas[0].rect;
+        let poly_before = board.keepouts[0].polygon.clone();
+        let r1_before = board
+            .footprints_in_order()
+            .find(|f| f.reference == "R1")
+            .expect("R1")
+            .position;
+
+        assert!(trim_to_content(&mut board, &MarginMap::new(), 0.3, 0.1));
+        let r1_after = board
+            .footprints_in_order()
+            .find(|f| f.reference == "R1")
+            .expect("R1")
+            .position;
+        let (dx, dy) = (r1_after.x.0 - r1_before.x.0, r1_after.y.0 - r1_before.y.0);
+        assert!(dx != 0 || dy != 0, "the trim must actually move content");
+        let area = board.rule_areas[0].rect;
+        assert_eq!(area.min.x.0 - area_before.min.x.0, dx);
+        assert_eq!(area.min.y.0 - area_before.min.y.0, dy);
+        assert_eq!(area.max.x.0 - area_before.max.x.0, dx);
+        for (p, before) in board.keepouts[0].polygon.iter().zip(&poly_before) {
+            assert_eq!(p.x.0 - before.x.0, dx);
+            assert_eq!(p.y.0 - before.y.0, dy);
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_an_anchored_rule_area_on_its_part() {
+        // End-to-end: the candidate search re-places every footprint and
+        // the trim phase slides them again. Whatever the search settles on,
+        // the anchored area must equal the part's FINAL bounds + margin.
+        let mut board = two_part_board(40.0, 40.0);
+        board.set_rule_area(anchored_area(&board, "R1", "fine", 1.0));
+        let out = compact(
+            &board,
+            &Arc::new(Schematic::default()),
+            &MarginMap::new(),
+            &HashMap::new(),
+            None,
+            &fast_opts(),
+        )
+        .expect("compact ok");
+        assert!(out.shrunk, "expected a shrink on a roomy board");
+        let area = out
+            .board
+            .rule_areas
+            .iter()
+            .find(|a| a.name == "fine")
+            .expect("area survived compaction");
+        assert_eq!(area.rect, expected_anchor_rect(&out.board, "R1", 1.0));
+        assert_eq!(area.clearance_mm, Some(0.20), "overrides are preserved");
+    }
+
+    // ── Pure feasibility-gate policy (no placer/router involved). ──
+
+    fn violation(
+        kind: pcb_drc::ViolationKind,
+        involved: &[&str],
+        message: &str,
+    ) -> pcb_drc::Violation {
+        pcb_drc::Violation {
+            kind,
+            severity: pcb_drc::Severity::Error,
+            message: message.into(),
+            x_mm: 0.0,
+            y_mm: 0.0,
+            involved: involved.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn report(violations: Vec<pcb_drc::Violation>) -> pcb_drc::DrcReport {
+        let error_count = violations
+            .iter()
+            .filter(|v| v.severity == pcb_drc::Severity::Error)
+            .count();
+        pcb_drc::DrcReport {
+            violations,
+            error_count,
+            warning_count: 0,
+        }
+    }
+
+    fn nets(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn demo_pad_nets() -> HashMap<String, String> {
+        [("R1.1", "N"), ("R2.1", "N"), ("R1.2", "A"), ("R2.2", "B")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn gate_is_strict_by_default() {
+        let pad_nets = demo_pad_nets();
+        let clean = report(Vec::new());
+        assert!(candidate_passes(&nets(&[]), &clean, &pad_nets, 0));
+        // One failed net with allow_failed = 0 → rejected, clean DRC or not.
+        assert!(!candidate_passes(&nets(&["N"]), &clean, &pad_nets, 0));
+        // A DRC error with nothing excused → rejected.
+        let split = report(vec![violation(
+            pcb_drc::ViolationKind::NetSplit,
+            &["R1.1", "R2.1"],
+            "net \"N\" is split into 2 isolated copper islands: {R1.1} | {R2.1}",
+        )]);
+        assert!(!candidate_passes(&nets(&[]), &split, &pad_nets, 0));
+    }
+
+    #[test]
+    fn gate_excuses_netsplit_only_on_nets_the_router_failed() {
+        let pad_nets = demo_pad_nets();
+        let split_n = violation(
+            pcb_drc::ViolationKind::NetSplit,
+            &["R1.1", "R2.1"],
+            "net \"N\" is split into 2 isolated copper islands: {R1.1} | {R2.1}",
+        );
+        // Net N failed and is within budget: its open is a consequence, not
+        // a new defect.
+        assert!(candidate_passes(
+            &nets(&["N"]),
+            &report(vec![split_n.clone()]),
+            &pad_nets,
+            1
+        ));
+        // Same report, but the router said N routed fine — then the split
+        // is a real defect and must still fail.
+        assert!(!candidate_passes(
+            &nets(&["A"]),
+            &report(vec![split_n.clone()]),
+            &pad_nets,
+            1
+        ));
+        // Budget is on the COUNT of failures, not on the excusing.
+        assert!(!candidate_passes(
+            &nets(&["N", "A"]),
+            &report(vec![split_n]),
+            &pad_nets,
+            1
+        ));
+    }
+
+    #[test]
+    fn gate_never_excuses_clearance_or_short_errors() {
+        let pad_nets = demo_pad_nets();
+        for kind in [
+            pcb_drc::ViolationKind::TraceTraceClearance,
+            pcb_drc::ViolationKind::EdgeClearance,
+            pcb_drc::ViolationKind::BodyOffBoard,
+            pcb_drc::ViolationKind::NetShort,
+        ] {
+            let r = report(vec![violation(kind, &["R1.1", "R2.1"], "net \"N\" oops")]);
+            assert!(
+                !candidate_passes(&nets(&["N"]), &r, &pad_nets, 4),
+                "{kind:?} must never be excused by allow_failed",
+            );
+        }
+        // Warnings never gate, even unexcused.
+        let mut warn = violation(
+            pcb_drc::ViolationKind::UnconnectedPad,
+            &["R1.1"],
+            "pad R1.1 on net N has no copper",
+        );
+        warn.severity = pcb_drc::Severity::Warning;
+        let mut r = report(vec![warn]);
+        r.error_count = 0;
+        r.warning_count = 1;
+        assert!(candidate_passes(&nets(&["N"]), &r, &pad_nets, 1));
+    }
+
+    #[test]
+    fn violation_net_reads_pads_then_falls_back_to_the_message() {
+        let pad_nets = demo_pad_nets();
+        let v = violation(
+            pcb_drc::ViolationKind::NetSplit,
+            &["R1.1", "R2.1"],
+            "net \"WRONG\" is split",
+        );
+        // Pad labels are authoritative when they all resolve to one net.
+        assert_eq!(violation_net(&v, &pad_nets).as_deref(), Some("N"));
+        // Unknown pads → the quoted name in the message.
+        let v = violation(
+            pcb_drc::ViolationKind::NetSplit,
+            &["U9.7"],
+            "net \"SPI_CLK\" is split into 2 isolated copper islands",
+        );
+        assert_eq!(violation_net(&v, &pad_nets).as_deref(), Some("SPI_CLK"));
+        // Pads from two different nets → not attributable to one net.
+        let v = violation(
+            pcb_drc::ViolationKind::NetShort,
+            &["R1.1", "R1.2"],
+            "no quotes here",
+        );
+        assert_eq!(violation_net(&v, &pad_nets), None);
+    }
+
+    #[test]
+    fn split_nets_collects_open_nets_from_a_report() {
+        let pad_nets = demo_pad_nets();
+        let r = report(vec![
+            violation(
+                pcb_drc::ViolationKind::NetSplit,
+                &["R1.1", "R2.1"],
+                "net \"N\" is split",
+            ),
+            violation(
+                pcb_drc::ViolationKind::TraceTraceClearance,
+                &["R1.2"],
+                "net \"A\" too close",
+            ),
+        ]);
+        assert_eq!(split_nets(&r, &pad_nets), nets(&["N"]));
+    }
+
+    #[test]
+    fn allow_failed_and_route_seconds_leave_a_healthy_board_alone() {
+        // Raising the tolerance must not *lower* the bar for a board that
+        // does route: nothing failed, so the reported count stays 0 and the
+        // shrink still happens under a smaller per-probe route budget.
+        let board = two_part_board(40.0, 40.0);
+        let opts = CompactOptions {
+            allow_failed: 2,
+            route_seconds: 5.0,
+            ..fast_opts()
+        };
+        let out = compact(
+            &board,
+            &Arc::new(Schematic::default()),
+            &MarginMap::new(),
+            &HashMap::new(),
+            None,
+            &opts,
+        )
+        .expect("compact ok");
+        assert!(out.shrunk, "expected a shrink on a roomy board");
+        assert_eq!(out.metrics.failed_nets, 0, "nothing actually failed here");
+        assert_eq!(out.metrics.drc_errors, 0);
+    }
+
+    #[test]
+    fn new_knobs_default_to_the_old_behaviour() {
+        // Spec-lock: the defaults must reproduce pre-feature compaction.
+        let d = CompactOptions::default();
+        assert_eq!(d.allow_failed, 0);
+        assert!((d.route_seconds - 30.0).abs() < 1e-9);
     }
 
     #[test]
