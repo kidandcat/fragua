@@ -301,7 +301,20 @@ pub fn lower_bound_outline(
         };
         let w = bb.width().to_mm();
         let h = bb.height().to_mm();
+        // The body still has to FIT on the board, elevated or not, so
+        // the dimension floor always uses the inflated bbox.
         max_min_side = max_min_side.max(w.min(h));
+        // …but a socketed module's plastic does not consume board
+        // plane: the parts it shadows use that same area. Counting it
+        // in the packing floor would forbid the very layout the
+        // elevation allows, so an elevated part contributes only the
+        // area its pads actually occupy.
+        if margins.get(&fp.id).is_some_and(|m| m.elevated) {
+            if let Some(pads) = fp.bounds() {
+                sum_area += pads.width().to_mm() * pads.height().to_mm();
+                continue;
+            }
+        }
         sum_area += w * h;
     }
     let dim_floor = max_min_side + 2.0 * opts.edge_clearance_mm;
@@ -315,13 +328,13 @@ pub fn lower_bound_outline(
 /// any). Mirrors the placer's `fp_bounds_with_margin`.
 fn inflated_bounds(fp: &pcb_core::Footprint, margins: &MarginMap) -> Option<Rect> {
     let base = fp.bounds()?;
-    let Some(local) = margins.get(&fp.id) else {
+    let Some(margin) = margins.get(&fp.id) else {
         return Some(base);
     };
-    if local.iter().all(|v| *v <= 0.0) {
+    if margin.is_zero() {
         return Some(base);
     }
-    let world = pcb_core::rotate_margin_trbl(*local, fp.rotation);
+    let world = pcb_core::rotate_margin_trbl(margin.as_trbl_mm(), fp.rotation);
     let [t, r, b, l] = world;
     Some(Rect {
         min: Point::new(

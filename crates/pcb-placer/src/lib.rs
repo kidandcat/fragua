@@ -39,10 +39,12 @@ pub use bundle::bundle_crossings;
 pub use edge::{plan_edge_sides, EdgePlacement, EdgePlanReport};
 pub use global::GlobalReport;
 
-/// Per-footprint placement margin in mm, in the footprint's LOCAL
-/// frame: `[top, right, bottom, left]`. Stored on `LibraryEntry` and
-/// resolved by the caller into a map keyed by footprint id.
-pub type MarginMap = HashMap<Id, [f64; 4]>;
+/// Per-footprint body keep-out in the footprint's LOCAL frame, resolved
+/// by the caller from `LibraryEntry::body_keepout` into a map keyed by
+/// footprint id. Carries the per-side margins in mm AND the `elevated`
+/// flag, so every body-to-body measurement in the placer knows whether
+/// two parts actually share the board plane.
+pub type MarginMap = HashMap<Id, pcb_core::PlacementMargin>;
 
 /// Rotate a `[top, right, bottom, left]` local-frame margin into the
 /// world-aligned `[top, right, bottom, left]` AABB inflation, given a
@@ -92,14 +94,30 @@ fn inflate_rect(bounds: Rect, sides: [f64; 4]) -> Rect {
 /// only matters for body-to-body separation here.
 fn fp_bounds_with_margin(fp: &Footprint, margins: &MarginMap) -> Option<Rect> {
     let b = fp.bounds()?;
-    let Some(local) = margins.get(&fp.id) else {
+    let Some(margin) = margins.get(&fp.id) else {
         return Some(b);
     };
-    if local.iter().all(|v| *v <= 0.0) {
+    if margin.is_zero() {
         return Some(b);
     }
-    let world = rotated_margin(*local, fp.rotation);
+    let world = rotated_margin(margin.as_trbl_mm(), fp.rotation);
     Some(inflate_rect(b, world))
+}
+
+/// True when `fp`'s body is socketed on headers, i.e. floats above the
+/// board plane. Unknown footprints (no library margin) are never
+/// elevated.
+pub(crate) fn is_elevated(fp: &Footprint, margins: &MarginMap) -> bool {
+    margins.get(&fp.id).is_some_and(|m| m.elevated)
+}
+
+/// True when the two footprints' bodies share the board plane and
+/// therefore compete for the same area. False when exactly one is
+/// socketed on headers — the module's plastic floats over the other
+/// part, so every gap/overlap measure between them is vacuous. Two
+/// elevated bodies DO interact: they sit at the same header height.
+pub(crate) fn bodies_interact(a: &Footprint, b: &Footprint, margins: &MarginMap) -> bool {
+    is_elevated(a, margins) == is_elevated(b, margins)
 }
 
 /// Tunables for the SA search. Defaults are calibrated on the
@@ -343,7 +361,12 @@ type Layout = Vec<(Id, Point, f32)>;
 
 fn snapshot_layout(board: &Board, ids: &[Id]) -> Layout {
     ids.iter()
-        .filter_map(|id| board.footprints.get(id).map(|fp| (*id, fp.position, fp.rotation)))
+        .filter_map(|id| {
+            board
+                .footprints
+                .get(id)
+                .map(|fp| (*id, fp.position, fp.rotation))
+        })
         .collect()
 }
 
@@ -1239,7 +1262,7 @@ fn footprint_min_gap(board: &Board, fp_id: Id, margins: &MarginMap) -> f64 {
     };
     board
         .footprints_in_order()
-        .filter(|o| o.id != fp_id)
+        .filter(|o| o.id != fp_id && bodies_interact(fp, o, margins))
         .filter_map(|o| fp_bounds_with_margin(o, margins).map(|ob| aabb_gap_mm(fb, ob)))
         .fold(f64::INFINITY, f64::min)
 }
@@ -1253,7 +1276,7 @@ fn probe_min_gap(board: &Board, probe: &Footprint, margins: &MarginMap) -> f64 {
     };
     board
         .footprints_in_order()
-        .filter(|o| o.id != probe.id)
+        .filter(|o| o.id != probe.id && bodies_interact(probe, o, margins))
         .filter_map(|o| fp_bounds_with_margin(o, margins).map(|ob| aabb_gap_mm(pb, ob)))
         .fold(f64::INFINITY, f64::min)
 }
@@ -1268,6 +1291,9 @@ pub fn min_pairwise_gap(board: &Board, margins: &MarginMap) -> f64 {
             continue;
         };
         for b in fps.iter().skip(i + 1) {
+            if !bodies_interact(fps[i], b, margins) {
+                continue;
+            }
             if let Some(bb) = fp_bounds_with_margin(b, margins) {
                 m = m.min(aabb_gap_mm(a, bb));
             }
@@ -1282,6 +1308,12 @@ pub fn min_pairwise_gap(board: &Board, margins: &MarginMap) -> f64 {
 /// footprint's bbox before measuring the gap — so a part with a
 /// 1 mm top margin reads "1 mm closer" to anything north of it.
 fn pair_gap_penalty(a: &Footprint, b: &Footprint, min_gap_mm: f64, margins: &MarginMap) -> f64 {
+    // A socketed module and a part underneath it never compete for
+    // spacing — charging them a gap penalty would push the placer away
+    // from exactly the layout the builder wants.
+    if !bodies_interact(a, b, margins) {
+        return 0.0;
+    }
     let Some(ab) = fp_bounds_with_margin(a, margins) else {
         return 0.0;
     };
@@ -1349,7 +1381,7 @@ fn would_overlap(
     };
     let probe_bounds = probe_bounds.expand(extra);
     for fp in board.footprints_in_order() {
-        if Some(fp.id) == ignore_id {
+        if Some(fp.id) == ignore_id || !bodies_interact(probe, fp, margins) {
             continue;
         }
         if let Some(b) = fp_bounds_with_margin(fp, margins) {
@@ -1387,15 +1419,7 @@ fn pads_inside_outline(probe: &Footprint, outline: pcb_core::Rect, edge_clearanc
 
 /// Library placement margin for a probe footprint, if any.
 fn margin_for_fp(probe: &Footprint, margins: &MarginMap) -> pcb_core::PlacementMargin {
-    match margins.get(&probe.id) {
-        Some([t, r, b, l]) => pcb_core::PlacementMargin {
-            top_mm: *t,
-            right_mm: *r,
-            bottom_mm: *b,
-            left_mm: *l,
-        },
-        None => pcb_core::PlacementMargin::default(),
-    }
+    margins.get(&probe.id).copied().unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]

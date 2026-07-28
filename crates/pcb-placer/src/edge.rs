@@ -1009,7 +1009,9 @@ fn min_body_gap(board: &Board, fp: &Footprint, margins: &MarginMap, ignore: &Has
     };
     board
         .footprints_in_order()
-        .filter(|o| o.id != fp.id && !ignore.contains(&o.id))
+        .filter(|o| {
+            o.id != fp.id && !ignore.contains(&o.id) && crate::bodies_interact(fp, o, margins)
+        })
         .filter_map(|o| fp_bounds_with_margin(o, margins).map(|ob| aabb_gap_mm(b, ob)))
         .fold(f64::INFINITY, f64::min)
 }

@@ -300,10 +300,11 @@ fn collect_photo_overlays(project: &pcb_core::Project) -> Vec<PhotoOverlayPayloa
 fn collect_placement_margins(project: &pcb_core::Project) -> pcb_render::PlacementMarginMap {
     let mut out = pcb_render::PlacementMarginMap::default();
     for entry in project.library().list() {
-        if entry.placement_margin.is_zero() {
+        let margin = entry.body_keepout();
+        if margin.is_zero() && !margin.elevated {
             continue;
         }
-        out.insert(entry.key, entry.placement_margin);
+        out.insert(entry.key, margin);
     }
     out
 }
@@ -507,6 +508,7 @@ fn library_review_state(state: State<'_, AppState>) -> serde_json::Value {
                     "bottom_mm": e.placement_margin.bottom_mm,
                     "left_mm": e.placement_margin.left_mm,
                 },
+                "elevated": e.elevated,
                 "body_rect": e.body_rect.map(|b| serde_json::json!({
                     "min_x_mm": b.min_x_mm,
                     "min_y_mm": b.min_y_mm,
@@ -598,6 +600,9 @@ fn library_set_placement_margin(
         right_mm: right_mm.max(0.0),
         bottom_mm: bottom_mm.max(0.0),
         left_mm: left_mm.max(0.0),
+        // Elevation is authored separately (`elevated KEY on|off`); the
+        // margin editor must never silently clear it.
+        elevated: false,
     };
     state.project.library().set_placement_margin(&key, margin)?;
     state.project.notify_library_changed();
@@ -927,11 +932,11 @@ fn move_footprint(
 fn run_drc(state: State<'_, AppState>) -> Result<DrcReportPayload, String> {
     let mut opts = pcb_drc::DrcOptions::default();
     for entry in state.project.library().list() {
-        if entry.placement_margin.is_zero() {
+        let margin = entry.body_keepout();
+        if margin.is_zero() && !margin.elevated {
             continue;
         }
-        opts.placement_margins
-            .insert(entry.key, entry.placement_margin);
+        opts.placement_margins.insert(entry.key, margin);
     }
     let snap = state.project.read();
     let report = pcb_drc::run(snap.board(), &opts);

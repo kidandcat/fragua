@@ -170,18 +170,19 @@ fn load_margins(board: &Board) -> (MarginMap, HashMap<String, PlacementMargin>) 
         let Some(entry) = lib.find(&fp.key) else {
             continue;
         };
-        let m = entry.placement_margin;
-        if m.is_zero() {
+        let m = entry.body_keepout();
+        if m.is_zero() && !m.elevated {
             continue;
         }
-        place.insert(fp.id, [m.top_mm, m.right_mm, m.bottom_mm, m.left_mm]);
+        place.insert(fp.id, m);
     }
     let mut drc = HashMap::new();
     for entry in lib.list() {
-        if entry.placement_margin.is_zero() {
+        let m = entry.body_keepout();
+        if m.is_zero() && !m.elevated {
             continue;
         }
-        drc.insert(entry.key, entry.placement_margin);
+        drc.insert(entry.key, m);
     }
     (place, drc)
 }

@@ -64,6 +64,11 @@ pub struct DrcOptions {
     /// the part cannot occupy space that the board does not have —
     /// no `edge_mounted` flag changes that, since "the pads reach the
     /// edge" does not move the body inward.
+    ///
+    /// Each margin also carries `PlacementMargin::elevated` (resolved
+    /// from `LibraryEntry::body_keepout`): when exactly one part of an
+    /// overlapping pair is socketed on headers, the bodies live at
+    /// different heights and `BodyOverlap` is downgraded to a warning.
     pub placement_margins: HashMap<String, PlacementMargin>,
     /// Fab profile to enforce alongside the project-side minimums.
     /// Every minimum-style check (trace width, drill, annular ring,
@@ -271,12 +276,18 @@ pub enum ViolationKind {
     /// — pad-on-pad overlap is still rejected hard by the placement
     /// APIs, but a body keep-out overlap is something the user may
     /// have accepted intentionally (e.g. tucking a 0805 cap under the
-    /// shadow of a screw terminal's plastic shroud).
+    /// shadow of a screw terminal's plastic shroud). Deeper than
+    /// 0.5 mm it becomes an ERROR — unless exactly one of the two parts
+    /// is `elevated` (socketed on pin headers), in which case the
+    /// bodies are at different heights and the overlap stays a warning
+    /// however deep it is.
     BodyOverlap,
     /// A footprint's library-authored body bbox extends past the board
     /// outline. Hard ERROR — the part's plastic physically cannot occupy
-    /// space the board does not have. `edge_mounted` does NOT exempt
-    /// this; it only relaxes the pad-vs-outline clearance.
+    /// space the board does not have. Neither `edge_mounted` nor
+    /// `elevated` exempts this: the first only relaxes the pad-vs-outline
+    /// clearance, and floating on headers does not conjure board area
+    /// under the overhang.
     BodyOffBoard,
     /// A trace segment crosses a keepout polygon, or a via lands
     /// inside one, on an applicable copper layer. The keepout's
@@ -789,6 +800,13 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             if am.is_zero() && bm.is_zero() {
                 continue;
             }
+            // Exactly one of the two is socketed on headers: the bodies
+            // sit at different heights, so the plan-view overlap is the
+            // design (the fecha gateway's LTE modem shadows an MCU, a
+            // transistor and four passives, and is a working board).
+            // Still reported so the layout is auditable — as a warning,
+            // never an error, however deep the overlap.
+            let elevated_clearance = am.clears_over(bm);
             // Overlap depth: a kiss within the 0.5 mm grace stays a
             // warning; deeper means the parts physically collide (or a
             // neighbour sits inside a declared keep-out like a screw
@@ -797,7 +815,7 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             let ox = (ab.max.x.0.min(bb.max.x.0) - ab.min.x.0.max(bb.min.x.0)) as f64 / 1e6;
             let oy = (ab.max.y.0.min(bb.max.y.0) - ab.min.y.0.max(bb.min.y.0)) as f64 / 1e6;
             let depth = ox.min(oy).max(0.0);
-            let severity = if depth > 0.5 {
+            let severity = if depth > 0.5 && !elevated_clearance {
                 Severity::Error
             } else {
                 Severity::Warning
@@ -813,10 +831,17 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             report.push(Violation {
                 kind: ViolationKind::BodyOverlap,
                 severity,
-                message: format!(
-                    "{} and {} bodies (margins included) overlap by {depth:.2} mm",
-                    a.reference, b.reference
-                ),
+                message: if elevated_clearance {
+                    format!(
+                        "{} and {} bodies (margins included) overlap by {depth:.2} mm — legal: one is socketed on headers and clears the other",
+                        a.reference, b.reference
+                    )
+                } else {
+                    format!(
+                        "{} and {} bodies (margins included) overlap by {depth:.2} mm",
+                        a.reference, b.reference
+                    )
+                },
                 x_mm: mx,
                 y_mm: my,
                 involved: vec![a.reference.clone(), b.reference.clone()],

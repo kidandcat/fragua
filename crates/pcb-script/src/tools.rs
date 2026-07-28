@@ -46,10 +46,13 @@ impl ToolError {
 fn build_placement_margin_map(project: &Project) -> pcb_render::PlacementMarginMap {
     let mut out = pcb_render::PlacementMarginMap::default();
     for entry in project.library().list() {
-        if entry.placement_margin.is_zero() {
+        let margin = entry.body_keepout();
+        // An elevated entry is kept even with a zero margin: the
+        // `elevated` bit itself is what the body checks need.
+        if margin.is_zero() && !margin.elevated {
             continue;
         }
-        out.insert(entry.key, entry.placement_margin);
+        out.insert(entry.key, margin);
     }
     out
 }
@@ -63,10 +66,13 @@ fn build_drc_margin_map(
 ) -> std::collections::HashMap<String, pcb_core::PlacementMargin> {
     let mut out = std::collections::HashMap::new();
     for entry in project.library().list() {
-        if entry.placement_margin.is_zero() {
+        let margin = entry.body_keepout();
+        // An elevated entry is kept even with a zero margin: the
+        // `elevated` bit itself is what the body checks need.
+        if margin.is_zero() && !margin.elevated {
             continue;
         }
-        out.insert(entry.key, entry.placement_margin);
+        out.insert(entry.key, margin);
     }
     out
 }
@@ -193,6 +199,12 @@ LIBRARY (build first, reuse forever):\n\
                                                  their order are wrong). Rectified attachments take\n\
                                                  priority over plain photos in the board overlay.\n\
   edge-mount KEY true|false|top|right|bottom|left\n\
+  elevated KEY [true|false]                    — the part is socketed on pin headers, so its body\n\
+                                                 floats above the copper (OLED / modem modules). Its\n\
+                                                 body may then overlap NON-elevated bodies in plan\n\
+                                                 view — placement stops rejecting it and DRC drops\n\
+                                                 BodyOverlap to a warning. Two elevated bodies still\n\
+                                                 collide, and the body must still fit on the board.\n\
                                                — library entry must sit on board outline\n\
                                                  (screw terminals, USB modules, edge headers).\n\
                                                  A side names WHICH local side (Y-up pad frame)\n\
@@ -579,6 +591,7 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "library.rectify_photo" => tool_library_rectify_photo(project, args),
         "library.set_body_rect" => tool_library_set_body_rect(project, args),
         "library.set_edge_mounted" => tool_library_set_edge_mounted(project, args),
+        "library.set_elevated" => tool_library_set_elevated(project, args),
         "library.delete_attachment" => tool_library_delete_attachment(project, args),
         "library.delete" => tool_library_delete(project, args),
         "placement.place_from_palette" => tool_place_from_palette(project, args),
@@ -1823,6 +1836,7 @@ fn library_entry_summary(e: &pcb_core::LibraryEntry) -> Value {
         "default_rotation_deg": e.default_rotation_deg,
         "edge_mounted": e.edge_mounted,
         "edge_side": e.edge_side.map(pcb_core::EdgeSide::name),
+        "elevated": e.elevated,
         "pad_count": e.pads.len(),
         "attachment_count": e.attachments.len(),
         "attachments": e.attachments.iter().map(|a| json!({
@@ -1977,17 +1991,19 @@ fn tool_library_list(project: &Project) -> Result<Value, ToolError> {
     for e in &entries {
         let edge = if e.edge_mounted { " edge" } else { "" };
         let body = if e.body_rect.is_some() { " body" } else { "" };
+        let elevated = if e.elevated { " elevated" } else { "" };
         let desc = if e.description.is_empty() {
             String::new()
         } else {
             format!(" — {}", e.description.replace('\n', " "))
         };
         lines.push(format!(
-            "  {}  pads={}{}{}{}",
+            "  {}  pads={}{}{}{}{}",
             e.key,
             e.pads.len(),
             edge,
             body,
+            elevated,
             desc
         ));
     }
@@ -2100,6 +2116,10 @@ struct LibraryCreateInput {
     default_rotation_deg: f32,
     #[serde(default)]
     edge_mounted: bool,
+    /// Body sits on pin headers, floating above the board plane — see
+    /// `pcb_core::LibraryEntry::elevated`.
+    #[serde(default)]
+    elevated: bool,
     pads: Vec<LibraryCreatePadInput>,
     /// Library-authored silk strokes. Coordinates are in
     /// footprint-local mm; the spawn step converts them into
@@ -2215,6 +2235,7 @@ fn tool_library_create(project: &Project, args: &Value) -> Result<Value, ToolErr
         default_rotation_deg: input.default_rotation_deg,
         edge_mounted: input.edge_mounted,
         edge_side: None,
+        elevated: input.elevated,
         pads,
         silk,
         lcsc_id: input.lcsc_id,
@@ -2625,6 +2646,41 @@ fn tool_library_set_edge_mounted(project: &Project, args: &Value) -> Result<Valu
         "key": input.key,
         "edge_mounted": input.edge_mounted,
         "edge_side": side.map(pcb_core::EdgeSide::name),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct LibrarySetElevatedInput {
+    key: String,
+    #[serde(default = "default_true")]
+    elevated: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn tool_library_set_elevated(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: LibrarySetElevatedInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("elevated: {e}")))?;
+    ensure_confirmed(project, "elevated", &input.key)?;
+    project
+        .library()
+        .set_elevated(&input.key, input.elevated)
+        .map_err(ToolError::invalid_params)?;
+    project.notify_library_changed();
+    let msg = if input.elevated {
+        format!(
+            "elevated on {}: body is socketed on headers — it may overlap non-elevated bodies (still must fit on the board)",
+            input.key
+        )
+    } else {
+        format!("elevated off {}: body sits in the board plane", input.key)
+    };
+    project.log(ActivityLevel::Info, msg.clone());
+    Ok(text_result(msg).with_data(json!({
+        "key": input.key,
+        "elevated": input.elevated,
     })))
 }
 
@@ -3882,11 +3938,11 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
                 return None;
             }
             let entry = project.library().find(&fp.key)?;
-            let m = entry.placement_margin;
-            if m.top_mm <= 0.0 && m.right_mm <= 0.0 && m.bottom_mm <= 0.0 && m.left_mm <= 0.0 {
+            let m = entry.body_keepout();
+            if m.is_zero() && !m.elevated {
                 return None;
             }
-            Some((fp.id, [m.top_mm, m.right_mm, m.bottom_mm, m.left_mm]))
+            Some((fp.id, m))
         })
         .collect();
     let report = pcb_placer::place(&mut work, &input.refs, &opts, &margins)
@@ -4090,11 +4146,11 @@ fn tool_placement_edge_plan(project: &Project, args: &Value) -> Result<Value, To
                 return None;
             }
             let entry = project.library().find(&fp.key)?;
-            let m = entry.placement_margin;
-            if m.top_mm <= 0.0 && m.right_mm <= 0.0 && m.bottom_mm <= 0.0 && m.left_mm <= 0.0 {
+            let m = entry.body_keepout();
+            if m.is_zero() && !m.elevated {
                 return None;
             }
-            Some((fp.id, [m.top_mm, m.right_mm, m.bottom_mm, m.left_mm]))
+            Some((fp.id, m))
         })
         .collect();
 
@@ -4295,11 +4351,11 @@ fn tool_compact_run(project: &Project, args: &Value) -> Result<Value, ToolError>
                 return None;
             }
             let entry = project.library().find(&fp.key)?;
-            let m = entry.placement_margin;
-            if m.top_mm <= 0.0 && m.right_mm <= 0.0 && m.bottom_mm <= 0.0 && m.left_mm <= 0.0 {
+            let m = entry.body_keepout();
+            if m.is_zero() && !m.elevated {
                 return None;
             }
-            Some((fp.id, [m.top_mm, m.right_mm, m.bottom_mm, m.left_mm]))
+            Some((fp.id, m))
         })
         .collect();
     let drc_margins = build_drc_margin_map(project);

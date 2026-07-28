@@ -1987,6 +1987,7 @@ mod tests {
             default_rotation_deg: 0.0,
             edge_mounted: false,
             edge_side: None,
+            elevated: false,
             pads: vec![
                 pcb_core::LibraryPad {
                     number: "1".into(),
@@ -2038,6 +2039,7 @@ mod tests {
             default_rotation_deg: 0.0,
             edge_mounted: false,
             edge_side: None,
+            elevated: false,
             pads: Vec::new(),
             silk: Vec::new(),
             lcsc_id: None,

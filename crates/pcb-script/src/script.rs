@@ -80,6 +80,7 @@ pub(crate) const VERBS: &[&str] = &[
     "rectify-photo",
     "body-rect",
     "edge-mount",
+    "elevated",
     "edge-plan",
     "find-lib",
     "list-lib",
@@ -520,7 +521,8 @@ impl Block {
                 })
             }
             "lib" => {
-                // lib KEY [value=V] [rot=DEG] [edge=true|false] [desc="..."]
+                // lib KEY [value=V] [rot=DEG] [edge=true|false]
+                //          [elevated=true|false] [desc="..."]
                 if tokens.len() < 2 {
                     return Err(ParseError::at(line, "lib needs: lib KEY [...]"));
                 }
@@ -543,6 +545,7 @@ impl Block {
                         ("default_rotation_deg", AttrType::Num),
                         ("edge", AttrType::BoolInto("edge_mounted")),
                         ("edge_mounted", AttrType::Bool),
+                        ("elevated", AttrType::Bool),
                         ("desc", AttrType::StrInto("description")),
                         ("description", AttrType::Str),
                         ("lcsc", AttrType::StrInto("lcsc_id")),
@@ -1227,6 +1230,36 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                 line,
                 tool: "library.set_edge_mounted".into(),
                 args: json!({ "key": tokens[1], "edge_mounted": flag, "side": side }),
+            })
+        }
+
+        "elevated" => {
+            // elevated KEY [true|false]
+            // Declares that the part is socketed on pin headers, so its
+            // body floats above the copper and may shadow low parts
+            // (OLED modules, LTE modems on 2.54 mm sockets). Body
+            // overlap against a NON-elevated part stops being a DRC
+            // error and stops being a placement reject; two elevated
+            // bodies still collide, and the body must still fit on the
+            // board.
+            need_args(line, tokens, 1, "elevated KEY [true|false]")?;
+            let flag = match tokens.get(2).map(|t| t.to_ascii_lowercase()) {
+                None => true,
+                Some(t) => match t.as_str() {
+                    "true" | "yes" | "1" | "on" => true,
+                    "false" | "no" | "0" | "off" => false,
+                    other => {
+                        return Err(ParseError::at(
+                            line,
+                            format!("elevated: expected true|false, got `{other}`"),
+                        ));
+                    }
+                },
+            };
+            Ok(Cmd {
+                line,
+                tool: "library.set_elevated".into(),
+                args: json!({ "key": tokens[1], "elevated": flag }),
             })
         }
 

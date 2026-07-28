@@ -170,6 +170,7 @@ fn body_off_board_is_error_even_for_edge_mounted() {
             right_mm: 3.0,
             bottom_mm: 0.0,
             left_mm: 0.0,
+            elevated: false,
         },
     );
     let opts = DrcOptions {
@@ -353,4 +354,142 @@ fn rule_area_below_fab_limit_warns_but_does_not_error() {
         .violations
         .iter()
         .all(|v| v.kind != ViolationKind::PadPadClearance));
+}
+
+// ─── Elevated (header-socketed) bodies ────────────────────────────────
+//
+// A 0.96" OLED or an LTE modem sits on a 2.54 mm socket ~8 mm above the
+// copper, so its body legitimately shadows the passives underneath. The
+// board these tests model is the fecha gateway v3, which is built and
+// working with its modem body over an MCU and four passives.
+
+/// Two footprints 4 mm apart carrying `wide` / `narrow` margins that
+/// make their bodies overlap by ~6 mm. `elevated` says which keys are
+/// socketed on headers.
+fn overlapping_bodies(elevated: &[&str]) -> (Board, DrcOptions) {
+    let mut board = Board::new();
+    board.outline = Some(Rect::from_corners(
+        Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+        Point::new(Length::from_mm(60.0), Length::from_mm(60.0)),
+    ));
+    let mut module = fp("U1", 30.0, 30.0, vec![pad("1", 0.0, 0.0, Some("A"))]);
+    module.key = "module".into();
+    board.add_footprint(module);
+    let mut chip = fp("R1", 34.0, 30.0, vec![pad("1", 0.0, 0.0, Some("B"))]);
+    chip.key = "chip".into();
+    board.add_footprint(chip);
+
+    let margin = |w: f64, key: &str| PlacementMargin {
+        top_mm: w,
+        right_mm: w,
+        bottom_mm: w,
+        left_mm: w,
+        elevated: elevated.contains(&key),
+    };
+    let mut margins = HashMap::new();
+    margins.insert("module".to_string(), margin(8.0, "module"));
+    margins.insert("chip".to_string(), margin(1.0, "chip"));
+    let opts = DrcOptions {
+        placement_margins: margins,
+        ..DrcOptions::default()
+    };
+    (board, opts)
+}
+
+fn body_overlaps(board: &Board, opts: &DrcOptions) -> Vec<pcb_drc::Violation> {
+    run(board, opts)
+        .violations
+        .into_iter()
+        .filter(|v| v.kind == ViolationKind::BodyOverlap)
+        .collect()
+}
+
+#[test]
+fn body_overlap_between_two_flat_parts_is_an_error() {
+    let (board, opts) = overlapping_bodies(&[]);
+    let v = body_overlaps(&board, &opts);
+    assert_eq!(v.len(), 1, "expected one BodyOverlap, got {v:#?}");
+    assert_eq!(
+        v[0].severity,
+        Severity::Error,
+        "two bodies in the board plane physically collide"
+    );
+}
+
+#[test]
+fn elevated_body_over_a_flat_body_is_only_a_warning() {
+    let (board, opts) = overlapping_bodies(&["module"]);
+    let v = body_overlaps(&board, &opts);
+    assert_eq!(v.len(), 1, "the overlap is still reported, got {v:#?}");
+    assert_eq!(
+        v[0].severity,
+        Severity::Warning,
+        "a socketed module clears the part underneath it: {:#?}",
+        v[0]
+    );
+    assert!(
+        v[0].message.contains("socketed"),
+        "the message should explain why it is legal: {}",
+        v[0].message
+    );
+}
+
+#[test]
+fn two_elevated_bodies_overlapping_is_still_an_error() {
+    let (board, opts) = overlapping_bodies(&["module", "chip"]);
+    let v = body_overlaps(&board, &opts);
+    assert_eq!(v.len(), 1, "expected one BodyOverlap, got {v:#?}");
+    assert_eq!(
+        v[0].severity,
+        Severity::Error,
+        "two modules on headers sit at the same height — real collision"
+    );
+}
+
+#[test]
+fn body_off_board_is_unaffected_by_elevated() {
+    // Same geometry as `body_off_board_is_error_even_for_edge_mounted`,
+    // with the part socketed on headers: floating above the copper does
+    // not conjure board area under the overhang.
+    for elevated in [false, true] {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+        ));
+        let mut module = fp("U1", 10.0, 10.0, vec![pad("1", 0.0, 0.0, Some("D+"))]);
+        module.key = "oled".into();
+        board.add_footprint(module);
+
+        let mut margins = HashMap::new();
+        margins.insert(
+            "oled".to_string(),
+            PlacementMargin {
+                top_mm: 0.0,
+                right_mm: 12.0,
+                bottom_mm: 0.0,
+                left_mm: 0.0,
+                elevated,
+            },
+        );
+        let opts = DrcOptions {
+            placement_margins: margins,
+            ..DrcOptions::default()
+        };
+        let off_board: Vec<_> = run(&board, &opts)
+            .violations
+            .into_iter()
+            .filter(|v| v.kind == ViolationKind::BodyOffBoard)
+            .collect();
+        assert_eq!(
+            off_board.len(),
+            1,
+            "elevated={elevated}: body hanging past the cut must still be flagged"
+        );
+        assert_eq!(
+            off_board[0].severity,
+            Severity::Error,
+            "elevated={elevated}: BodyOffBoard stays a hard error"
+        );
+    }
 }

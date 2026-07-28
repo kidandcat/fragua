@@ -897,7 +897,7 @@ impl Project {
             } else {
                 library
                     .find(&fp.key)
-                    .map(|e| e.placement_margin)
+                    .map(|e| e.body_keepout())
                     .unwrap_or_default()
             }
         };
@@ -1021,7 +1021,7 @@ impl Project {
             } else {
                 library
                     .find(&fp.key)
-                    .map(|e| e.placement_margin)
+                    .map(|e| e.body_keepout())
                     .unwrap_or_default()
             }
         };
@@ -1089,7 +1089,7 @@ impl Project {
             } else {
                 library
                     .find(&fp.key)
-                    .map(|e| e.placement_margin)
+                    .map(|e| e.body_keepout())
                     .unwrap_or_default()
             }
         };
@@ -1152,7 +1152,7 @@ impl Project {
             } else {
                 library
                     .find(&fp.key)
-                    .map(|e| e.placement_margin)
+                    .map(|e| e.body_keepout())
                     .unwrap_or_default()
             }
         };
