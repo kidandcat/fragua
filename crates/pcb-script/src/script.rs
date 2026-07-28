@@ -80,6 +80,7 @@ pub(crate) const VERBS: &[&str] = &[
     "rectify-photo",
     "body-rect",
     "edge-mount",
+    "edge-plan",
     "find-lib",
     "list-lib",
     "delete-lib",
@@ -1302,6 +1303,43 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                 args,
             })
         }
+        "edge-plan" => {
+            // edge-plan REF [REF...] [seed=N]
+            // Runs ONLY the placer's edge-planning pass on the named
+            // edge-mounted footprints: picks which outline edge (and where
+            // along it) each one belongs on, from wiring + bundle order.
+            // No SA, so nothing else on the board moves.
+            need_args(line, tokens, 1, "edge-plan REF [REF...] [seed=N]")?;
+            // Same split as auto-place: positional refs end at the first
+            // token containing `=` (refs can never contain one).
+            let mut refs: Vec<String> = Vec::new();
+            let mut kv_start = tokens.len();
+            for (i, t) in tokens.iter().enumerate().skip(1) {
+                if t.contains('=') {
+                    kv_start = i;
+                    break;
+                }
+                refs.push(t.clone());
+            }
+            if refs.is_empty() {
+                return Err(ParseError::at(
+                    line,
+                    "edge-plan: at least one footprint reference required".to_string(),
+                ));
+            }
+            let mut args = json!({ "refs": refs });
+            apply_kv(
+                &mut args,
+                &tokens[kv_start..],
+                line,
+                &[("seed", AttrType::Num)],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "placement.edge_plan".into(),
+                args,
+            })
+        }
 
         "move" => {
             need_args(line, tokens, 3, "move REF X Y")?;
@@ -1506,6 +1544,8 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     ("gap_penalty", AttrType::NumInto("gap_penalty_factor")),
                     ("congestion", AttrType::NumInto("congestion_penalty_factor")),
                     ("congestion_res", AttrType::NumInto("congestion_resolution")),
+                    ("crossing", AttrType::NumInto("crossing_penalty_factor")),
+                    ("edge_plan", AttrType::BoolInto("edge_plan")),
                     ("global", AttrType::BoolInto("global")),
                     ("global_iters", AttrType::NumInto("global_iters")),
                     ("bins", AttrType::NumInto("density_bins")),
@@ -1523,6 +1563,7 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
         "compact" => {
             // compact [min_w=MM] [min_h=MM] [step=MM] [seed=N] [iters=N]
             //         [aspect=keep|free] [min_gap=MM] [solder_gap=MM]
+            //         [allow_failed=N] [route_seconds=N]
             let mut args = json!({});
             apply_kv(
                 &mut args,
@@ -1537,6 +1578,8 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     ("aspect", AttrType::Str),
                     ("min_gap", AttrType::NumInto("min_gap_mm")),
                     ("solder_gap", AttrType::NumInto("solder_gap_mm")),
+                    ("allow_failed", AttrType::Num),
+                    ("route_seconds", AttrType::Num),
                 ],
             )?;
             Ok(Cmd {
@@ -2097,6 +2140,19 @@ mod tests {
         assert_eq!(silk[2]["text"], "{REF}");
         assert_eq!(silk[2]["anchor"], "middle");
         assert!((silk[2]["size_mm"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compact_parses_allow_failed_and_route_seconds() {
+        let cmds = parse("compact allow_failed=3 route_seconds=90 aspect=free\n").expect("parse");
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].tool, "compact.run");
+        let args = &cmds[0].args;
+        assert!((args["allow_failed"].as_f64().unwrap() - 3.0).abs() < 1e-9);
+        assert!((args["route_seconds"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+        assert_eq!(args["aspect"], "free");
+        // Unknown keys are still rejected rather than silently dropped.
+        assert!(parse("compact allow_fail=3\n").is_err());
     }
 
     #[test]

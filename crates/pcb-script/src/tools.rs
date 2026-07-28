@@ -321,8 +321,15 @@ PALETTE / PLACEMENT:\n\
                                                  Useful after editing a library entry: clear-board\n\
                                                  then re-spawn from the palette to pick up the\n\
                                                  updated geometry.\n\
+  edge-plan REF [REF...] [seed=N]               — planning pass ONLY (no SA): for each edge-mounted\n\
+                                                 ref, choose WHICH outline edge and where along it,\n\
+                                                 minimising wirelength + bundle crossings, and\n\
+                                                 spread parts sharing an edge. Reports the side +\n\
+                                                 position per ref. Runs automatically inside\n\
+                                                 auto-place; use it alone to fix connector sides\n\
+                                                 without moving anything else.\n\
   auto-place REF [REF...] [iters=N] [seed=N] [max_step=N] [min_step=N] [min_gap=N] [solder_gap=N] [gap_penalty=N] [congestion=N] [congestion_res=N]\n\
-             [global=true|false] [global_iters=N] [bins=N] [density=N] [overflow=N]\n\
+             [crossing=N] [edge_plan=true|false] [global=true|false] [global_iters=N] [bins=N] [density=N] [overflow=N]\n\
                                                — two-stage placer over the listed refs: an\n\
                                                  electrostatic global stage (ePlace-style: smooth\n\
                                                  wirelength gradient + Poisson density field, with\n\
@@ -331,19 +338,27 @@ PALETTE / PLACEMENT:\n\
                                                  Pinned refs (everything not listed) stay put.\n\
                                                  Optimises HPWL + a soft body-to-body gap penalty\n\
                                                  + a congestion proxy (how many net pad-bboxes\n\
-                                                 share the same routing cell). Obeys outline +\n\
+                                                 share the same routing cell; cells in the escape\n\
+                                                 ring of a fine-pitch package count double)\n\
+                                                 + a bundle-crossing penalty (`crossing`, mm per\n\
+                                                 crossing: a header wired 1:1 to an IC ends up in\n\
+                                                 matching pin order, not criss-crossed). Movable\n\
+                                                 edge-mounted parts get their edge chosen first\n\
+                                                 (see edge-plan; edge_plan=false to skip). Obeys outline +\n\
                                                  edge_mounted; hard-rejects pad overlap. Defaults:\n\
                                                  global=true (global_iters=600, bins=64,\n\
                                                  density=1.0, overflow=0.08),\n\
                                                  iters=8000 (~3 s for ~20 components), seed=clock,\n\
                                                  max_step=20 mm, min_gap=2.0 mm, gap_penalty=16,\n\
-                                                 congestion=1, congestion_res=32. solder_gap=1.0 mm\n\
+                                                 congestion=1, congestion_res=32, crossing=2,\n\
+                                                 edge_plan=true. solder_gap=1.0 mm\n\
                                                  is the HARD floor: parts never end up closer than\n\
                                                  this so you can get a soldering iron between them\n\
                                                  (set solder_gap=0 for the old 0.5 mm floor).\n\
                                                  Bump congestion if SA produces tight HPWL but the\n\
                                                  router struggles; set congestion_res=0 to disable.\n\
   compact [min_w=MM] [min_h=MM] [step=MM] [seed=N] [iters=N] [aspect=keep|free] [min_gap=MM] [solder_gap=MM]\n\
+          [allow_failed=N] [route_seconds=N]\n\
                                                — shrink the board outline / pack parts as tightly as\n\
                                                  the design allows while staying manufacturable. For\n\
                                                  every candidate size it re-places ALL footprints,\n\
@@ -358,9 +373,20 @@ PALETTE / PLACEMENT:\n\
                                                  inside. Defaults: step=1.0 mm, seed=1, iters=8000,\n\
                                                  aspect=keep, solder_gap=1.0 mm (hard hand-solder\n\
                                                  access floor — bodies never pack closer than this).\n\
-                                                 Same seed → same result. Run it AFTER\n\
-                                                 auto-place + route; if no smaller size is feasible\n\
-                                                 the board is left untouched.\n\
+                                                 allow_failed=N (default 0) tolerates N unrouted nets\n\
+                                                 per candidate — use it on a board that never fully\n\
+                                                 routes (set N to the failures it already has) so it\n\
+                                                 can still shrink; the DRC gate then ignores the\n\
+                                                 NetSplit opens those nets imply but still demands 0\n\
+                                                 clearance/edge/short errors. route_seconds=N (default\n\
+                                                 30) is the router budget PER candidate: total wall\n\
+                                                 clock ≈ checks × route_seconds, so raise it for\n\
+                                                 fine-pitch boards and expect the run to take longer.\n\
+                                                 Rule areas declared with rule-area-around follow\n\
+                                                 their part; plain rule-area rects and keepouts are\n\
+                                                 translated with the copper. Same seed → same result.\n\
+                                                 Run it AFTER auto-place + route; if no smaller size\n\
+                                                 is feasible the board is left untouched.\n\
 \n\
 ROUTING:\n\
   route [trace_width=N] [clearance=N] [via_drill=N] [via_diameter=N] [via_cost=N] [cell=N]\n\
@@ -557,6 +583,7 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "library.delete" => tool_library_delete(project, args),
         "placement.place_from_palette" => tool_place_from_palette(project, args),
         "placement.edge_place" => tool_placement_edge_place(project, args),
+        "placement.edge_plan" => tool_placement_edge_plan(project, args),
         "placement.batch" => tool_placement_batch(project, args),
         "placement.move" => tool_placement_move(project, args),
         "placement.rotate" => tool_placement_rotate(project, args),
@@ -3746,6 +3773,10 @@ struct AutoPlaceInput {
     #[serde(default)]
     congestion_resolution: Option<f64>,
     #[serde(default)]
+    crossing_penalty_factor: Option<f64>,
+    #[serde(default)]
+    edge_plan: Option<bool>,
+    #[serde(default)]
     global: Option<bool>,
     #[serde(default)]
     global_iters: Option<f64>,
@@ -3788,6 +3819,12 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
     }
     if let Some(v) = input.congestion_resolution {
         opts.congestion_resolution = v.max(0.0) as u32;
+    }
+    if let Some(v) = input.crossing_penalty_factor {
+        opts.crossing_penalty_factor = v.max(0.0);
+    }
+    if let Some(v) = input.edge_plan {
+        opts.edge_plan = v;
     }
     if let Some(v) = input.global {
         opts.global_stage = v;
@@ -3914,9 +3951,19 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
             applied_moves,
         ),
     );
+    // Crossings only make sense to mention when the board HAS bundles;
+    // "0 → 0" on a board of 2-pin passives is noise.
+    let crossings_text = if report.initial_crossings > 0 || report.final_crossings > 0 {
+        format!(
+            ", bundle crossings {} → {}",
+            report.initial_crossings, report.final_crossings
+        )
+    } else {
+        String::new()
+    };
 
     let mut text = format!(
-        "auto-place: HPWL {:.1} mm → {:.1} mm ({:+.1} mm), congestion {:.0} → {:.0} ({:+.0} cells); moved {} footprint(s)",
+        "auto-place: HPWL {:.1} mm → {:.1} mm ({:+.1} mm), congestion {:.0} → {:.0} ({:+.0} cells){crossings_text}; moved {} footprint(s)",
         report.initial_hpwl_mm,
         report.final_hpwl_mm,
         report.final_hpwl_mm - report.initial_hpwl_mm,
@@ -3951,6 +3998,8 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
         })),
         "initial_congestion": round2(report.initial_congestion),
         "final_congestion": round2(report.final_congestion),
+        "initial_crossings": report.initial_crossings,
+        "final_crossings": report.final_crossings,
         "iterations": report.iterations,
         "accepted": report.accepted,
         "moved": report.moved,
@@ -3958,6 +4007,145 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
         "applied_rotations": applied_rotations,
         "skipped": report.skipped,
         "errors": errors,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct EdgePlanInput {
+    refs: Vec<String>,
+    /// Accepted for symmetry with `auto-place`; the planner is fully
+    /// deterministic (no RNG), so it only travels into `PlaceOptions` for
+    /// the record and cannot change the result.
+    #[serde(default)]
+    seed: Option<f64>,
+}
+
+/// `edge-plan REF [REF...]` — run ONLY the placer's edge-planning pass and
+/// report the side + position it chose for each ref. Nothing but the named
+/// parts moves, which is what makes this safe to run on a routed board's
+/// connectors before committing to a full auto-place.
+fn tool_placement_edge_plan(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: EdgePlanInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("edge-plan: {e}")))?;
+    let mut opts = pcb_placer::PlaceOptions::default();
+    if let Some(v) = input.seed {
+        opts.seed = v.max(0.0) as u64;
+    }
+
+    // Plan on a clone (the project lock is released immediately) and apply
+    // the result through the regular id-based move/rotate APIs so the UI
+    // sees the moves event by event — same pattern as auto-place.
+    let mut work = project.read().board().clone();
+    // Re-sync `edge_mounted` / `edge_side` from the live library: footprints
+    // bake those flags at palette-spawn time, and a part whose library entry
+    // was flipped to edge-mounted afterwards would otherwise be invisible to
+    // the planner. Push the flags back onto the project too, so DRC and
+    // compact agree with what we just planned against.
+    {
+        let lib = project.library();
+        let mut live_updates: Vec<(pcb_core::Id, bool, Option<pcb_core::EdgeSide>)> = Vec::new();
+        for fp in work.footprints.values_mut() {
+            if fp.key.is_empty() {
+                continue;
+            }
+            let Some(entry) = lib.find(&fp.key) else {
+                continue;
+            };
+            if fp.edge_mounted != entry.edge_mounted || fp.edge_side != entry.edge_side {
+                fp.edge_mounted = entry.edge_mounted;
+                fp.edge_side = entry.edge_side;
+                live_updates.push((fp.id, entry.edge_mounted, entry.edge_side));
+            }
+        }
+        for (id, flag, side) in live_updates {
+            project.set_footprint_edge_mount(id, flag, side);
+        }
+    }
+    let margins: pcb_placer::MarginMap = work
+        .footprints_in_order()
+        .filter_map(|fp| {
+            if fp.key.is_empty() {
+                return None;
+            }
+            let entry = project.library().find(&fp.key)?;
+            let m = entry.placement_margin;
+            if m.top_mm <= 0.0 && m.right_mm <= 0.0 && m.bottom_mm <= 0.0 && m.left_mm <= 0.0 {
+                return None;
+            }
+            Some((fp.id, [m.top_mm, m.right_mm, m.bottom_mm, m.left_mm]))
+        })
+        .collect();
+
+    let report = pcb_placer::plan_edge_sides(&mut work, &input.refs, &opts, &margins)
+        .map_err(|e| ToolError::invalid_params(format!("edge-plan: {e}")))?;
+
+    let live_by_ref: HashMap<String, (pcb_core::Id, pcb_core::Point, f32)> = project
+        .read()
+        .board()
+        .footprints_in_order()
+        .map(|fp| (fp.reference.clone(), (fp.id, fp.position, fp.rotation)))
+        .collect();
+    let mut applied = 0usize;
+    for p in &report.placed {
+        let Some(&(id, live_pos, live_rot)) = live_by_ref.get(&p.reference) else {
+            continue;
+        };
+        let pos_changed = (p.position.x.to_mm() - live_pos.x.to_mm()).abs()
+            + (p.position.y.to_mm() - live_pos.y.to_mm()).abs()
+            >= 0.01;
+        let rot_changed = (p.rotation - live_rot).abs() > 0.5;
+        if pos_changed && project.move_footprint(id, p.position) {
+            applied += 1;
+        }
+        if rot_changed {
+            project.set_footprint_rotation(id, p.rotation);
+        }
+    }
+
+    project.log(
+        ActivityLevel::Info,
+        format!(
+            "placement.edge_plan: {} part(s), cost {:.1} → {:.1}, applied {applied} move(s)",
+            report.placed.len(),
+            report.initial_cost,
+            report.final_cost,
+        ),
+    );
+
+    let mut text = format!(
+        "edge-plan: {} part(s) planned, cost {:.1} → {:.1} mm-equivalent (wirelength + crossings)",
+        report.placed.len(),
+        report.initial_cost,
+        report.final_cost,
+    );
+    for p in &report.placed {
+        text.push_str(&format!(
+            "\n  {} → {} edge, along {:.2} mm, at ({:.2}, {:.2}) mm rot={:.0}",
+            p.reference,
+            p.side.name(),
+            p.along_mm,
+            p.position.x.to_mm(),
+            p.position.y.to_mm(),
+            p.rotation,
+        ));
+    }
+    for s in &report.skipped {
+        text.push_str(&format!("\n  skipped {s}"));
+    }
+
+    Ok(text_result(text).with_data(json!({
+        "planned": report.placed.iter().map(|p| json!({
+            "reference": p.reference,
+            "side": p.side.name(),
+            "along_mm": round2(p.along_mm),
+            "x_mm": round2(p.position.x.to_mm()),
+            "y_mm": round2(p.position.y.to_mm()),
+            "rotation": p.rotation,
+        })).collect::<Vec<_>>(),
+        "initial_cost": round2(report.initial_cost),
+        "final_cost": round2(report.final_cost),
+        "applied_moves": applied,
+        "skipped": report.skipped,
     })))
 }
 
@@ -3980,6 +4168,12 @@ struct CompactInput {
     min_gap_mm: Option<f64>,
     #[serde(default)]
     solder_gap_mm: Option<f64>,
+    /// Nets a candidate may leave unrouted and still count as feasible.
+    #[serde(default)]
+    allow_failed: Option<f64>,
+    /// Router budget per feasibility probe, seconds.
+    #[serde(default)]
+    route_seconds: Option<f64>,
 }
 
 /// Build the `pcb_drc::FabProfile` the compaction DRC gate should use,
@@ -4122,10 +4316,57 @@ fn tool_compact_run(project: &Project, args: &Value) -> Result<Value, ToolError>
     project.replace_routing(outcome.board.traces.clone(), outcome.board.vias.clone());
     project.set_silk_texts(outcome.board.silk_texts.clone());
 
+    // Rule areas and keepouts travelled with the copper during compaction
+    // (an area anchored to a package re-derived from its new pose, a plain
+    // one took the rigid trim delta). Push that geometry back, or the live
+    // board keeps a fine-pitch escape zone sitting where the QFN *used* to
+    // be — silently changing what the router and DRC are allowed to do.
+    let mut moved_areas = 0usize;
+    let live_area_rects: HashMap<String, pcb_core::Rect> = project
+        .read()
+        .board()
+        .rule_areas
+        .iter()
+        .map(|a| (a.name.clone(), a.rect))
+        .collect();
+    for area in &outcome.board.rule_areas {
+        if live_area_rects.get(&area.name) == Some(&area.rect) {
+            continue;
+        }
+        project.set_rule_area(area.clone());
+        moved_areas += 1;
+    }
+    let mut moved_keepouts = 0usize;
+    let live_keepouts: HashMap<pcb_core::Id, Vec<Point>> = project
+        .read()
+        .board()
+        .keepouts
+        .iter()
+        .map(|k| (k.id, k.polygon.clone()))
+        .collect();
+    for k in &outcome.board.keepouts {
+        if live_keepouts.get(&k.id) == Some(&k.polygon) {
+            continue;
+        }
+        // No in-place keepout update API; remove + re-add keeps the id
+        // (`Board::add_keepout` preserves it) so references stay valid.
+        if project.remove_keepout(k.id) {
+            project.add_keepout(k.clone());
+            moved_keepouts += 1;
+        }
+    }
+    let geometry_tail = match (moved_areas, moved_keepouts) {
+        (0, 0) => String::new(),
+        (a, 0) => format!(", {a} rule area(s) re-fitted"),
+        (0, k) => format!(", {k} keepout(s) moved"),
+        (a, k) => format!(", {a} rule area(s) re-fitted, {k} keepout(s) moved"),
+    };
+
+    let conn = compact_connectivity_text(m);
     project.log(
         ActivityLevel::Info,
         format!(
-            "compact: {:.1} × {:.1} mm ({:.0} mm²) → {:.1} × {:.1} mm ({:.0} mm²), −{:.1}% area; {} traces, {} vias, 0 failed nets, 0 DRC errors; {} checks, moved {}",
+            "compact: {:.1} × {:.1} mm ({:.0} mm²) → {:.1} × {:.1} mm ({:.0} mm²), −{:.1}% area; {} traces, {} vias, {conn}; {} checks, moved {}{geometry_tail}",
             m.old_w_mm, m.old_h_mm, m.old_area_mm2,
             m.new_w_mm, m.new_h_mm, m.new_area_mm2,
             m.area_reduction_pct, m.trace_count, m.via_count, m.checks, applied_moves,
@@ -4133,12 +4374,26 @@ fn tool_compact_run(project: &Project, args: &Value) -> Result<Value, ToolError>
     );
 
     Ok(text_result(format!(
-        "Compacted: {:.1} × {:.1} mm → {:.1} × {:.1} mm ({:.0} → {:.0} mm², −{:.1}% area); {} traces, {} vias, 0 failed nets, 0 DRC errors (tried {} candidate size(s))",
+        "Compacted: {:.1} × {:.1} mm → {:.1} × {:.1} mm ({:.0} → {:.0} mm², −{:.1}% area); {} traces, {} vias, {conn} (tried {} candidate size(s)){geometry_tail}",
         m.old_w_mm, m.old_h_mm, m.new_w_mm, m.new_h_mm,
         m.old_area_mm2, m.new_area_mm2, m.area_reduction_pct,
         m.trace_count, m.via_count, m.checks,
     ))
     .with_data(compact_data(m, true)))
+}
+
+/// Connectivity clause of the compact report. Says "0 failed nets" on the
+/// strict path; when `allow_failed` let some through it names the actual
+/// count, so the text never implies a fully routed board.
+fn compact_connectivity_text(m: &crate::compact::CompactMetrics) -> String {
+    if m.failed_nets == 0 {
+        "0 failed nets, 0 DRC errors".to_string()
+    } else {
+        format!(
+            "{} failed net(s) left unrouted (allow_failed), 0 clearance/other DRC errors",
+            m.failed_nets
+        )
+    }
 }
 
 /// Translate the parsed `CompactInput` into `CompactOptions`, keeping the
@@ -4163,6 +4418,16 @@ fn compact_options_from(input: &CompactInput) -> crate::compact::CompactOptions 
     }
     if let Some(v) = input.solder_gap_mm {
         opts.solder_gap_mm = v.max(0.0);
+    }
+    if let Some(v) = input.allow_failed {
+        opts.allow_failed = v.max(0.0) as usize;
+    }
+    // A zero/negative budget would make every probe time out instantly, so
+    // it is ignored rather than honoured.
+    if let Some(v) = input.route_seconds {
+        if v > 0.0 {
+            opts.route_seconds = v;
+        }
     }
     opts
 }
@@ -5551,6 +5816,9 @@ fn rule_area_json(a: &pcb_core::RuleArea) -> Value {
         "via_drill_mm": a.via_drill_mm,
         "via_diameter_mm": a.via_diameter_mm,
         "priority": a.priority,
+        // Present only for `rule-area-around`: the rect tracks this part.
+        "anchor_ref": a.anchor_ref,
+        "anchor_margin_mm": a.anchor_margin_mm,
     })
 }
 
@@ -5608,8 +5876,13 @@ fn tool_rule_area_set(project: &Project, args: &Value) -> Result<Value, ToolErro
 fn tool_rule_area_around(project: &Project, args: &Value) -> Result<Value, ToolError> {
     let input: RuleAreaAroundInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolError::invalid_params(format!("rule-area-around: {e}")))?;
-    let margin = Length::from_mm(input.margin_mm.unwrap_or(1.0));
-    let rect = {
+    let margin_mm = input.margin_mm.unwrap_or(1.0);
+    // Anchored to the footprint: the rect is a DERIVED value, so anything
+    // that later moves the part (compaction re-places every footprint and
+    // then slides all copper against the edges) re-derives it instead of
+    // leaving the zone behind. `rule-area` with literal coordinates stays
+    // un-anchored — the user asked for that spot on the board.
+    let mut area = {
         let snap = project.read();
         let fp = snap
             .board()
@@ -5621,16 +5894,13 @@ fn tool_rule_area_around(project: &Project, args: &Value) -> Result<Value, ToolE
                     input.reference
                 ))
             })?;
-        fp.bounds()
-            .ok_or_else(|| {
-                ToolError::invalid_params(format!(
-                    "rule-area-around: `{}` has no pads to bound",
-                    input.reference
-                ))
-            })?
-            .expand(margin)
+        pcb_core::RuleArea::around_footprint(input.name, fp, margin_mm).ok_or_else(|| {
+            ToolError::invalid_params(format!(
+                "rule-area-around: `{}` has no pads to bound",
+                input.reference
+            ))
+        })?
     };
-    let mut area = pcb_core::RuleArea::new(input.name, rect);
     area.layers = rule_area_layers(input.layers.as_deref(), "rule-area-around")?;
     area.clearance_mm = input.clearance_mm;
     area.trace_width_mm = input.trace_width_mm;
