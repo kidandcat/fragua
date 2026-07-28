@@ -111,7 +111,13 @@ fn opts(order: &[&str], negotiate: bool) -> RouteOptions {
         cell: Length::from_mm(0.25),
         trace_width: Length::from_mm(0.25),
         clearance: Length::from_mm(0.4),
-        max_seconds: Some(30.0),
+        // 120 s, not 30: CI runs these unoptimised on shared runners, where
+        // the negotiation fixpoint on this tiny board can outlive 30 s. The
+        // tests assert convergence properties, so the budget must sit far
+        // above the slowest honest convergence, or truncation fabricates
+        // both failures and non-determinism. Optimised builds finish in
+        // seconds either way.
+        max_seconds: Some(120.0),
         // Vias are made prohibitively expensive on purpose: without this the
         // gap is not a capacity-1 resource at all — a net simply dives to the
         // bottom layer, crosses underneath the other trace, and comes back
