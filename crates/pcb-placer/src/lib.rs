@@ -30,8 +30,13 @@ use std::collections::HashMap;
 
 use pcb_core::{Board, Footprint, Id, Length, Point, Rect};
 
+mod bundle;
+mod decouple;
+mod edge;
 mod global;
 
+pub use bundle::bundle_crossings;
+pub use edge::{plan_edge_sides, EdgePlacement, EdgePlanReport};
 pub use global::GlobalReport;
 
 /// Per-footprint placement margin in mm, in the footprint's LOCAL
@@ -187,6 +192,26 @@ pub struct PlaceOptions {
     /// Global stage stops once the fraction of movable charge above
     /// `target_density` drops below this. ePlace-conventional ~0.08.
     pub target_overflow: f64,
+    /// Score weight on the bundle-crossing term, in mm-equivalent per
+    /// crossing. A "crossing" is one pair of wires in a 1:1 bundle
+    /// (header ↔ IC, IC ↔ IC) whose order along one part disagrees with
+    /// their order along the other — see `bundle.rs`. HPWL cannot see
+    /// this at all (both orders have the same bounding box), yet on a
+    /// 2-layer board each crossing costs a via pair and a bottom-layer
+    /// detour, right where the fine-pitch escape ring has no room.
+    /// Default 2.0: one crossing is worth about as much as 2 mm of wire,
+    /// so a fully criss-crossed 6-wire bundle (15 crossings) costs 30 mm
+    /// — enough to buy a 90° rotation of the connector, not enough to
+    /// drag parts across the board. 0 disables the term.
+    pub crossing_penalty_factor: f64,
+    /// Run the edge-planning pass (which board edge each movable
+    /// edge-mounted part goes to) before the global stage. On by default.
+    ///
+    /// Only consulted when `global_stage` is on: a caller that turned the
+    /// structural stage off (compaction probing many outlines) starts from
+    /// a layout whose edge assignment is already settled and wants it
+    /// preserved, not re-decided on every candidate.
+    pub edge_plan: bool,
     /// Clearance non-edge-mounted parts keep from the outline, mm.
     /// Default 0.3 covers the DRC edge check (0.2 default, 0.3 with the
     /// common fab profiles) so auto-placed pads never land within
@@ -230,6 +255,10 @@ impl Default for PlaceOptions {
             // empirically enough to discourage piling nets in one
             // corridor without dominating the score.
             congestion_penalty_factor: 1.0,
+            // 2 mm-equivalent per crossing — see the field doc for why
+            // this size and not larger.
+            crossing_penalty_factor: 2.0,
+            edge_plan: true,
             global_stage: true,
             global_iterations: 600,
             density_bins: 64,
@@ -259,6 +288,13 @@ pub struct PlaceReport {
     pub initial_congestion: f64,
     /// Congestion overflow of the best placement.
     pub final_congestion: f64,
+    /// Bundle crossings at the start of the SA-visible run (after the
+    /// edge-planning / edge-snap pre-passes, same baseline as
+    /// `initial_hpwl_mm`). 0 = every 1:1 bundle on the board is in
+    /// matching pin order at both ends.
+    pub initial_crossings: usize,
+    /// Bundle crossings of the final placement.
+    pub final_crossings: usize,
     /// Number of SA candidate moves tried.
     pub iterations: usize,
     /// Of those, how many were applied (improving moves + accepted-uphill).
@@ -310,11 +346,24 @@ pub fn place(
             global: None,
             initial_congestion: 0.0,
             final_congestion: 0.0,
+            initial_crossings: 0,
+            final_crossings: 0,
             iterations: 0,
             accepted: 0,
             moved: Vec::new(),
             skipped,
         });
+    }
+
+    // Stage 0: edge planning. WHICH edge an edge-mounted connector goes
+    // to is the most consequential decision on the board and the SA
+    // cannot revisit it — every move off the current edge is a hard
+    // edge-mount violation, so a part that starts on the wrong side can
+    // only slide along the wrong side forever. Decide it up front, on the
+    // same objective (weighted HPWL + bundle crossings), and let the SA
+    // refine the along-edge position afterwards. See `edge.rs`.
+    if opts.edge_plan && opts.global_stage {
+        let _ = edge::plan_movable_edges(board, &movable_ids, opts, margins, outline);
     }
 
     // Edge-mounted connectors (screw terminals, USB modules, headers…)
@@ -354,6 +403,7 @@ pub fn place(
     } else {
         0.0
     };
+    let initial_crossings = bundle::bundle_crossings(board);
 
     // Stage 1: electrostatic global placement. Finds the layout
     // structure analytically; may leave small residual overlaps that
@@ -406,7 +456,8 @@ pub fn place(
     let sa_start_hpwl = total_hpwl(board);
     let initial_score = sa_start_hpwl
         + opts.gap_penalty_factor * total_gap_penalty(board, opts.min_gap_mm, margins)
-        + opts.congestion_penalty_factor * sa_start_congestion;
+        + opts.congestion_penalty_factor * sa_start_congestion
+        + opts.crossing_penalty_factor * bundle::bundle_crossings(board) as f64;
     let mut current_score = initial_score;
     let mut best_score = initial_score;
     let mut best_positions: HashMap<Id, Point> = movable_ids
@@ -516,9 +567,11 @@ pub fn place(
 
         // Score delta: HPWL is local to the nets this footprint
         // touches; the gap penalty is local to the pairs that touch
-        // this footprint; the congestion proxy depends on every net's
-        // pad bbox overlapping. Recompute the relevant pieces before
-        // and after applying the move.
+        // this footprint; the bundle-crossing count is local to the
+        // bundles that have this footprint at one end (no other pair's
+        // order can change when a single part moves); the congestion
+        // proxy depends on every net's pad bbox overlapping. Recompute
+        // the relevant pieces before and after applying the move.
         let nets = nets_of_id.get(&probe.id).cloned().unwrap_or_default();
         let before_hpwl: f64 = nets.iter().map(|n| net_hpwl(board, n)).sum();
         let before_pen = footprint_gap_penalty(board, probe.id, opts.min_gap_mm, margins);
@@ -526,6 +579,11 @@ pub fn place(
             congestion_overflow(board, outline, opts.congestion_resolution)
         } else {
             0.0
+        };
+        let before_cross = if opts.crossing_penalty_factor > 0.0 {
+            bundle::footprint_bundle_crossings(board, probe.id)
+        } else {
+            0
         };
         // Apply the move temporarily to compute the new HPWL on the
         // affected nets.
@@ -537,9 +595,15 @@ pub fn place(
         } else {
             0.0
         };
+        let after_cross = if opts.crossing_penalty_factor > 0.0 {
+            bundle::footprint_bundle_crossings(board, probe.id)
+        } else {
+            0
+        };
         let delta = (after_hpwl - before_hpwl)
             + opts.gap_penalty_factor * (after_pen - before_pen)
-            + opts.congestion_penalty_factor * (after_cong - before_cong);
+            + opts.congestion_penalty_factor * (after_cong - before_cong)
+            + opts.crossing_penalty_factor * (after_cross as f64 - before_cross as f64);
 
         let accept = if delta <= 0.0 {
             true
@@ -579,13 +643,14 @@ pub fn place(
         }
     }
 
-    // Net-affinity pull for small passives (caps/resistors/LEDs): walk
-    // each movable 2-pad part toward the centroid of FIXED pads on its
-    // nets (typically the IC pin it decouples). SA minimises global
-    // HPWL but freely scatters 0603s; this one-shot snap recovers the
-    // "cap next to the power pin" layout humans expect without fighting
-    // the global stage.
-    pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
+    // Decoupling ring for small passives (caps/resistors/LEDs): give each
+    // movable 2-pad part its OWN anchor pin on a same-net IC/connector pad
+    // and seat it just outside that pad, pad-facing-pad. SA minimises
+    // global HPWL but freely scatters 0603s, and a centroid pull piles
+    // every cap on one rail into the middle of the package; this one-shot
+    // pass recovers the "one cap per power pin, short loop" layout humans
+    // expect without fighting the global stage. See `decouple.rs`.
+    decouple::pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
 
     let final_hpwl = total_hpwl(board);
     let final_congestion = if opts.congestion_resolution > 0 {
@@ -593,6 +658,7 @@ pub fn place(
     } else {
         0.0
     };
+    let final_crossings = bundle::bundle_crossings(board);
 
     let mut moved: Vec<String> = Vec::new();
     for id in &movable_ids {
@@ -613,138 +679,13 @@ pub fn place(
         global: global_report,
         initial_congestion,
         final_congestion,
+        initial_crossings,
+        final_crossings,
         iterations: opts.max_iterations,
         accepted,
         moved,
         skipped,
     })
-}
-
-/// Pull small multi-pin passives toward the centroid of non-passive pads
-/// on the same nets. Skips edge-mounted parts and anything with more than
-/// 4 pads (ICs / connectors stay where SA left them).
-fn pull_passives_to_anchors(
-    board: &mut Board,
-    movable_ids: &[Id],
-    outline: Rect,
-    margins: &MarginMap,
-    opts: &PlaceOptions,
-) {
-    let movable_set: std::collections::HashSet<Id> = movable_ids.iter().copied().collect();
-    let hard_clearance = opts.min_clearance_mm.max(opts.solder_gap_mm);
-
-    // Snapshot passive candidates first (refs + nets) so we don't borrow
-    // board while mutating.
-    let mut candidates: Vec<(Id, Vec<String>)> = Vec::new();
-    for id in movable_ids {
-        let Some(fp) = board.footprints.get(id) else {
-            continue;
-        };
-        if fp.edge_mounted || fp.pads.len() > 4 || fp.pads.len() < 2 {
-            continue;
-        }
-        let nets: Vec<String> = fp
-            .pads
-            .iter()
-            .filter_map(|p| p.net.clone())
-            .collect();
-        if nets.is_empty() {
-            continue;
-        }
-        candidates.push((*id, nets));
-    }
-
-    for (id, nets) in candidates {
-        // Anchor pads: prefer FIXED / multi-pin footprints (ICs), not
-        // other passives that would just chase each other.
-        let mut ax = 0.0_f64;
-        let mut ay = 0.0_f64;
-        let mut n = 0.0_f64;
-        for fp in board.footprints_in_order() {
-            if fp.id == id {
-                continue;
-            }
-            let is_passive = movable_set.contains(&fp.id) && fp.pads.len() <= 4;
-            if is_passive {
-                continue;
-            }
-            for pad in &fp.pads {
-                let Some(net) = pad.net.as_deref() else {
-                    continue;
-                };
-                if !nets.iter().any(|n| n == net) {
-                    continue;
-                }
-                let c = fp.pad_world_center(pad);
-                ax += c.x.to_mm();
-                ay += c.y.to_mm();
-                n += 1.0;
-            }
-        }
-        if n < 1.0 {
-            continue;
-        }
-        let target = Point::new(Length::from_mm(ax / n), Length::from_mm(ay / n));
-
-        // Try the target, then a few radial offsets if the exact spot is
-        // blocked (common next to a dense QFN pad ring).
-        let offsets: [(f64, f64); 9] = [
-            (0.0, 0.0),
-            (1.5, 0.0),
-            (-1.5, 0.0),
-            (0.0, 1.5),
-            (0.0, -1.5),
-            (1.2, 1.2),
-            (1.2, -1.2),
-            (-1.2, 1.2),
-            (-1.2, -1.2),
-        ];
-        let original = board.footprints.get(&id).map(|f| f.position);
-        let Some(original) = original else {
-            continue;
-        };
-        for (dx, dy) in offsets {
-            let candidate = Point::new(
-                Length::from_mm(target.x.to_mm() + dx),
-                Length::from_mm(target.y.to_mm() + dy),
-            );
-            // Apply tentatively.
-            if let Some(fp) = board.footprints.get_mut(&id) {
-                fp.position = candidate;
-            }
-            let Some(probe) = board.footprints.get(&id).cloned() else {
-                continue;
-            };
-            if !pads_inside_outline(&probe, outline, opts.edge_clearance_mm) {
-                if let Some(fp) = board.footprints.get_mut(&id) {
-                    fp.position = original;
-                }
-                continue;
-            }
-            let margin = margin_for_fp(&probe, margins);
-            if board.body_outline_violation(&probe, margin).is_some() {
-                if let Some(fp) = board.footprints.get_mut(&id) {
-                    fp.position = original;
-                }
-                continue;
-            }
-            let gap = probe_min_gap(board, &probe, margins);
-            if gap < hard_clearance {
-                if let Some(fp) = board.footprints.get_mut(&id) {
-                    fp.position = original;
-                }
-                continue;
-            }
-            if board.edge_mount_violation(&probe).is_some() {
-                if let Some(fp) = board.footprints.get_mut(&id) {
-                    fp.position = original;
-                }
-                continue;
-            }
-            // Accepted — leave position as candidate.
-            break;
-        }
-    }
 }
 
 /// Sum of **raw** (unweighted) HPWL across every multi-pad net, mm —
@@ -868,6 +809,17 @@ fn snap_delta_to_nearest_edge(fp: &Footprint, outline: pcb_core::Rect) -> Option
 /// What it captures is the basic "did the placer cluster too many
 /// signals through one bottleneck" failure mode that pure HPWL
 /// minimisation produces. Cheap to compute (`O(N_nets` × cells)).
+///
+/// Not every cell is worth the same, though. Cells in the **escape
+/// annulus** of a fine-pitch package — the ring just outside a QFN/QFP
+/// whose pad pitch is under `FINE_PITCH_MM` — count DOUBLE. That ring is
+/// the scarcest routing resource on a 2-layer board: every pad under the
+/// package has to reach it (a 0.4 mm pitch pad cannot be escaped on the
+/// surface, so each one spends a dogbone + via there), and a router that
+/// runs out of room in it strands pads outright, which is exactly the
+/// failure the stress board keeps hitting. Anything the placer parks near
+/// a fine-pitch part is therefore twice as expensive as the same clutter
+/// out in open board.
 fn congestion_overflow(board: &Board, outline: pcb_core::Rect, res: u32) -> f64 {
     if res == 0 {
         return 0.0;
@@ -923,10 +875,92 @@ fn congestion_overflow(board: &Board, outline: pcb_core::Rect, res: u32) -> f64 
         }
     }
 
+    // Per-cell weight: 2 inside a fine-pitch escape annulus, 1 elsewhere.
+    // Computed once per call from pad geometry (the min pad pitch of a
+    // footprint is invariant under placement, so this is stable), and
+    // sampled at cell centres — a coarse test for a coarse grid.
+    let mut weight = vec![1.0f64; (res * res) as usize];
+    for fp in board.footprints_in_order() {
+        if !is_fine_pitch(fp) {
+            continue;
+        }
+        let Some(b) = fp.bounds() else { continue };
+        let (bx0, by0) = (b.min.x.to_mm(), b.min.y.to_mm());
+        let (bx1, by1) = (b.max.x.to_mm(), b.max.y.to_mm());
+        let (ax0, ay0) = (bx0 - ESCAPE_ANNULUS_MM, by0 - ESCAPE_ANNULUS_MM);
+        let (ax1, ay1) = (bx1 + ESCAPE_ANNULUS_MM, by1 + ESCAPE_ANNULUS_MM);
+        let c0 = (((ax0 - ox) / cell_w).floor() as i32).clamp(0, res_i - 1);
+        let r0 = (((ay0 - oy) / cell_h).floor() as i32).clamp(0, res_i - 1);
+        let c1 = (((ax1 - ox) / cell_w).floor() as i32).clamp(0, res_i - 1);
+        let r1 = (((ay1 - oy) / cell_h).floor() as i32).clamp(0, res_i - 1);
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                let px = ox + (f64::from(c) + 0.5) * cell_w;
+                let py = oy + (f64::from(r) + 0.5) * cell_h;
+                // Annulus = inflated bbox MINUS the bbox itself: under the
+                // package the router has no channel to fight over anyway
+                // (the pads and the thermal pad own that copper).
+                let in_outer = px >= ax0 && px <= ax1 && py >= ay0 && py <= ay1;
+                let in_body = px >= bx0 && px <= bx1 && py >= by0 && py <= by1;
+                if in_outer && !in_body {
+                    weight[(r * res_i + c) as usize] = FINE_PITCH_CELL_WEIGHT;
+                }
+            }
+        }
+    }
+
     counts
         .iter()
-        .map(|&n| if n > 1 { f64::from(n - 1) } else { 0.0 })
+        .zip(weight.iter())
+        .map(|(&n, &w)| if n > 1 { f64::from(n - 1) * w } else { 0.0 })
         .sum()
+}
+
+/// Pad pitch (mm) under which a package needs vias to escape: at 0.4-0.5
+/// mm a 0.25 mm trace plus clearance no longer fits between two pads, so
+/// every pad spends a dogbone + via in the ring around the body.
+const FINE_PITCH_MM: f64 = 0.5;
+
+/// How far out the escape ring reaches, mm. Two millimetres is about
+/// where the router's dogbone ranks + their exit lanes end up on a
+/// 0.4 mm QFN (see `pcb-router`'s slot lattice).
+const ESCAPE_ANNULUS_MM: f64 = 2.0;
+
+/// Weight multiplier for congestion inside an escape annulus.
+const FINE_PITCH_CELL_WEIGHT: f64 = 2.0;
+
+/// Pairs of pads we are willing to compare when measuring a footprint's
+/// minimum pitch. A bound, not a rule: fine-pitch packages exit on the
+/// first adjacent pair, so the cap only ever bites on huge coarse parts
+/// (a 100-pin header), where the answer is "not fine pitch" anyway.
+const PITCH_SCAN_PAIRS: usize = 4096;
+
+/// True if any two pads of `fp` are closer (centre to centre) than
+/// `FINE_PITCH_MM`. Rotation- and translation-invariant, so it can be
+/// recomputed freely during the search without changing between moves.
+/// Cheap in the case that matters: a QFN's first pad pair already
+/// answers yes. Parts with < 4 pads are never fine pitch in this
+/// sense — a 0402's own two pads are close together but there is no
+/// escape ring to protect.
+fn is_fine_pitch(fp: &Footprint) -> bool {
+    if fp.pads.len() < 4 {
+        return false;
+    }
+    let mut pairs = 0usize;
+    for (i, a) in fp.pads.iter().enumerate() {
+        for b in fp.pads.iter().skip(i + 1) {
+            pairs += 1;
+            if pairs > PITCH_SCAN_PAIRS {
+                return false;
+            }
+            let dx = a.offset.x.to_mm() - b.offset.x.to_mm();
+            let dy = a.offset.y.to_mm() - b.offset.y.to_mm();
+            if dx.hypot(dy) < FINE_PITCH_MM {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// AABB gap in mm: positive = clear separation, negative = overlap
