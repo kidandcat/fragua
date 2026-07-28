@@ -62,3 +62,12 @@ many_single_char_names = "allow"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Fast iteration profile for campaign measurements: near-release runtime
+# without LTO/single-CGU link costs. Final published numbers still use
+# --release.
+[profile.bench-dev]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
