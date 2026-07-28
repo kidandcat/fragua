@@ -1,14 +1,16 @@
 //! Fine-pitch QFN regression tests.
 //!
-//! These pin down the three properties the RP2040 stress campaign needs:
+//! These pin down the properties the RP2040 stress campaign needs:
 //! a 0.4 mm-pitch pad that cannot host a via-in-pad still gets a DOGBONE
 //! escape (barrel outside the pad, fed by a copper stub), the wall-clock
-//! budget is actually honoured, and a full QFN-56 board routes to real
-//! copper inside the budget instead of hanging.
+//! budget is actually honoured, a full QFN-56 board routes to real
+//! copper inside the budget instead of hanging, the organic post-pass
+//! never trades a rule area's clearance for a smoother line, and the
+//! driver stops on a fixpoint rather than on the clock.
 
 use std::time::Instant;
 
-use pcb_core::{Board, CopperLayer, Footprint, Id, Length, Pad, Point, Rect};
+use pcb_core::{Board, CopperLayer, Footprint, Id, Length, Pad, Point, Rect, RuleArea};
 use pcb_router::{route, Outcome, RouteOptions};
 
 /// The script layer's defaults — `RouteOptions::default()` uses a 0.40 mm
@@ -233,5 +235,174 @@ fn qfn56_routes_real_copper_inside_the_budget() {
         report.fanout_via_count >= 10,
         "fanout produced only {} via(s)",
         report.fanout_via_count
+    );
+}
+
+/// Clearance errors on ROUTED copper. Pad-vs-pad is deliberately out of
+/// scope: that is the fixture's own placement, which no router pass can
+/// change — these tests are about what the routing writes.
+fn trace_clearance_errors(board: &Board) -> Vec<String> {
+    let drc = pcb_drc::run(board, &pcb_drc::DrcOptions::default());
+    drc.violations
+        .iter()
+        .filter(|v| v.severity == pcb_drc::Severity::Error)
+        .filter(|v| {
+            matches!(
+                v.kind,
+                pcb_drc::ViolationKind::TraceTraceClearance
+                    | pcb_drc::ViolationKind::TracePadClearance
+            )
+        })
+        .map(|v| format!("{:?}: {}", v.kind, v.message))
+        .collect()
+}
+
+/// End-to-end guard for the v8 organic bug: on a fine-pitch package
+/// inside a tight rule area, turning the smoothing pass ON must not cost
+/// a single clearance error. The mechanism itself is pinned by the unit
+/// test `organic::tests::smoothing_never_widens_a_chain_into_a_violation`
+/// (the escape stubs the fanout deliberately narrows used to be rewritten
+/// at the net's class width, un-checked); this one is the receipt that
+/// the whole pipeline agrees with DRC on a real fine-pitch board.
+#[test]
+fn organic_smoothing_keeps_the_rule_area_clearance() {
+    let mut board = qfn_board(8, 0.40, 0.50, 0.20);
+    // Same shape as the stress board's `fine` area: a tight clearance and
+    // a small via, declared around the fine-pitch package.
+    let u1 = board
+        .footprints_in_order()
+        .find(|f| f.reference == "U1")
+        .expect("U1")
+        .clone();
+    let mut area = RuleArea::around_footprint("fine", &u1, 1.5).expect("area");
+    area.clearance_mm = Some(0.12);
+    area.via_drill_mm = Some(0.20);
+    area.via_diameter_mm = Some(0.45);
+    board.rule_areas.push(area);
+
+    let opts = RouteOptions {
+        organic: true,
+        ..script_opts(60.0)
+    };
+    let report = route(&mut board, &opts);
+    assert!(
+        report.escape_stub_count > 0,
+        "no fine-pitch escape stubs — the repro needs narrowed stubs: {report:?}"
+    );
+    assert!(
+        report.organic.is_some(),
+        "organic pass did not run — the assertion below would be vacuous: {report:?}"
+    );
+    let errors = trace_clearance_errors(&board);
+    assert!(
+        errors.is_empty(),
+        "organic pass produced {} clearance error(s):\n{}",
+        errors.len(),
+        errors.join("\n")
+    );
+}
+
+/// The driver stops when it has nothing left to try, not when the clock
+/// runs out.
+///
+/// The board carries one net whose two pads sit on opposite sides of a
+/// solid through-hole wall: no router will ever connect it, on any
+/// stackup, with any budget. Given a budget far larger than the work the
+/// driver must come back early with `budget_hit` clear, and it must
+/// return the SAME board for a small budget and a huge one — a fixpoint
+/// is budget-independent by construction, the wall clock only truncates.
+#[test]
+fn driver_stops_on_fixpoint_not_on_the_clock() {
+    fn walled_board() -> Board {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+        ));
+        // The wall: through-hole copper on every layer, 0.70 mm pads on a
+        // 0.75 mm pitch, so the 0.05 mm gaps cannot take a trace at any
+        // clearance the board declares. It overhangs the outline at both
+        // ends so nothing sneaks around it either.
+        let mut wall = Vec::new();
+        let mut y = -0.5;
+        let mut n = 0;
+        while y <= 20.5 {
+            n += 1;
+            let mut p = pad(&format!("{n}"), 0.0, y, 0.70, 0.70, Some("WALL"));
+            p.drill = Some(Length::from_mm(0.3));
+            wall.push(p);
+            y += 0.75;
+        }
+        board.add_footprint(footprint("W1", 10.0, 0.0, wall));
+        board.add_footprint(footprint(
+            "J1",
+            3.0,
+            10.0,
+            vec![pad("1", 0.0, 0.0, 0.9, 0.9, Some("BLOCKED"))],
+        ));
+        board.add_footprint(footprint(
+            "J2",
+            17.0,
+            10.0,
+            vec![pad("1", 0.0, 0.0, 0.9, 0.9, Some("BLOCKED"))],
+        ));
+        // A couple of nets that route trivially, so the pass has work
+        // to do and "no NEW net routed" is a real statement.
+        for (i, y) in [3.0f64, 17.0].into_iter().enumerate() {
+            board.add_footprint(footprint(
+                &format!("R{i}"),
+                3.0,
+                y,
+                vec![pad("1", 0.0, 0.0, 0.9, 0.9, Some(&format!("EASY{i}")))],
+            ));
+            board.add_footprint(footprint(
+                &format!("R{i}b"),
+                6.0,
+                y,
+                vec![pad("1", 0.0, 0.0, 0.9, 0.9, Some(&format!("EASY{i}")))],
+            ));
+        }
+        board
+    }
+
+    let budget = 600.0;
+    let mut board = walled_board();
+    let t0 = Instant::now();
+    let report = route(&mut board, &script_opts(budget));
+    let elapsed = t0.elapsed().as_secs_f64();
+
+    let failed: Vec<&str> = report
+        .per_net
+        .iter()
+        .filter_map(|(n, o)| matches!(o, Outcome::Failed { .. }).then_some(n.as_str()))
+        .collect();
+    assert_eq!(
+        failed,
+        ["BLOCKED"],
+        "the repro needs exactly the walled net to fail: {report:?}"
+    );
+    assert!(
+        !report.budget_hit,
+        "driver ran out the {budget}s clock instead of converging ({elapsed:.1}s, {} pass(es))",
+        report.iterations
+    );
+    assert!(
+        elapsed < 60.0,
+        "converged only after {elapsed:.1}s of a {budget}s budget"
+    );
+    assert!(report.iterations >= 1, "no pass reported: {report:?}");
+
+    // Budget-independence: the fixpoint, not the clock, decided the
+    // answer, so a 30× smaller budget must produce the same one.
+    let mut small = walled_board();
+    let small_report = route(&mut small, &script_opts(budget / 30.0));
+    assert!(!small_report.budget_hit, "small budget was truncated");
+    assert_eq!(
+        report.iterations, small_report.iterations,
+        "round count depends on the budget"
+    );
+    assert_eq!(
+        report.board_trace_count, small_report.board_trace_count,
+        "board depends on the budget"
     );
 }

@@ -38,7 +38,9 @@ fn opts(sch: &Schematic, secs: f64) -> RouteOptions {
         via_drill: Length::from_mm(0.30),
         via_diameter: Length::from_mm(0.60),
         schematic: Some(Arc::new(sch.clone())),
-        organic: true,
+        // `O8_ORGANIC=0` isolates the smoothing pass: the same route with
+        // and without it is how an organic-only DRC regression is caught.
+        organic: std::env::var("O8_ORGANIC").as_deref() != Ok("0"),
         organic_fillet_mm: 3.0,
         max_seconds: Some(secs),
         // `O8_NEG=1` turns on PathFinder negotiation, whose corridor
@@ -55,11 +57,16 @@ fn opts(sch: &Schematic, secs: f64) -> RouteOptions {
 #[test]
 #[ignore]
 fn stress_board_probe() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../stress/rp2040-minimal.fragua"
-    );
-    let bytes = std::fs::read(path).expect("stress board");
+    // `O8_BOARD` points the probe at any other project file (e.g. a
+    // placement variant under `stress/`) without cloning the harness.
+    let path = std::env::var("O8_BOARD").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../stress/rp2040-minimal.fragua"
+        )
+        .to_string()
+    });
+    let bytes = std::fs::read(&path).expect("stress board");
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("parse");
     let pf = ProjectFile {
         board: serde_json::from_value(v["board"].clone()).expect("board"),
@@ -114,6 +121,18 @@ fn stress_board_probe() {
         rep.budget_hit
     );
     println!("FAILED: {}", failed.join(", "));
+    // Width histogram: the fanout narrows a stub deliberately to fit a
+    // fine-pitch escape, so a post-pass that loses those widths shows up
+    // here as the narrow buckets collapsing into the class width.
+    let mut widths: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    for t in &board.traces {
+        *widths.entry(t.width.0).or_default() += 1;
+    }
+    let hist: Vec<String> = widths
+        .iter()
+        .map(|(w, n)| format!("{:.3}mm×{n}", Length(*w).to_mm()))
+        .collect();
+    println!("TRACE WIDTHS {}", hist.join(" "));
     // The acceptance metric the script reports as "N/39 net(s) fully
     // connected": a net counts when DRC finds no unconnected pad on it.
     // Same source of truth (`pcb_drc::run`), so the probe and the server

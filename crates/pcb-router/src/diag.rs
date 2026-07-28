@@ -184,11 +184,16 @@ fn blame(grid: &Grid, p: GridPoint, net_id: u32, r: i32, order: &[String]) -> Ve
 #[test]
 #[ignore]
 fn escape_autopsy() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../stress/rp2040-minimal.fragua"
-    );
-    let bytes = std::fs::read(path).expect("stress board");
+    // `DIAG_BOARD` autopsies any other project file (a placement variant,
+    // a reduced repro) with the same grid the routing pass builds.
+    let path = std::env::var("DIAG_BOARD").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../stress/rp2040-minimal.fragua"
+        )
+        .to_string()
+    });
+    let bytes = std::fs::read(&path).expect("stress board");
     let v: serde_json::Value = serde_json::from_slice(&bytes).expect("parse");
     let mut board: Board = serde_json::from_value(v["board"].clone()).expect("board");
     let sch: Schematic = serde_json::from_value(v["schematic"].clone()).expect("schematic");

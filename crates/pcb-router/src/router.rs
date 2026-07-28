@@ -524,8 +524,10 @@ pub struct RouteReport {
     /// Sum of `lower_bound_mm` over the same set.
     pub total_lower_bound_mm: f64,
     /// How many full rip-up-and-reroute passes the driver performed
-    /// before settling on this report. 1 = single pass (no RR&R needed
-    /// or RR&R didn't help); 2..=`MAX_RR_ITERATIONS` = RR&R kicked in.
+    /// before settling on this report — the REAL round count, not a
+    /// quota: the loop runs until it reaches a fixpoint or the budget
+    /// truncates it. 1 = a single pass was enough (or the first round
+    /// already hit the fixpoint).
     pub iterations: usize,
     /// Plain-text suggestions for the agent: which footprints to move
     /// to fix the still-failing nets. Generated post-hoc from the best
@@ -535,12 +537,6 @@ pub struct RouteReport {
     /// was routed.
     pub organic: Option<crate::organic::OrganicReport>,
 }
-
-/// Hard cap on rip-up-and-reroute passes. Each pass clears all routing
-/// and re-runs the per-net A* loop with a different ordering, so the
-/// cost is roughly linear in this constant. 3 is empirically enough to
-/// recover most fixable failures without exploding wall-clock time.
-const MAX_RR_ITERATIONS: usize = 3;
 
 /// A net is "bad" — and pulled to the front of the next iteration's
 /// order — if its detour ratio exceeds this threshold or it failed
@@ -590,7 +586,8 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// Route every net found in the board's pad assignments. Mutates
 /// `board` in place: existing routing is cleared, new routing is laid.
 ///
-/// The driver runs up to `MAX_RR_ITERATIONS` rip-up-and-reroute passes.
+/// The driver runs rip-up-and-reroute ROUNDS (one pass + one fire of the
+/// rip-and-reassign lever) until a fixpoint or the wall-clock budget.
 /// After each pass, any net that failed or whose detour ratio exceeds
 /// `BAD_DETOUR_RATIO` is pulled to the front of the order for the next
 /// pass — those bad nets get pristine corridors before the easy nets
@@ -601,10 +598,10 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// Honours `RouteOptions::max_seconds`: when the budget is exhausted the
 /// best-so-far board is committed and remaining unrouted nets are reported
 /// as failed with a timeout reason.
-/// How many times the driver may move stuck escape barrels in one route.
-/// Each round costs a re-assignment plus the pass that judges it, so a
-/// couple is all a bounded budget can honestly pay for.
-const MAX_REASSIGN_ROUNDS: usize = 2;
+/// Safety net on the round loop. The loop's real exit is the FIXPOINT
+/// test (no new net routed and no barrel moved) or the wall clock; this
+/// only bounds a pathological board where neither ever trips.
+const MAX_RR_ROUNDS: usize = 64;
 /// How many passes a net must fail before its barrel counts as stuck. Two
 /// means the net survived a reorder and a congestion bump and still could
 /// not reach its own barrel — at that point the barrel, not the routing
@@ -617,21 +614,27 @@ const REASSIGN_MIN_STREAK: usize = 2;
 /// different board rather than the effect of the move.
 const MAX_REASSIGN_PADS: usize = 8;
 
-/// Fraction of the wall-clock budget still unspent (1.0 when the caller
-/// set no budget). The rip-and-reassign lever needs a whole pass after it
-/// to be worth anything, so it consults this before spending.
-fn budget_left_fraction(started: Instant, opts: &RouteOptions) -> f64 {
-    match opts.max_seconds {
-        Some(s) if s > 0.0 && s.is_finite() => {
-            (1.0 - started.elapsed().as_secs_f64() / s).clamp(0.0, 1.0)
-        }
-        _ => 1.0,
-    }
-}
+/// Fraction of `max_seconds` reserved for the tail: stitching, the
+/// organic smoothing pass and length matching. Measured on the RP2040
+/// stress board, where the tail costs well under a tenth of a 180 s
+/// budget.
+const TAIL_RESERVE_FRACTION: f64 = 0.04;
 
 pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let started = Instant::now();
     let deadline = deadline_of(opts);
+    // Two nested deadlines. The RR&R rounds now run until they reach a
+    // fixpoint, so left alone they would spend the entire budget and the
+    // tail (stitching, organic smoothing, length matching) would be
+    // skipped outright, which is exactly what happened on the first v8
+    // measurement.
+    // Reserving the tail's slice up front keeps `max_seconds` honoured to
+    // the second while guaranteeing the board that comes back is a
+    // FINISHED board.
+    let budget = opts.max_seconds.unwrap_or(0.0).max(0.0);
+    let tail_deadline =
+        deadline.map(|d| d - Duration::from_secs_f64(budget * TAIL_RESERVE_FRACTION));
+    let rr_deadline = tail_deadline;
     progress(
         opts,
         format!(
@@ -756,7 +759,14 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
 
     // Rip-and-reassign bookkeeping (see the lever inside the loop).
     let mut failing_streak: HashMap<String, usize> = HashMap::new();
-    let mut reassign_rounds = 0usize;
+    // Every escape plan the lever has produced, as its sorted barrel
+    // sites. The lever itself only bans the site a barrel is being moved
+    // OFF (banning its whole history costs real nets — measured), so two
+    // barrels can trade pockets forever; recognising a plan we have
+    // already routed is what turns "no barrel moved" into a real
+    // fixpoint. Deterministic and clock-free, like the rest of the test.
+    let mut seen_plans: std::collections::BTreeSet<Vec<(String, i64, i64)>> =
+        std::collections::BTreeSet::new();
     let mut best: Option<(Board, RouteReport)> = None;
     // The escape plan `best` was routed against. The rip-and-reassign
     // lever below MOVES barrels between passes, and a barrel is fixed
@@ -766,7 +776,12 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let mut best_fanout = fanout.clone();
     let mut last_order: Option<Vec<String>> = None;
     let mut iterations_run = 0;
+    // Two different clocks. `hit_deadline` = the REAL budget is gone, so
+    // the tail (post passes) must be skipped. `truncated` = the search
+    // stopped because of the clock rather than because it converged —
+    // that is what the caller's `budget_hit` means.
     let mut hit_deadline = false;
+    let mut truncated = false;
     // Extra report lines the negotiation driver contributes (the corridor
     // autopsy). Empty for the classic loop.
     let mut extra_hints: Vec<String> = Vec::new();
@@ -815,6 +830,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             ),
         );
         hit_deadline = timed_out(deadline);
+        truncated |= hit_deadline;
         converged = neg.converged;
         best = Some((neg.board, neg.report));
         // Negotiation runs before the first pass, so the plan it routed
@@ -830,31 +846,84 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // substrate back.
     let original_order = order.clone();
 
-    for _ in 1..=MAX_RR_ITERATIONS {
+    // Dedicated clean-board rip-up pass. The round loop is rip-up-free, so
+    // its `best` is exactly the historical baseline. If failures remain, run
+    // ONE pass on the PRISTINE substrate — original easy-first order, zero
+    // cost bias (no reorder/congestion churn) — but with rip-up enabled. On
+    // that substrate only the genuinely congested nets fail, so targeted
+    // rip-up resolves them surgically; doing it there (rather than inside a
+    // reordered/bumped pass) avoids the global degradation greedy rip-up
+    // causes on a churned board. Kept only when strictly better, so it can
+    // never regress below baseline.
+    //
+    // It runs once per ROUND, so every escape plan the rip-and-reassign
+    // lever produces is judged by both strategies (see the call site).
+    let mut clean_pass_done = false;
+    macro_rules! run_clean_pass {
+        () => {{
+            progress(opts, "route: clean-board rip-up pass");
+            let mut work = board.clone();
+            work.clear_routing();
+            let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
+            let report = route_pass(
+                &mut work,
+                &nets,
+                &original_order,
+                opts,
+                &clean_cost,
+                &fanout,
+                &escape_stubs,
+                true,
+                tail_deadline,
+            );
+            iterations_run += 1;
+            clean_pass_done = true;
+            let take_it = match &best {
+                None => true,
+                Some((_, prev)) => report_is_better(&report, prev),
+            };
+            if take_it {
+                best = Some((work, report));
+                best_fanout = fanout.clone();
+            }
+        }};
+    }
+
+    // Rounds, not a fixed pass count. A round is one RR&R pass plus one
+    // fire of the rip-and-reassign lever, and the loop runs while the wall
+    // clock allows AND the last round made progress. It stops on a
+    // FIXPOINT — a round that routed no new net and moved no barrel — so a
+    // converged board is the same board whatever the budget was; the
+    // budget only truncates. `MAX_RR_ROUNDS` is a safety net, not the
+    // normal exit (progress is bounded: failures only fall, and the
+    // barrel-site history only shrinks the lever's candidate set).
+    let mut moved_last_round = 0usize;
+    let mut round = 0usize;
+    for _ in 1..=MAX_RR_ROUNDS {
         if converged {
             break;
         }
-        if timed_out(deadline) {
-            hit_deadline = true;
+        if timed_out(rr_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
             progress(
                 opts,
                 "route: max_seconds budget exhausted — keeping best so far",
             );
             break;
         }
-        // Stop early if reordering produced nothing new — no point
-        // re-running the exact same sequence twice.
-        if last_order.as_ref() == Some(&order) {
+        // Stop early if reordering produced nothing new AND the geometry
+        // did not move either — that pass would be byte-identical.
+        if last_order.as_ref() == Some(&order) && moved_last_round == 0 {
             break;
         }
         last_order = Some(order.clone());
+        round += 1;
         iterations_run += 1;
+        let failed_before = best.as_ref().map_or(usize::MAX, |(_, r)| count_failed(r));
         progress(
             opts,
-            format!(
-                "route: pass {iterations_run}/{MAX_RR_ITERATIONS} ({} net(s))",
-                order.len()
-            ),
+            format!("route: pass {iterations_run} ({} net(s))", order.len()),
         );
 
         let mut work = board.clone();
@@ -872,7 +941,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             &fanout,
             &escape_stubs,
             false,
-            deadline,
+            rr_deadline,
         );
 
         let take_it = match &best {
@@ -883,9 +952,26 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             best = Some((work, report.clone()));
             best_fanout = fanout.clone();
         }
-        if timed_out(deadline) {
-            hit_deadline = true;
+        if timed_out(rr_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
             break;
+        }
+        // Both strategies, every round. The clean-board rip-up pass is
+        // judged against the escape plan the lever has built SO FAR, and
+        // on the stress board that is what decides it: the same pass
+        // scores 23 nets on the plan after two barrel moves and 17 on the
+        // pristine one. Running it once — before the lever has moved
+        // anything, or after it has moved everything — is a coin flip on
+        // which plan it happens to see; running it per round tries them
+        // all and keeps the best.
+        if count_failed(&report) > 0 && !timed_out(rr_deadline) {
+            run_clean_pass!();
+            if timed_out(rr_deadline) {
+                truncated = true;
+                hit_deadline = timed_out(deadline);
+                break;
+            }
         }
 
         // Identify bad nets for next iteration. Failed nets always go
@@ -915,15 +1001,17 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         // barrel is stamped on every layer and never ripped, so if it
         // landed in a pocket the neighbouring barrels wall off, every
         // remaining pass re-runs into the same wall. Move it instead —
-        // re-ask the escape-slot assignment for those pads with the site
-        // they had excluded (`escape::reassign_escapes`), and let the next
-        // pass route against the new geometry. Budget-guarded: skipped
-        // unless a decent slice of the wall clock is left, because a pass
-        // that cannot finish cannot demonstrate the move was worth it.
+        // re-ask the escape-slot assignment for those pads with the sites
+        // they have already used excluded (`escape::reassign_escapes`), and
+        // let the next pass route against the new geometry. It fires on
+        // EVERY round now: the history ban makes each fire cost the lever a
+        // candidate, so "moved 0" is a statement about the geometry, not
+        // about a round quota that happened to run out.
         for name in &failed {
             *failing_streak.entry(name.clone()).or_insert(0) += 1;
         }
-        if reassign_rounds < MAX_REASSIGN_ROUNDS && budget_left_fraction(started, opts) > 0.25 {
+        let mut moved = 0usize;
+        if !timed_out(deadline) {
             let mut movable: Vec<String> = Vec::new();
             for name in &failed {
                 if failing_streak.get(name).copied().unwrap_or(0) < REASSIGN_MIN_STREAK {
@@ -939,14 +1027,26 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             movable.dedup();
             movable.truncate(MAX_REASSIGN_PADS);
             if !movable.is_empty() {
-                let moved = crate::escape::reassign_escapes(
+                moved = crate::escape::reassign_escapes(
                     board,
                     opts,
                     &mut fanout,
                     &escape_stubs,
                     &movable,
                 );
-                reassign_rounds += 1;
+                if moved > 0 {
+                    let mut key: Vec<(String, i64, i64)> = fanout
+                        .via_positions
+                        .iter()
+                        .map(|(p, v)| (p.clone(), v.x.0, v.y.0))
+                        .collect();
+                    key.sort();
+                    if !seen_plans.insert(key) {
+                        // A plan we have already routed: the lever is
+                        // cycling, so this round moved nothing new.
+                        moved = 0;
+                    }
+                }
                 progress(
                     opts,
                     format!(
@@ -956,6 +1056,22 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 );
             }
         }
+        moved_last_round = moved;
+
+        // FIXPOINT. The round routed no new net and could not move a
+        // barrel, so the geometry the next round would search is the
+        // geometry this one already failed on. Stopping here (rather than
+        // on the clock) is what makes a converged result budget-independent.
+        let failed_after = best.as_ref().map_or(usize::MAX, |(_, r)| count_failed(r));
+        if failed_after >= failed_before && moved == 0 {
+            progress(
+                opts,
+                format!(
+                    "route: fixpoint after {iterations_run} pass(es) — no new net routed and no barrel moved"
+                ),
+            );
+            break;
+        }
 
         // Negotiated congestion: bump the corridor around each bad
         // net's pads so easy nets in the NEXT pass detour around it
@@ -964,7 +1080,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         // next iteration applies a stronger one (capped at
         // `CONGESTION_MAX`) until A* finds a way through.
         let snap_grid = Grid::with_layers(region, opts.cell, layer_count);
-        let bump_factor = iterations_run as u32; // 1, 2, 3...
+        // Rounds, not passes: the clean-board rip-up pass also bumps
+        // `iterations_run` (it IS a pass the report must own up to), but
+        // it runs on a pristine cost map and must not double-step the
+        // congestion ramp the biased passes climb.
+        let bump_factor = round as u32; // 1, 2, 3...
         for name in &failed {
             bump_corridor(
                 &snap_grid,
@@ -992,46 +1112,16 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         order = failed.into_iter().chain(inefficient).chain(rest).collect();
     }
 
-    // Dedicated clean-board rip-up pass. The loop above is rip-up-free, so its
-    // `best` is exactly the historical baseline. If failures remain, run ONE
-    // more pass on the PRISTINE substrate — original easy-first order, zero
-    // cost bias (no reorder/congestion churn) — but with rip-up enabled. On
-    // that substrate only the genuinely congested nets fail, so targeted
-    // rip-up resolves them surgically; doing it here (rather than inside the
-    // reordered/bumped loop) avoids the global degradation greedy rip-up
-    // causes on a churned board. Kept only when strictly better, so it can
-    // never regress below baseline. Skipped when the wall-clock budget is
-    // already exhausted.
-    if !converged && !hit_deadline && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
-        if timed_out(deadline) {
-            hit_deadline = true;
+    if !converged
+        && !clean_pass_done
+        && !hit_deadline
+        && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0)
+    {
+        if timed_out(tail_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
         } else {
-            progress(opts, "route: clean-board rip-up pass");
-            // The pristine order the rip-up pass runs on: whatever the loop
-            // started from (easy-first, or negotiation's contention order).
-            let mut work = board.clone();
-            work.clear_routing();
-            let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
-            let report = route_pass(
-                &mut work,
-                &nets,
-                &original_order,
-                opts,
-                &clean_cost,
-                &fanout,
-                &escape_stubs,
-                true,
-                deadline,
-            );
-            iterations_run += 1;
-            let take_it = match &best {
-                None => true,
-                Some((_, prev)) => report_is_better(&report, prev),
-            };
-            if take_it {
-                best = Some((work, report));
-                best_fanout = fanout.clone();
-            }
+            run_clean_pass!();
         }
     }
     let fanout = best_fanout;
@@ -1103,11 +1193,17 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // Organic post-pass can also be expensive — skip it when the budget
     // is already exhausted so agents get a timely reply.
     if !hit_deadline && !timed_out(deadline) {
+        let t = Instant::now();
         post_passes(board, opts, &mut best_report);
+        progress(
+            opts,
+            format!("route: post passes in {:.1}s", t.elapsed().as_secs_f64()),
+        );
     } else {
         // Still do cheap stitching so power pours stay connected.
         crate::stitching::add_stitching_vias(board, opts);
         hit_deadline = true;
+        truncated = true;
     }
     // Truthful totals: everything above (coarse routing, fanout vias,
     // escape stubs, organic re-segmentation, pour stitching) has now been
@@ -1122,7 +1218,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     best_report.stranded_pads = fanout.stranded_pads.clone();
     best_report.routable_net_count = best_report.per_net.len();
     best_report.elapsed_seconds = started.elapsed().as_secs_f64();
-    best_report.budget_hit = hit_deadline;
+    best_report.budget_hit = truncated || hit_deadline;
     progress(
         opts,
         format!(
@@ -1131,7 +1227,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             best_report.board_trace_count,
             best_report.board_via_count,
             count_failed(&best_report),
-            if hit_deadline { " (budget hit)" } else { "" }
+            if best_report.budget_hit {
+                " (budget hit)"
+            } else {
+                ""
+            }
         ),
     );
     best_report
