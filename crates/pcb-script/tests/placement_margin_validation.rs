@@ -117,6 +117,7 @@ fn place_with_margin_extending_past_outline_fails() {
             right_mm: 5.0, // 5 mm overhang to the right beyond the pads
             bottom_mm: 0.0,
             left_mm: 0.0,
+            elevated: false,
         },
     );
     run_script(
@@ -162,6 +163,7 @@ fn place_two_parts_whose_bodies_overlap_fails() {
             right_mm: 3.0,
             bottom_mm: 3.0,
             left_mm: 3.0,
+            elevated: false,
         },
     );
     run_script(
@@ -205,6 +207,7 @@ fn move_into_body_overlap_fails() {
             right_mm: 2.0,
             bottom_mm: 2.0,
             left_mm: 2.0,
+            elevated: false,
         },
     );
     run_script(
@@ -263,6 +266,7 @@ fn edge_mounted_does_not_exempt_body_off_board() {
                 right_mm: 3.0,
                 bottom_mm: 0.0,
                 left_mm: 0.0,
+                elevated: false,
             },
         )
         .expect("set margin");
@@ -306,6 +310,7 @@ fn view_snapshot_emits_body_outline_rect_for_margined_parts() {
             right_mm: 2.0,
             bottom_mm: 1.5,
             left_mm: 2.0,
+            elevated: false,
         },
     );
     run_script(
@@ -330,5 +335,150 @@ fn view_snapshot_emits_body_outline_rect_for_margined_parts() {
         svg.contains(r#"data-body-outline="J1""#),
         "expected a body-outline rect attribute for J1 — svg snippet:\n{}",
         &svg[..svg.len().min(800)]
+    );
+}
+
+// ─── `elevated`: bodies socketed on pin headers ───────────────────────
+
+#[test]
+fn elevated_verb_lets_a_flat_part_sit_under_a_module_body() {
+    // The fecha gateway v3 in miniature: a wide module body over a
+    // small flat part. Without `elevated` this is the exact geometry
+    // `place_two_parts_whose_bodies_overlap_fails` rejects.
+    let _g = test_lock();
+    let project = fresh_project("elevated-over-flat");
+    run_script(&project, "outline 60 30");
+    make_part_with_margin(
+        &project,
+        "module",
+        PlacementMargin {
+            top_mm: 6.0,
+            right_mm: 6.0,
+            bottom_mm: 6.0,
+            left_mm: 6.0,
+            elevated: false,
+        },
+    );
+    make_part_with_margin(
+        &project,
+        "chip",
+        PlacementMargin {
+            top_mm: 0.5,
+            right_mm: 0.5,
+            bottom_mm: 0.5,
+            left_mm: 0.5,
+            elevated: false,
+        },
+    );
+    // The DSL verb is what marks the module as socketed on headers.
+    let reply = run_script(&project, "elevated module\nlist-lib\n");
+    let results = extract_results(&reply);
+    assert_eq!(results[0]["ok"], true, "elevated verb failed: {reply:#?}");
+    assert!(
+        project.library().find("module").expect("entry").elevated,
+        "`elevated KEY` must persist on the library entry"
+    );
+    let listing = results[1]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        listing.contains("elevated"),
+        "list-lib must show the flag, got: {listing}"
+    );
+
+    // The `lib` block takes the same flag at creation time.
+    run_script(
+        &project,
+        "lib born_elevated elevated=true\n  pad 1 -1 0 0.5 0.5\n  pad 2  1 0 0.5 0.5\n",
+    );
+    project
+        .confirm_pending_library_entry("born_elevated")
+        .expect("confirm");
+    assert!(
+        project
+            .library()
+            .find("born_elevated")
+            .expect("entry")
+            .elevated,
+        "`lib KEY elevated=true` must reach the stored entry"
+    );
+
+    run_script(
+        &project,
+        "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\nsym R1 ic key=chip\n  pin 1 L\n  pin 2 R\npalette U1 module\npalette R1 chip\n",
+    );
+    // R1 pads are 3 mm from U1's pads (clear of the 1 mm solder floor)
+    // but deep inside U1's 6 mm body halo.
+    let reply = run_script(&project, "place U1 20 15\nplace R1 24 15\n");
+    let results = extract_results(&reply);
+    assert_eq!(results[0]["ok"], true, "U1 should place: {reply:#?}");
+    assert_eq!(
+        results[1]["ok"], true,
+        "a flat part under a socketed module must be allowed: {reply:#?}"
+    );
+    assert_eq!(project.read().board().footprints.len(), 2);
+}
+
+#[test]
+fn two_elevated_modules_still_cannot_overlap() {
+    let _g = test_lock();
+    let project = fresh_project("elevated-over-elevated");
+    run_script(&project, "outline 60 30");
+    make_part_with_margin(
+        &project,
+        "module",
+        PlacementMargin {
+            top_mm: 6.0,
+            right_mm: 6.0,
+            bottom_mm: 6.0,
+            left_mm: 6.0,
+            elevated: false,
+        },
+    );
+    run_script(&project, "elevated module true\n");
+    run_script(
+        &project,
+        "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\nsym U2 ic key=module\n  pin 1 L\n  pin 2 R\npalette U1 module\npalette U2 module\n",
+    );
+    let reply = run_script(&project, "place U1 20 15\nplace U2 24 15\n");
+    let results = extract_results(&reply);
+    assert_eq!(results[0]["ok"], true, "U1 should place: {reply:#?}");
+    assert_eq!(
+        results[1]["ok"], false,
+        "two modules on headers sit at the same height — must be rejected: {reply:#?}"
+    );
+}
+
+#[test]
+fn elevated_does_not_exempt_body_off_board() {
+    let _g = test_lock();
+    let project = fresh_project("elevated-off-board");
+    run_script(&project, "outline 20 20");
+    make_part_with_margin(
+        &project,
+        "module",
+        PlacementMargin {
+            top_mm: 0.0,
+            right_mm: 5.0,
+            bottom_mm: 0.0,
+            left_mm: 0.0,
+            elevated: false,
+        },
+    );
+    run_script(&project, "elevated module\n");
+    run_script(
+        &project,
+        "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\npalette U1 module\n",
+    );
+    // Pads end at x = 17.25; the 5 mm right halo reaches 22.25 > 20.
+    let reply = run_script(&project, "place U1 16 10\n");
+    let results = extract_results(&reply);
+    assert_eq!(
+        results[0]["ok"], false,
+        "an elevated body still has to fit ON the board: {reply:#?}"
+    );
+    assert!(
+        project.read().board().footprints.is_empty(),
+        "nothing should have landed"
     );
 }

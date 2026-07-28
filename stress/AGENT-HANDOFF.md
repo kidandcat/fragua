@@ -248,6 +248,97 @@ LED pins are **`A` / `K`** (not 1/2). Discretes are 1/2.
 `list-lib` now prints **one key per line** (was only a count).  
 `place` / batch failures now print **`FAIL ref (stage): reason`** in text.
 
+### 2.5 `elevated` — bodies that are not in the board plane (2026-07-28)
+
+Fragua used to model every component body as a flat rectangle competing
+for the same board area. Real module boards break that: on the **fecha
+gateway v3** (built, working, fully routed) the **BK-7670 / A7670E LTE
+modem** (37.4 × 37.5 mm) and the **0.96" OLED** are **socketed on 2.54 mm
+pin headers** and float ~8.5 mm above the copper — the modem's body sits
+over U1, C3, R1, R2, Q1. With real module footprints resolved from the
+library, DRC called that **9 `BodyOverlap` ERRORS** on a board you can
+hold in your hand.
+
+```text
+elevated KEY [true|false]     # KEY defaults to true
+lib KEY … elevated=true       # or author it at creation time
+list-lib                      # prints ` elevated` next to ` edge` / ` body`
+```
+
+Semantics — one flag, three rules:
+
+| Pair | Verdict |
+|------|---------|
+| elevated **over flat** | **legal.** DRC `BodyOverlap` → `Warning` (any depth), placement/SA/compact do not reject or penalise it |
+| **elevated over elevated** | **error.** Both sit at header height — a real collision |
+| flat over flat | error, unchanged (>0.5 mm depth) |
+
+`BodyOffBoard` is **unchanged and still a hard error** for elevated
+parts: floating on headers does not conjure board area under the
+overhang. `edge_mounted` / `edge_side` exemptions apply exactly as
+before.
+
+Where it lives: `LibraryEntry::elevated` (authored, in `index.json`) →
+`LibraryEntry::body_keepout()` → `PlacementMargin::elevated`
+(resolution-time, `#[serde(skip)]`). **Every** consumer that resolves a
+body from the library must go through `body_keepout()` — reading
+`placement_margin` directly silently drops the flag. The placer's
+`MarginMap` is now `HashMap<Id, PlacementMargin>` (was `[f64; 4]`) so the
+flag reaches every body-to-body measure; `compact`'s packing lower bound
+counts only an elevated part's **pad** area (its plastic does not consume
+plane), and the electrostatic global stage charges only its pad
+footprint into the density field, since a single-plane density map
+cannot express "this body floats over that one".
+
+### 2.6 Two DX gaps found while doing that (still open)
+
+1. **No verb to edit a PLACED instance's edge metadata.** `edge-mount
+   KEY …` writes the *library entry*; an already-placed footprint keeps
+   the `edge_mounted` / `edge_side` it was spawned with.
+   `Project::set_footprint_edge_mount` exists in `pcb-core` but nothing
+   in the script DSL calls it, so fixing an edge declaration on a board
+   you already have means editing the `.fragua` JSON by hand — exactly
+   what the "never hand-edit layouts" rule forbids. Wanted: something
+   like `edge-mount-ref REF top|bottom|left|right|false`.
+2. **No verb to swap a placed footprint's library key.** `Footprint::key`
+   is what resolves the body/margin/elevation; a board placed before the
+   real module footprint existed carries the wrong key (or none) forever.
+   Re-spawning from the palette loses the placement. Wanted:
+   `rekey REF KEY` (re-resolve pads/silk/body from the library entry,
+   keep position + rotation + nets).
+
+Both were worked around this session by patching the board JSON *before*
+the run, which is only acceptable because the fields are metadata
+(design intent), never geometry.
+
+### 2.7 What `compact` was silently allowed to do (one fixed, one open)
+
+Modelling the real bodies made the fecha gateway the first board where
+`compact` produced *feasible* candidates with big module bodies in play,
+and that immediately surfaced two ways a candidate could pass every gate
+and still be unbuildable. `try_feasible` only ever checked the solder
+floor, routing and DRC.
+
+1. **FIXED — edge-mounted parts driven inboard.** DRC has no violation
+   kind for "the connector no longer reaches the cut", and the SA hands
+   back its best-seen layout even when no legal one was found, so
+   compaction buried the ESP32-S3-Zero's USB-C **8.4 mm inland** and
+   called it a −3.8 % win. Both `try_feasible` and the trim phase now
+   gate on `Board::edge_mount_violation`, as a set difference against the
+   violations the INPUT board already had (the gateway's screw terminal
+   enters with its pads inland and only its wire-entry body at the cut —
+   compaction may inherit that, not add to it). Test:
+   `compaction_never_accepts_an_edge_part_left_inboard`.
+2. **OPEN — the hanging-module exemption is discoverable by the placer.**
+   `body_outline_violation` lets a non-edge-mounted part hang its body
+   off an edge **its pads already touch** (an OLED sitting header-on-board
+   with the glass off-edge). That is authored intent, but nothing marks
+   it as intent: after compaction the modem's pad row landed 0.47 mm from
+   the right cut (inside the 0.5 mm touch tolerance) and the exemption
+   let its 37 mm body hang **9.8 mm off the board**, DRC-clean. The
+   exemption should be opt-in per entry (an `overhang_side` flag next to
+   `edge_side`), not something a search can stumble into.
+
 ---
 
 ## 3. Stress target: RP2040 minimal open hardware

@@ -106,7 +106,17 @@ pub(crate) fn global_place(
             continue;
         };
         let Some(raw) = fp.bounds() else { continue };
-        let inf = fp_bounds_with_margin(fp, margins).unwrap_or(raw);
+        // The density field is a single plane — it cannot express "this
+        // body floats over that one". A socketed module therefore
+        // charges only its PAD footprint here, so the electrostatic
+        // spread doesn't shove every passive out from under a 37 mm
+        // modem. Module-vs-module and module-vs-outline are still
+        // enforced exactly, by the hard legality gate and DRC.
+        let inf = if crate::is_elevated(fp, margins) {
+            raw
+        } else {
+            fp_bounds_with_margin(fp, margins).unwrap_or(raw)
+        };
         let px = fp.position.x.to_mm();
         let py = fp.position.y.to_mm();
         let mut inf_min = [

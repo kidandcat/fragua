@@ -19,7 +19,7 @@ End-to-end agent loop, schematic → board → fab-ready zip:
   fixed-point geometry, tokio broadcast event bus, JSON persistence
   (`.fragua` files; legacy `.json` still loads).
 - `pcb-script`: line-oriented agent DSL — `lib`, `sym`, `net`, `class`,
-  `palette`, `place`, `auto-place`, `edge-mount`, `route`, `compact`,
+  `palette`, `place`, `auto-place`, `edge-mount`, `elevated`, `route`, `compact`,
   `erc`, `drc`, `auto-pour`, `pack`. The full reference is printed at
   app launch and served at `GET /`.
 - `pcb-router`: two engines. Default: Theta* any-angle search on a
@@ -44,8 +44,11 @@ End-to-end agent loop, schematic → board → fab-ready zip:
 - `pcb-drc`: pad/trace clearance, drill, edge clearance, narrow trace,
   routing efficiency, body-off-board and body-overlap on the
   margin-inflated bodies (edge-side aware: a declared wire-entry /
-  plug side may overhang the outline, nothing else may). Per-net class
-  overrides supported.
+  plug side may overhang the outline, nothing else may; height aware:
+  `elevated KEY` marks a part socketed on pin headers, whose body may
+  shadow flat parts underneath — two elevated bodies still collide, and
+  the body must still fit on the board). Per-net class overrides
+  supported.
 - `pcb-erc`: floating pin/net, duplicate pin, orphan symbol, phantom
   net; role-based: multiple drivers, unpowered power net, undriven
   input. Heuristic: missing decoupling cap, missing I²C pull-up.

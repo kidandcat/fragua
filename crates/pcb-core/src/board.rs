@@ -1366,12 +1366,22 @@ impl Board {
         F: Fn(&Footprint) -> crate::library::PlacementMargin,
     {
         let half_gap = Length::from_mm(MIN_FOOTPRINT_GAP_MM / 2.0);
-        let probe_bounds = probe.inflated_bbox(margin_for(probe))?.expand(half_gap);
+        let probe_margin = margin_for(probe);
+        let probe_bounds = probe.inflated_bbox(probe_margin)?.expand(half_gap);
         for fp in self.footprints_in_order() {
             if Some(fp.id) == ignore_id {
                 continue;
             }
-            if let Some(b) = fp.inflated_bbox(margin_for(fp)) {
+            let margin = margin_for(fp);
+            // One of the two is socketed on headers and the other is
+            // not: the bodies live at different heights, so a plan-view
+            // overlap is exactly what the builder intended (modem over
+            // the passives). Pad-on-pad is still rejected separately by
+            // `first_overlapper`.
+            if probe_margin.clears_over(margin) {
+                continue;
+            }
+            if let Some(b) = fp.inflated_bbox(margin) {
                 if probe_bounds.intersects(&b.expand(half_gap)) {
                     return Some(fp.reference.clone());
                 }
@@ -1998,6 +2008,7 @@ mod tests {
             right_mm: 2.0,
             bottom_mm: 0.5,
             left_mm: 3.0,
+            elevated: false,
         };
         let bb = fp.inflated_bbox(margin).expect("bbox");
         assert!((bb.min.x.to_mm() - (-1.25 - 3.0)).abs() < 1e-6, "left");
@@ -2016,6 +2027,7 @@ mod tests {
             right_mm: 2.0,
             bottom_mm: 0.5,
             left_mm: 3.0,
+            elevated: false,
         };
         let bb = fp.inflated_bbox(margin).expect("bbox");
         // After 90° CCW: world [t, r, b, l] = [right, bottom, left, top]

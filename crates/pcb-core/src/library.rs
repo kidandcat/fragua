@@ -64,6 +64,13 @@ pub enum LibrarySilk {
     },
 }
 
+/// `skip_serializing_if` helper — keeps `false` flags out of
+/// `index.json` so the on-disk library stays readable.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde requires `&T`
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LibraryPad {
     pub number: String,
@@ -224,9 +231,31 @@ pub struct PlacementMargin {
     pub bottom_mm: f64,
     #[serde(default)]
     pub left_mm: f64,
+    /// True when this body does NOT live in the board plane: the part is
+    /// socketed on pin headers (0.96" OLED, LTE modem on a 2.54 mm
+    /// socket) so its plastic floats several millimetres above the
+    /// copper and clears anything low underneath it. Two elevated
+    /// bodies still collide with each other — they sit at the same
+    /// header height — and an elevated body still has to fit ON the
+    /// board (`body_outline_violation` is unaffected).
+    ///
+    /// Resolution-time only: authored on [`LibraryEntry::elevated`] and
+    /// folded in by [`LibraryEntry::body_keepout`], never written into
+    /// the `placement_margin` object in `index.json`.
+    #[serde(skip)]
+    pub elevated: bool,
 }
 
 impl PlacementMargin {
+    /// True when the two bodies occupy different heights — exactly one
+    /// of them is socketed on headers — so overlapping footprints in
+    /// plan view is physically legal. Elevated-over-elevated and
+    /// normal-over-normal are both real collisions and return `false`.
+    #[must_use]
+    pub fn clears_over(self, other: Self) -> bool {
+        self.elevated != other.elevated
+    }
+
     /// True when every side is zero (or negative — treated as no
     /// inflation). Callers can skip the rotated-inflate maths in the
     /// common case.
@@ -446,6 +475,15 @@ pub struct LibraryEntry {
     /// any side. Implies nothing unless `edge_mounted` is set.
     #[serde(default)]
     pub edge_side: Option<crate::board::EdgeSide>,
+    /// True when the part is socketed on pin headers instead of sitting
+    /// flat on the copper — a 0.96" OLED or an LTE modem on a 2.54 mm
+    /// socket floats ~8 mm up, so its body legitimately shadows the
+    /// resistors, caps and even ICs underneath it. Placement and DRC
+    /// let an elevated body overlap a NON-elevated one; two elevated
+    /// bodies still collide (same header height), and the body must
+    /// still fit on the board (`BodyOffBoard` stays a hard error).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub elevated: bool,
     pub pads: Vec<LibraryPad>,
     /// Library-authored silkscreen — body outlines, polarity dots,
     /// `{REF}`/`{VAL}` templates. Empty for legacy entries; the
@@ -566,6 +604,21 @@ impl LibraryEntry {
             right_mm: (body.max_x_mm - max_x).max(0.0),
             bottom_mm: (min_y - body.min_y_mm).max(0.0),
             left_mm: (min_x - body.min_x_mm).max(0.0),
+            elevated: self.elevated,
+        }
+    }
+
+    /// The body keep-out this entry contributes to placement checks and
+    /// DRC: the stored per-side margin with [`Self::elevated`] folded
+    /// in. Every consumer that resolves a footprint's body from the
+    /// library must go through here — reading `placement_margin`
+    /// directly silently drops the elevation and turns a legal
+    /// module-over-passives layout back into a body collision.
+    #[must_use]
+    pub fn body_keepout(&self) -> PlacementMargin {
+        PlacementMargin {
+            elevated: self.elevated,
+            ..self.placement_margin
         }
     }
 }
@@ -847,6 +900,23 @@ impl Library {
         };
         entry.edge_mounted = edge_mounted;
         entry.edge_side = if edge_mounted { edge_side } else { None };
+        let snapshot = inner.clone();
+        drop(inner);
+        self.save(&snapshot)?;
+        Ok(true)
+    }
+
+    /// Set whether this entry's body is socketed on headers and floats
+    /// above the board plane. Returns `true` if the entry was found.
+    /// Placement and DRC read this through
+    /// [`LibraryEntry::body_keepout`], so already-placed footprints pick
+    /// the change up immediately — no re-spawn needed.
+    pub fn set_elevated(&self, key: &str, elevated: bool) -> Result<bool, String> {
+        let mut inner = self.inner.write().expect("library lock poisoned");
+        let Some(entry) = inner.entries.iter_mut().find(|e| e.key == key) else {
+            return Err(format!("library: no entry with key {key}"));
+        };
+        entry.elevated = elevated;
         let snapshot = inner.clone();
         drop(inner);
         self.save(&snapshot)?;
@@ -1253,6 +1323,7 @@ mod tests {
             default_rotation_deg: 0.0,
             edge_mounted: false,
             edge_side: None,
+            elevated: false,
             pads,
             silk: Vec::new(),
             lcsc_id: None,
