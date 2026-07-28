@@ -462,8 +462,9 @@ where
         let clr = clearance.to_mm();
 
         for layer in [CopperLayer::Top, CopperLayer::Bottom] {
-            let obstacles =
-                collect_obstacles(board, net, layer, route_opts, &rules, clr, outline, &resolver);
+            let obstacles = collect_obstacles(
+                board, net, layer, route_opts, &rules, clr, outline, &resolver,
+            );
             let chains = extract_chains(board, net, layer);
             for (chain, width) in chains {
                 // The chain keeps the width the ROUTER gave it. Rewriting
@@ -513,8 +514,9 @@ where
         let (_class_width, clearance) = rules(route_opts, net);
         let clr = clearance.to_mm();
         for layer in [CopperLayer::Top, CopperLayer::Bottom] {
-            let obstacles =
-                collect_obstacles(board, net, layer, route_opts, &rules, clr, outline, &resolver);
+            let obstacles = collect_obstacles(
+                board, net, layer, route_opts, &rules, clr, outline, &resolver,
+            );
             for (chain, width) in extract_chains(board, net, layer) {
                 let pts: Vec<P2> = chain.iter().map(|p| to_mm(*p)).collect();
                 if !obstacles.polyline_clear(&pts, width.to_mm() / 2.0, clr) {

@@ -154,6 +154,8 @@ fn main() {
         engine: Default::default(),
         organic_fillet_mm: 3.0,
         initial_net_order: None,
+        fine_escape: false,
+        negotiate: false,
         // Greedy-search weight, knob for A/B benchmarking. Default 1.0
         // (admissible/optimal A*). NOTE: on this multi-source Steiner
         // router, W>1 REGRESSES wall-time — the power nets seed the whole

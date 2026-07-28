@@ -948,7 +948,10 @@ pub(crate) fn reassign_escapes(
             &mut sub,
         );
         for num in &unfanned {
-            if sub.via_positions.contains_key(&format!("{reference}.{num}")) {
+            if sub
+                .via_positions
+                .contains_key(&format!("{reference}.{num}"))
+            {
                 moved += 1;
             }
         }

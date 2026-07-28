@@ -229,7 +229,15 @@ fn reachability_driven_routing_is_deterministic() {
         let mut v: Vec<(i64, i64, i64, i64, String)> = bd
             .traces
             .iter()
-            .map(|t| (t.start.x.0, t.start.y.0, t.end.x.0, t.end.y.0, t.net.clone()))
+            .map(|t| {
+                (
+                    t.start.x.0,
+                    t.start.y.0,
+                    t.end.x.0,
+                    t.end.y.0,
+                    t.net.clone(),
+                )
+            })
             .collect();
         v.sort();
         v

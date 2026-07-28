@@ -45,8 +45,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-
-
 use crate::grid::{self, Cell, Grid, GridPoint};
 use crate::router::{NetPadInfo, RouteOptions, RuleCtx};
 

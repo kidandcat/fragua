@@ -821,8 +821,15 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // the plan worse is discarded rather than routed.
     let all_nets: Vec<String> = order.clone();
     if !fanout.through_pads.is_empty() {
-        let mut verdict =
-            analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
+        let mut verdict = analyse_reach(
+            board,
+            opts,
+            &order,
+            &nets,
+            &fanout,
+            &escape_stubs,
+            &all_nets,
+        );
         let initial_entombed = verdict.entombed.len();
         let mut best_plan = (verdict.entombed.len(), fanout.clone());
         let mut rounds = 0usize;
@@ -867,7 +874,15 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 break;
             }
             rounds += 1;
-            verdict = analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
+            verdict = analyse_reach(
+                board,
+                opts,
+                &order,
+                &nets,
+                &fanout,
+                &escape_stubs,
+                &all_nets,
+            );
             if verdict.entombed.len() < best_plan.0 {
                 best_plan = (verdict.entombed.len(), fanout.clone());
                 stalled = 0;
@@ -1177,7 +1192,6 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             }
         }
 
-
         // Rip-and-reassign: a net that failed TWICE at a pad whose barrel
         // we placed is not going to be saved by another reroute. The
         // barrel is stamped on every layer and never ripped, so if it
@@ -1251,15 +1265,8 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                     // exactly what it is for, and dropping it would leave
                     // them paying the full pop-cap-plus-rip-up price all
                     // over again (measured: 44 s of a 180 s budget).
-                    reach = analyse_reach(
-                        board,
-                        opts,
-                        &order,
-                        &nets,
-                        &fanout,
-                        &escape_stubs,
-                        &failed,
-                    );
+                    reach =
+                        analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &failed);
                     reach_stale = false;
                 }
                 progress(

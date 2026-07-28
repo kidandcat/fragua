@@ -830,7 +830,17 @@ fn extract_legal(
             continue;
         }
         let nr = route_one_net(
-            &mut work, &mut grid, name, id, pads, opts, &rules, history, fanout, via_cells, &pours,
+            &mut work,
+            &mut grid,
+            name,
+            id,
+            pads,
+            opts,
+            &rules,
+            history,
+            fanout,
+            via_cells,
+            &pours,
             limits,
             // Negotiation is its own driver and runs before any pass has
             // failures to analyse, so it carries no reachability verdict.
