@@ -195,6 +195,46 @@ a router change); and the GPIO/QSPI churn, which is now plain
 congestion-under-budget — the first frame in this campaign where the
 limit is compute, not geometry.
 
+### v8 (2026-07-28) — compact, escape-aware placement
+
+Jairo's review of the v7 render: the 80×45 mm outline with headers parked on
+the far edges is obviously suboptimal, and the deliverable is the TOOL —
+placement must come from Fragua's verbs, never from hand-tuning the board.
+
+**Product (pcb-placer + script):** bundle-crossing term in the placement
+score, decoupling-ring placement for 2-pad passives at their IC power pin,
+`edge-plan REF... [seed=N]` (picks WHICH edge each edge-mounted part gets by
+minimizing net-bundle wirelength+crossings), compact `allow_failed=N` /
+`route_seconds=N` knobs with footprint-anchored rule areas, and the
+`bench-dev` cargo profile (no LTO, 16 CGUs: incremental rebuilds 2–3 min →
+~5 s, near-release runtime; publish final numbers with `--release`).
+
+**Board result (same schematic as v7, all-algorithmic placement):**
+
+| Board | Area | Fully connected @ 180 s |
+|-------|------|--------------------------|
+| v7, 80×45 mm | 3600 mm² | 28/39 |
+| **v8, 36×30 mm** | **1080 mm² (3.3× smaller)** | **25/39** (24/39 @ 480 s earlier run — run-to-run ±1) |
+| probe, 44×34 mm re-place | 1496 mm² | 21/39 (invalid point — see auto-place bug below) |
+
+Escape stays perfect on the compact board: 33/33 pads slotted, 0 stranded.
+The ~3-net cost vs v7 is the same U1 cluster squeezed into a third of the
+area — an honest compactness↔connectivity trade-off, not a regression.
+
+**New open problems found while measuring:**
+
+- **auto-place can return a worse-than-initial solution** (measured: HPWL
+  +78 mm, congestion +606 cells, crossings 4→5 on the 44×34 re-place). The
+  SA needs a best-seen clamp. Until fixed, curve points that re-place from
+  a good layout are unreliable.
+- **Shutdown autosave race:** the server autosaves on SIGTERM, so
+  `git checkout <file>` + restart silently loses the restore unless the
+  process is confirmed dead FIRST (stop unit → verify no `fragua` process →
+  restore file → start).
+- `compact` pinned at its own size runs 0 candidates (it only re-places
+  while shrinking) — growing a board needs `outline` + `edge-plan` +
+  `auto-place`, there is no single re-place-at-size verb yet.
+
 ### What works
 
 - End-to-end agent loop: libs → confirm → schematic → place → route → screenshot

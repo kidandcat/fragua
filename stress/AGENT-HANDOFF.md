@@ -22,7 +22,9 @@ We recreated a **minimal RP2040 board** (bare QFN-56 + QSPI flash + crystal + US
 | Router on **bare 0.4 mm QFN-56, 2-layer** | **Plateau broken in v7** — 28/39; the residue is 2 entombed pads + a J1 rule-area gap + budget (O1) |
 | Wall-clock / agent hang risk | **Fixed** with `max_seconds` + A* caps (was 6–10+ min silent hangs) |
 
-**Latest board metrics** (`stress/rp2040-minimal.fragua`, **v7 pass — escape-slot matching + whole-board grid + rip-and-reassign**; the saved file carries `fab-rules jlcpcb-2l` + the `fine` rule area around U1 as design intent):
+**Latest board metrics** (`stress/rp2040-minimal.fragua`, **v8 pass — compact escape-aware placement**, 2026-07-28): outline **36 × 30 mm (1080 mm², 3.3× smaller than v7's 3600 mm²)**, all-algorithmic placement (edge-plan + auto-place + compact; U1 anchor only), **25/39 fully connected @ 180 s** (24/39 @ 480 s in an earlier run — ±1 run-to-run), 33/33 pads slotted / 0 stranded, DRC 5E (NetSplit class) / 0 clearance errors. The ~3-net cost vs v7's 28/39 is the U1 cluster squeezed into a third of the area — see README v8 for the compactness↔connectivity curve, the auto-place worse-than-initial bug, and the shutdown-autosave gotcha. v7 metrics below kept for reference.
+
+**v7 board metrics** (80×45 mm; the saved file carries `fab-rules jlcpcb-2l` + the `fine` rule area around U1 as design intent):
 
 - Outline **80 × 45 mm**, 36 footprints, 39 nets, 36 symbols
 - Saved state: **1310 traces**, **58 vias** (33 fanout dogbones with copper stubs, 0 stranded), **28/39 nets fully connected** @ `max_seconds=180`, 12/39 routable nets failed, deterministic to the trace (probe = server, twice; 300 s lands on the same board)
