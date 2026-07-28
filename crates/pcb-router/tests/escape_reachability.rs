@@ -184,8 +184,12 @@ fn a_provable_geometry_failure_does_not_burn_the_budget() {
         "a provable geometry failure must reach the fixpoint, not the deadline \
          ({elapsed:.1}s of 60 s)"
     );
+    // 30 s, not 10: the claim is "flood, not search" — far under the 60 s
+    // budget. CI runners build tests unoptimised and run on shared hardware
+    // (measured 10-13 s there vs ~3 s locally); a wall-clock assertion any
+    // tighter tests the runner, not the router.
     assert!(
-        elapsed < 10.0,
+        elapsed < 30.0,
         "one sealed pad should be settled in a flood, not a search: {elapsed:.1}s"
     );
 }
