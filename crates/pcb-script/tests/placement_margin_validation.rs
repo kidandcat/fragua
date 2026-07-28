@@ -386,6 +386,23 @@ fn elevated_verb_lets_a_flat_part_sit_under_a_module_body() {
         "list-lib must show the flag, got: {listing}"
     );
 
+    // The `lib` block takes the same flag at creation time.
+    run_script(
+        &project,
+        "lib born_elevated elevated=true\n  pad 1 -1 0 0.5 0.5\n  pad 2  1 0 0.5 0.5\n",
+    );
+    project
+        .confirm_pending_library_entry("born_elevated")
+        .expect("confirm");
+    assert!(
+        project
+            .library()
+            .find("born_elevated")
+            .expect("entry")
+            .elevated,
+        "`lib KEY elevated=true` must reach the stored entry"
+    );
+
     run_script(
         &project,
         "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\nsym R1 ic key=chip\n  pin 1 L\n  pin 2 R\npalette U1 module\npalette R1 chip\n",

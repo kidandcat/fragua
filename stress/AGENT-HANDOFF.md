@@ -311,6 +311,34 @@ Both were worked around this session by patching the board JSON *before*
 the run, which is only acceptable because the fields are metadata
 (design intent), never geometry.
 
+### 2.7 What `compact` was silently allowed to do (one fixed, one open)
+
+Modelling the real bodies made the fecha gateway the first board where
+`compact` produced *feasible* candidates with big module bodies in play,
+and that immediately surfaced two ways a candidate could pass every gate
+and still be unbuildable. `try_feasible` only ever checked the solder
+floor, routing and DRC.
+
+1. **FIXED — edge-mounted parts driven inboard.** DRC has no violation
+   kind for "the connector no longer reaches the cut", and the SA hands
+   back its best-seen layout even when no legal one was found, so
+   compaction buried the ESP32-S3-Zero's USB-C **8.4 mm inland** and
+   called it a −3.8 % win. Both `try_feasible` and the trim phase now
+   gate on `Board::edge_mount_violation`, as a set difference against the
+   violations the INPUT board already had (the gateway's screw terminal
+   enters with its pads inland and only its wire-entry body at the cut —
+   compaction may inherit that, not add to it). Test:
+   `compaction_never_accepts_an_edge_part_left_inboard`.
+2. **OPEN — the hanging-module exemption is discoverable by the placer.**
+   `body_outline_violation` lets a non-edge-mounted part hang its body
+   off an edge **its pads already touch** (an OLED sitting header-on-board
+   with the glass off-edge). That is authored intent, but nothing marks
+   it as intent: after compaction the modem's pad row landed 0.47 mm from
+   the right cut (inside the 0.5 mm touch tolerance) and the exemption
+   let its 37 mm body hang **9.8 mm off the board**, DRC-clean. The
+   exemption should be opt-in per entry (an `overhang_side` flag next to
+   `edge_side`), not something a search can stumble into.
+
 ---
 
 ## 3. Stress target: RP2040 minimal open hardware

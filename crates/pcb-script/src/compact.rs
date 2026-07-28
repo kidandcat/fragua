@@ -441,6 +441,11 @@ pub fn compact(
 
     let base_radius = base.outline_corner_radius;
     let pad_nets = pad_net_map(base);
+    // Edge-mount violations the INPUT board already has (a screw
+    // terminal whose pads sit inland while its wire-entry body reaches
+    // the cut). Compaction may inherit these; it may not add to them.
+    let edge_excused = edge_mount_violators(base);
+    let edge_excused_trim = edge_excused.clone();
     let start = Instant::now();
     let mut checks = 0usize;
     let mut best: Option<(f64, f64, Feasible)> = None;
@@ -468,6 +473,7 @@ pub fn compact(
             fab_profile,
             schematic,
             &pad_nets,
+            &edge_excused,
         )
     };
 
@@ -555,6 +561,13 @@ pub fn compact(
                 return None;
             }
             *checks += 1;
+            // A trim slides the OUTLINE, not the parts, so it can pull
+            // the cut away from an edge-mounted part that was flush
+            // against it — same unbuildable result as a bad placement,
+            // and DRC is just as blind to it.
+            if !edge_mount_violators(&cand).is_subset(&edge_excused_trim) {
+                continue;
+            }
             let drc = run_drc(&cand, drc_margins, fab_profile, schematic);
             if drc_gate_passes(&drc, &pad_nets, excused) {
                 return Some(cand);
@@ -706,6 +719,21 @@ pub fn compact(
     }
 }
 
+/// References of every edge-mounted footprint that is NOT sitting on the
+/// outline it declares. Used as a set difference, never as an absolute:
+/// the rule is pad-based, and a real board can enter compaction already
+/// violating it (the fecha gateway's screw terminal has its pads inland
+/// and only its wire-entry body reaching the cut). Compaction must not
+/// ADD to this set — that is what turns a reachable USB-C port into a
+/// buried one — but it is not compaction's job to fix what came in.
+fn edge_mount_violators(board: &Board) -> BTreeSet<String> {
+    board
+        .footprints_in_order()
+        .filter(|fp| board.edge_mount_violation(fp).is_some())
+        .map(|fp| fp.reference.clone())
+        .collect()
+}
+
 /// Deterministically derive a per-check placer seed from the base seed
 /// and the check index, so the same base seed → the same search.
 fn derive_seed(base: u64, check: usize) -> u64 {
@@ -736,6 +764,7 @@ fn try_feasible(
     fab_profile: Option<&pcb_drc::FabProfile>,
     schematic: &Arc<Schematic>,
     pad_nets: &HashMap<String, String>,
+    edge_excused: &BTreeSet<String>,
 ) -> Option<Feasible> {
     let mut b = base.clone();
     let new_outline = Rect::from_corners(
@@ -815,6 +844,28 @@ fn try_feasible(
     // layout dropped below the floor can end still below it, and the
     // DRC gate alone does not model body-to-body access.
     if pcb_placer::min_pairwise_gap(&b, place_margins) < opts.solder_gap_mm - 0.02 {
+        return None;
+    }
+
+    // An edge-mounted part driven inboard makes the candidate
+    // unbuildable: the USB-C port / wire entry / antenna face it exists
+    // for is no longer reachable. Nothing downstream notices — DRC has
+    // no violation kind for it, and the SA hands back its best-seen
+    // layout even when no legal one was found — so gate on it here, for
+    // the same reason the solder floor is gated above.
+    if !edge_mount_violators(&b).is_subset(edge_excused) {
+        return None;
+    }
+
+    // An edge-mounted part that drifted inboard makes the candidate
+    // unbuildable: the USB-C port / wire entry / antenna face it exists
+    // for is no longer reachable, and nothing downstream would notice —
+    // DRC has no violation kind for it, and the SA hands back its
+    // best-seen layout even when no legal one was found. Gate on it here
+    // for the same reason the solder floor is gated above.
+    if b.footprints_in_order()
+        .any(|fp| b.edge_mount_violation(fp).is_some())
+    {
         return None;
     }
 
@@ -1742,5 +1793,61 @@ mod tests {
             || (b.min.y.to_mm() - o.min.y.to_mm()).abs() <= tol
             || (o.max.y.to_mm() - b.max.y.to_mm()).abs() <= tol;
         assert!(touches, "edge-mounted J1 no longer touches the outline");
+        // Same statement, via the shared rule the feasibility gate uses.
+        assert!(
+            out.board.edge_mount_violation(j).is_none(),
+            "compact must never accept a candidate with an edge part inboard"
+        );
+    }
+
+    /// Regression: a candidate whose SA output leaves an edge-mounted
+    /// part inboard must be REJECTED, not accepted. Before this gate the
+    /// only checks on a candidate were the solder floor, routing and
+    /// DRC — none of which model "the connector must reach the cut", so
+    /// compaction happily buried a USB-C module in the middle of the
+    /// board (seen on the fecha gateway: U1 ended 8.4 mm inland).
+    #[test]
+    fn compaction_never_accepts_an_edge_part_left_inboard() {
+        let mut board = Board::new();
+        set_outline(&mut board, 40.0, 40.0);
+        let mut j1 = footprint(
+            "J1",
+            2.0,
+            20.0,
+            vec![
+                pad("1", 0.0, -1.0, Some("A")),
+                pad("2", 0.0, 1.0, Some("N")),
+            ],
+        );
+        j1.edge_mounted = true;
+        j1.edge_side = Some(pcb_core::EdgeSide::Left);
+        board.add_footprint(j1);
+        for (i, r) in ["R1", "R2", "R3"].iter().enumerate() {
+            board.add_footprint(footprint(
+                r,
+                20.0 + i as f64 * 4.0,
+                20.0,
+                vec![
+                    pad("1", -1.0, 0.0, Some("N")),
+                    pad("2", 1.0, 0.0, Some("B")),
+                ],
+            ));
+        }
+        let out = compact(
+            &board,
+            &Arc::new(Schematic::default()),
+            &MarginMap::new(),
+            &HashMap::new(),
+            None,
+            &fast_opts(),
+        )
+        .expect("compact ok");
+        for fp in out.board.footprints_in_order() {
+            assert!(
+                out.board.edge_mount_violation(fp).is_none(),
+                "{} is edge-mounted but ended inboard after compaction",
+                fp.reference
+            );
+        }
     }
 }
