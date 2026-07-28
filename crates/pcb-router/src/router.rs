@@ -303,7 +303,9 @@ pub(crate) fn effective_net_rules(opts: &RouteOptions, net: &str) -> (Length, Le
 /// cell to the clearance radius absorbs that, keeping the DRC's true-
 /// geometry clearance honest at a coarse grid. (Costs ~1 cell of extra
 /// separation — at cell 0.20 that's 0.20 mm — traded for zero collisions.)
-const CLEARANCE_GUARD_CELLS: i32 = 1;
+///
+/// It is a *distance*, not a cell count to round to: see `need_r2`.
+const CLEARANCE_GUARD_CELLS: f64 = 1.0;
 
 /// The rule context of one routing pass: the shared resolver plus the
 /// rasterised rule-area field the search consults per cell.
@@ -382,23 +384,42 @@ impl<'a> RuleCtx<'a> {
     /// own half-width is already baked into its stamp: the searching
     /// net's half-width plus the required gap, plus the quantization
     /// guard.
-    fn radius_cells(clearance: Length, half_width: Length, cell: Length, guard: i32) -> i32 {
-        (ceil_cells(clearance.0 + half_width.0, cell.0) + guard).max(1)
+    /// Required **squared** cell distance to foreign copper.
+    ///
+    /// The search accepts a candidate cell when `d2 > need_r2`, so this
+    /// returns the largest squared distance that is still too close.
+    ///
+    /// Deriving it from the real distance matters more than it looks. The
+    /// old form rounded the required distance UP to a whole cell, added a
+    /// whole guard cell, and squared that — three roundings that compound.
+    /// At the stress board's fine rule (0.12 mm clearance, 0.25 mm trace,
+    /// 0.20 mm cell) the true requirement is 0.245 mm and the guard adds
+    /// 0.20 mm, so 0.445 mm is honest; the old form demanded **0.632 mm**,
+    /// 42 % more, and it demanded it of every escape lane on a 0.4 mm-pitch
+    /// QFN — where 0.19 mm is the difference between a lane and a wall.
+    /// The physical guard is unchanged: only the rounding is gone.
+    fn need_r2(clearance: Length, half_width: Length, cell: Length, guard_cells: f64) -> i32 {
+        let cell_nm = cell.0.max(1) as f64;
+        let r = (clearance.0 + half_width.0) as f64 / cell_nm + guard_cells;
+        // Accept iff `d2 >= r²`; the test rejects on `d2 <= need`, so the
+        // largest rejected value is `ceil(r²) - 1`. Floored at 0 so a
+        // zero-clearance model still rejects copper in the same cell.
+        let need = (r * r).ceil() as i64 - 1;
+        i32::try_from(need.max(0)).unwrap_or(i32::MAX)
     }
 
-    fn model(&self, net: &str, half_width: Length, cell: Length, guard: i32) -> ClearanceModel<'_> {
+    fn model(&self, net: &str, half_width: Length, cell: Length, guard: f64) -> ClearanceModel<'_> {
         let per_net: Vec<i32> = self
             .order
             .iter()
             .map(|other| {
                 let c = self.resolver.pair_clearance(Some(net), Some(other));
-                let r = Self::radius_cells(c, half_width, cell, guard);
-                r * r
+                Self::need_r2(c, half_width, cell, guard)
             })
             .collect();
         // Copper with no net (NC pads, mounting holes) has no class, so
         // it demands the searching net's own rule.
-        let other = Self::radius_cells(
+        let other = Self::need_r2(
             self.resolver.pair_clearance(Some(net), None),
             half_width,
             cell,
@@ -407,12 +428,9 @@ impl<'a> RuleCtx<'a> {
         let area_r2: Vec<i32> = self
             .area_clearance
             .iter()
-            .map(|c| {
-                let r = Self::radius_cells(*c, half_width, cell, guard);
-                r * r
-            })
+            .map(|c| Self::need_r2(*c, half_width, cell, guard))
             .collect();
-        ClearanceModel::new(per_net, other * other, area_r2, self.field.as_ref())
+        ClearanceModel::new(per_net, other, area_r2, self.field.as_ref())
     }
 
     /// Model for a trace of `width` on `net`.
@@ -432,7 +450,7 @@ impl<'a> RuleCtx<'a> {
             net,
             Length(self.resolver.defaults().via_diameter.0 / 2),
             cell,
-            0,
+            0.0,
         )
     }
 }
@@ -536,6 +554,11 @@ pub struct RouteReport {
     /// What the organic post-pass did; `None` when disabled or nothing
     /// was routed.
     pub organic: Option<crate::organic::OrganicReport>,
+    /// Pads proved unreachable on the winning escape plan's BARE copper —
+    /// see `crate::reach`. These are geometry failures, not budget ones:
+    /// no net order and no wall clock can route them, only a different
+    /// escape plan, placement or stackup. Formatted `U1.52 (QSPI_SD2)`.
+    pub entombed_pads: Vec<String>,
 }
 
 /// A net is "bad" — and pulled to the front of the next iteration's
@@ -613,6 +636,21 @@ const REASSIGN_MIN_STREAK: usize = 2;
 /// once would change the geometry so much that the next pass measures a
 /// different board rather than the effect of the move.
 const MAX_REASSIGN_PADS: usize = 8;
+
+/// Rounds the pre-routing escape-plan legalisation may spend proving and
+/// repairing entombed pads. Each round is a flood plus one re-assignment
+/// — milliseconds — so the cap is a safety net against a plan that
+/// oscillates, not a budget.
+const MAX_PLAN_LEGALISE_ROUNDS: usize = 64;
+
+/// Barrels one legalisation round may move. Larger than the in-loop
+/// lever's quota (`MAX_REASSIGN_PADS`): here a round is cheap, and a
+/// pocket is usually walled by several barrels at once.
+const MAX_PLAN_LEGALISE_PADS: usize = 16;
+
+/// Share of the wall-clock budget the legalisation may spend before the
+/// first net is routed. It normally converges in well under this.
+const PLAN_LEGALISE_FRACTION: f64 = 0.15;
 
 /// Fraction of `max_seconds` reserved for the tail: stitching, the
 /// organic smoothing pass and length matching. Measured on the RP2040
@@ -748,6 +786,90 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // already-laid geometry. Stable in the rest of the ordering.
     order = reorder_for_diff_pairs(order, opts);
 
+    // ---- Escape-plan legalisation by reachability -------------------
+    //
+    // The slot assignment prices tightness between barrels, but pricing is
+    // not proof: on the compact stress board it still commits plans where
+    // 15 pads sit in closed pockets — walled by their neighbours' pads and
+    // barrels — and no search on such a plan can ever finish those nets.
+    // Until now that was only discovered by the RR&R loop, one 30 s
+    // rip-up pass at a time, and repaired by a lever that fires once per
+    // round.
+    //
+    // Prove it up front instead. A flood on the bare copper names every
+    // entombed pad and, crucially, the barrels forming each pocket; those
+    // barrels go back to the slot assignment with their current sites
+    // banned. It costs milliseconds per round against a pass's tens of
+    // seconds, so the plan can be iterated to a fixpoint before a single
+    // net is routed. Best-seen by entombed count, so a round that makes
+    // the plan worse is discarded rather than routed.
+    let all_nets: Vec<String> = order.clone();
+    if !fanout.through_pads.is_empty() {
+        let legalise_deadline = deadline.map(|d| {
+            let budget = opts.max_seconds.unwrap_or(0.0).max(0.0);
+            d - Duration::from_secs_f64(budget * (1.0 - PLAN_LEGALISE_FRACTION))
+        });
+        let mut verdict =
+            analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
+        let initial_entombed = verdict.entombed.len();
+        let mut best_plan = (verdict.entombed.len(), fanout.clone());
+        let mut rounds = 0usize;
+        while !verdict.entombed.is_empty() && rounds < MAX_PLAN_LEGALISE_ROUNDS {
+            if timed_out(legalise_deadline) {
+                break;
+            }
+            // The pocket's own barrel first (it may have a better site of
+            // its own), then the barrels that form the wall, most-blame
+            // first. Both are ranked deterministically.
+            let mut movable: Vec<String> = verdict
+                .entombed
+                .keys()
+                .filter(|p| fanout.through_pads.contains(*p))
+                .cloned()
+                .collect();
+            movable.extend(
+                verdict
+                    .blamed_barrels
+                    .iter()
+                    .filter(|p| fanout.through_pads.contains(*p))
+                    .cloned(),
+            );
+            let mut seen: HashSet<String> = HashSet::new();
+            movable.retain(|p| seen.insert(p.clone()));
+            movable.truncate(MAX_PLAN_LEGALISE_PADS);
+            if movable.is_empty() {
+                break;
+            }
+            if crate::escape::reassign_escapes(board, opts, &mut fanout, &escape_stubs, &movable)
+                == 0
+            {
+                break;
+            }
+            rounds += 1;
+            verdict = analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
+            if verdict.entombed.len() < best_plan.0 {
+                best_plan = (verdict.entombed.len(), fanout.clone());
+            }
+        }
+        if best_plan.0 < verdict.entombed.len() {
+            fanout = best_plan.1;
+        }
+        if rounds > 0 {
+            progress(
+                opts,
+                format!(
+                    "route: escape plan legalised in {rounds} round(s) — entombed pads {} → {}",
+                    initial_entombed, best_plan.0
+                ),
+            );
+        } else if initial_entombed > 0 {
+            progress(
+                opts,
+                format!("route: {initial_entombed} pad(s) entombed and no barrel can move"),
+            );
+        }
+    }
+
     // Cost map shared across iterations: starts at 0, accumulates bias
     // around the corridors of failed/inefficient nets so the next pass
     // detours easy nets out of those corridors. Built from a one-shot
@@ -759,6 +881,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
 
     // Rip-and-reassign bookkeeping (see the lever inside the loop).
     let mut failing_streak: HashMap<String, usize> = HashMap::new();
+    // Reachability verdict for the CURRENT escape plan (see `crate::reach`).
+    // Recomputed whenever the rip-and-reassign lever moves a barrel, since
+    // the barrels are half of what walls a pocket in.
+    let mut reach = crate::reach::Reach::default();
+    let mut reach_stale = true;
     // Every escape plan the lever has produced, as its sorted barrel
     // sites. The lever itself only bans the site a barrel is being moved
     // OFF (banning its whole history costs real nets — measured), so two
@@ -875,6 +1002,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 &escape_stubs,
                 true,
                 tail_deadline,
+                &reach,
             );
             iterations_run += 1;
             clean_pass_done = true;
@@ -942,6 +1070,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             &escape_stubs,
             false,
             rr_deadline,
+            &reach,
         );
 
         let take_it = match &best {
@@ -957,23 +1086,6 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             hit_deadline = timed_out(deadline);
             break;
         }
-        // Both strategies, every round. The clean-board rip-up pass is
-        // judged against the escape plan the lever has built SO FAR, and
-        // on the stress board that is what decides it: the same pass
-        // scores 23 nets on the plan after two barrel moves and 17 on the
-        // pristine one. Running it once — before the lever has moved
-        // anything, or after it has moved everything — is a coin flip on
-        // which plan it happens to see; running it per round tries them
-        // all and keeps the best.
-        if count_failed(&report) > 0 && !timed_out(rr_deadline) {
-            run_clean_pass!();
-            if timed_out(rr_deadline) {
-                truncated = true;
-                hit_deadline = timed_out(deadline);
-                break;
-            }
-        }
-
         // Identify bad nets for next iteration. Failed nets always go
         // to the front; inefficient ones follow. Everything else keeps
         // its relative position so we don't rotate the easy nets too.
@@ -996,6 +1108,50 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             break;
         }
 
+        // Reachability autopsy on the failures. Cheap (bounded pocket
+        // floods on the pads that actually failed) and worth a lot: from
+        // here on the passes stop paying a pop cap plus a rip-up cascade
+        // for spokes no search can finish, and the lever below learns
+        // which barrels are doing the walling instead of inferring it
+        // from failure streaks.
+        if reach_stale && !failed.is_empty() {
+            reach = analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &failed);
+            reach_stale = false;
+            if !reach.entombed.is_empty() {
+                progress(
+                    opts,
+                    format!(
+                        "route: {} pad(s) entombed on this escape plan ({})",
+                        reach.entombed.len(),
+                        reach
+                            .entombed
+                            .iter()
+                            .map(|(p, n)| format!("{p}/{n}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+            }
+        }
+
+        // Both strategies, every round. The clean-board rip-up pass is
+        // judged against the escape plan the lever has built SO FAR, and
+        // on the stress board that is what decides it: the same pass
+        // scores 23 nets on the plan after two barrel moves and 17 on the
+        // pristine one. Running it once — before the lever has moved
+        // anything, or after it has moved everything — is a coin flip on
+        // which plan it happens to see; running it per round tries them
+        // all and keeps the best.
+        if count_failed(&report) > 0 && !timed_out(rr_deadline) {
+            run_clean_pass!();
+            if timed_out(rr_deadline) {
+                truncated = true;
+                hit_deadline = timed_out(deadline);
+                break;
+            }
+        }
+
+
         // Rip-and-reassign: a net that failed TWICE at a pad whose barrel
         // we placed is not going to be saved by another reroute. The
         // barrel is stamped on every layer and never ripped, so if it
@@ -1013,6 +1169,17 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         let mut moved = 0usize;
         if !timed_out(deadline) {
             let mut movable: Vec<String> = Vec::new();
+            // Blame first. A pad sealed in a pocket is not freed by moving
+            // its OWN barrel — that barrel is inside the pocket, and every
+            // alternative site on that side is what the pocket is made of.
+            // What frees it is moving the barrels that FORM the wall, and
+            // the flood names them (`reach::blamed_barrels`, most-blame
+            // first). They need no failure streak: the pocket is proof.
+            for pad_ref in &reach.blamed_barrels {
+                if fanout.through_pads.contains(pad_ref) {
+                    movable.push(pad_ref.clone());
+                }
+            }
             for name in &failed {
                 if failing_streak.get(name).copied().unwrap_or(0) < REASSIGN_MIN_STREAK {
                     continue;
@@ -1023,8 +1190,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                     }
                 }
             }
-            movable.sort();
-            movable.dedup();
+            // Keep the blame ranking: dedup without sorting the head away,
+            // then cap. Deterministic — `blamed_barrels` is ranked by blame
+            // then pad ref, and `failed` follows the report order.
+            let mut seen: HashSet<String> = HashSet::new();
+            movable.retain(|p| seen.insert(p.clone()));
             movable.truncate(MAX_REASSIGN_PADS);
             if !movable.is_empty() {
                 moved = crate::escape::reassign_escapes(
@@ -1046,6 +1216,25 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                         // cycling, so this round moved nothing new.
                         moved = 0;
                     }
+                }
+                if moved > 0 {
+                    // The barrels are half of what walls a pocket in, so
+                    // the verdict above describes geometry that no longer
+                    // exists. Re-derive it NOW rather than at the end of
+                    // the next round: the next round's two passes are
+                    // exactly what it is for, and dropping it would leave
+                    // them paying the full pop-cap-plus-rip-up price all
+                    // over again (measured: 44 s of a 180 s budget).
+                    reach = analyse_reach(
+                        board,
+                        opts,
+                        &order,
+                        &nets,
+                        &fanout,
+                        &escape_stubs,
+                        &failed,
+                    );
+                    reach_stale = false;
                 }
                 progress(
                     opts,
@@ -1169,6 +1358,68 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 fanout.stranded_pads.join(", ")
             ),
         );
+    }
+    // Final classification of what is left, against the escape plan that
+    // actually won. This is the answer to "is this net short of time or
+    // short of room?", and it is the one thing a `max_seconds` number can
+    // never tell an agent. Cheap: bounded pocket floods on the failures.
+    {
+        let still_failing: Vec<String> = best_report
+            .per_net
+            .iter()
+            .filter_map(|(n, o)| matches!(o, Outcome::Failed { .. }).then(|| n.clone()))
+            .collect();
+        if !still_failing.is_empty() {
+            let verdict = analyse_reach(
+                board,
+                opts,
+                &original_order,
+                &nets,
+                &fanout,
+                &escape_stubs,
+                &still_failing,
+            );
+            best_report.entombed_pads = verdict
+                .entombed
+                .iter()
+                .map(|(pad, net)| format!("{pad} ({net})"))
+                .collect();
+            if !best_report.entombed_pads.is_empty() {
+                let entombed_nets = verdict.entombed_nets();
+                let budget_bound: Vec<&str> = still_failing
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|n| !entombed_nets.contains(n))
+                    .collect();
+                // Second only to the escape verdict: a pad with no barrel
+                // at all is a stronger statement than a pad whose barrel
+                // landed in a pocket, and it is the one the agent should
+                // read first.
+                let at = usize::from(
+                    best_report
+                        .hints
+                        .first()
+                        .is_some_and(|h| h.starts_with("escape:")),
+                );
+                best_report.hints.insert(
+                    at,
+                    format!(
+                        "entombed: {} pad(s) have NO legal path on this escape plan's bare copper \
+                         — {}. Geometry, not budget: only a different escape plan, placement, \
+                         rule area or stackup moves them. The other {} failed net(s) are \
+                         budget-bound{}",
+                        best_report.entombed_pads.len(),
+                        best_report.entombed_pads.join(", "),
+                        budget_bound.len(),
+                        if budget_bound.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", budget_bound.join(", "))
+                        }
+                    ),
+                );
+            }
+        }
     }
     // Stamp the winning routing onto the caller's board.
     board.clear_routing();
@@ -1621,6 +1872,27 @@ pub(crate) fn build_pass_grid(
 /// cleared `board` and return the per-net outcomes. The board's
 /// routing must already be cleared by the caller.
 ///
+/// Reachability verdict for the current escape plan, computed on the BARE
+/// board — the copper no pass can move. See `crate::reach` for why that
+/// makes the verdict hold for every pass, and what the driver does with it.
+fn analyse_reach(
+    board: &Board,
+    opts: &RouteOptions,
+    order: &[String],
+    nets: &BTreeMap<String, Vec<NetPadInfo>>,
+    fanout: &crate::fanout::FanoutPlan,
+    escape_stubs: &[Trace],
+    failed: &[String],
+) -> crate::reach::Reach {
+    let mut bare = board.clone();
+    bare.clear_routing();
+    let grid = build_pass_grid(&bare, opts, order, fanout, escape_stubs);
+    let areas: Vec<RuleArea> = bare.rule_areas.clone();
+    let schematic = opts.schematic.clone();
+    let rules = RuleCtx::new(&areas, schematic.as_deref(), opts, order, &grid);
+    crate::reach::analyse(&grid, &rules, opts, order, nets, fanout, failed)
+}
+
 /// When `deadline` is hit mid-pass, remaining nets are recorded as
 /// failed (`timeout`) and the partial copper already laid is kept.
 #[allow(clippy::too_many_arguments)]
@@ -1634,6 +1906,7 @@ fn route_pass(
     escape_stubs: &[Trace],
     allow_ripup: bool,
     deadline: Option<Instant>,
+    reach: &crate::reach::Reach,
 ) -> RouteReport {
     // Every A* in this pass inherits the pass deadline, so a single
     // pathological search can no longer run past the caller's budget.
@@ -1725,6 +1998,7 @@ fn route_pass(
             via_copper_cells,
             &pour_nets,
             limits,
+            reach,
         );
         if allow_ripup {
             if let NetRoute::Failed {
@@ -1756,6 +2030,7 @@ fn route_pass(
                     &mut outcomes,
                     0,
                     limits,
+                    reach,
                 );
             }
         }
@@ -1861,6 +2136,7 @@ pub(crate) fn route_one_net(
     via_copper_cells: i32,
     pour_nets: &std::collections::HashSet<String>,
     limits: Limits,
+    reach: &crate::reach::Reach,
 ) -> NetRoute {
     if pour_nets.contains(net_name) {
         return NetRoute::Ok {
@@ -1942,12 +2218,26 @@ pub(crate) fn route_one_net(
     // seed anchors the trunk, and a wide trunk emanating from a
     // fine-pitch fanout pad would short its neighbours. Among the
     // eligible pads pick the geographically central one.
+    // Entombed pads are excluded first: seeding the tree at a pad no other
+    // pad can reach makes every spoke fail, turning one geometry failure
+    // into a whole-net one. (`reach` is empty until the first pass has
+    // failures to analyse, so pass 1 is unchanged.)
     let eligible: Vec<usize> = {
-        let non_fanout: Vec<usize> = (0..pad_points.len())
+        let reachable: Vec<usize> = (0..pad_points.len())
+            .filter(|&i| !reach.is_entombed(&pad_points[i].pad_ref))
+            .collect();
+        let pool = if reachable.is_empty() {
+            (0..pad_points.len()).collect::<Vec<usize>>()
+        } else {
+            reachable
+        };
+        let non_fanout: Vec<usize> = pool
+            .iter()
+            .copied()
             .filter(|&i| !fanout.through_pads.contains(&pad_points[i].pad_ref))
             .collect();
         if non_fanout.is_empty() {
-            (0..pad_points.len()).collect()
+            pool
         } else {
             non_fanout
         }
@@ -2009,11 +2299,37 @@ pub(crate) fn route_one_net(
         .filter(|(i, _)| *i != seed_idx)
         .map(|(_, p)| p.clone())
         .collect();
+    // Entombed spokes go LAST. The loop abandons the net at its first
+    // failure, so an unreachable pad sitting in the middle of the order
+    // would throw away the copper its reachable siblings could still have
+    // laid — copper that keeps the rest of the net one island instead of
+    // several, and that the DRC counts.
     spokes_sorted.sort_by_key(|q| {
-        (seed.center.x.0 - q.center.x.0).unsigned_abs()
-            + (seed.center.y.0 - q.center.y.0).unsigned_abs()
+        (
+            reach.is_entombed(&q.pad_ref),
+            (seed.center.x.0 - q.center.x.0).unsigned_abs()
+                + (seed.center.y.0 - q.center.y.0).unsigned_abs(),
+        )
     });
     for spoke in spokes_sorted {
+        // Provably unreachable on this escape plan's bare copper: the
+        // search would explore the whole grid to its pop cap and then buy a
+        // rip-up cascade, all to rediscover a fact the flood already
+        // established. Fail it here, with no corridor — rip-up can only
+        // move *traces*, and a pocket walled by pads and barrels has none
+        // to give.
+        if reach.is_entombed(&spoke.pad_ref) {
+            return NetRoute::Failed {
+                reason: format!(
+                    "pad {} at ({:.2}, {:.2}) mm is entombed — no legal path exists to it on \
+                     this escape plan, at any budget",
+                    spoke.pad_ref,
+                    spoke.center.x.to_mm(),
+                    spoke.center.y.to_mm(),
+                ),
+                corridor: None,
+            };
+        }
         let spoke_grid = grid.snap(route_point(&spoke), spoke.layer);
         // Neck a spoke down to the default (signal) width when either
         // end is a fanned-out fine-pitch pad. A 0.5 mm power trace
@@ -2174,6 +2490,7 @@ fn try_ripup_route(
     outcomes: &mut BTreeMap<String, NetRoute>,
     depth: usize,
     limits: Limits,
+    reach: &crate::reach::Reach,
 ) -> NetRoute {
     let (seed_g, spoke_g, clr) = corridor;
     let id_to_name: HashMap<u32, &String> = net_id_of.iter().map(|(n, i)| (*i, n)).collect();
@@ -2225,6 +2542,7 @@ fn try_ripup_route(
             via_copper_cells,
             pour_nets,
             limits,
+            reach,
         );
         let NetRoute::Ok { .. } = a_res else {
             // A still boxed: keep this blocker ripped and add the next.
@@ -2252,6 +2570,7 @@ fn try_ripup_route(
                 via_copper_cells,
                 pour_nets,
                 limits,
+                reach,
             );
             if let NetRoute::Failed {
                 corridor: Some((rs, rsp, rc)),
@@ -2283,6 +2602,7 @@ fn try_ripup_route(
                         outcomes,
                         depth + 1,
                         limits,
+                        reach,
                     );
                 }
             }
@@ -2324,6 +2644,7 @@ fn try_ripup_route(
         via_copper_cells,
         pour_nets,
         limits,
+        reach,
     )
 }
 

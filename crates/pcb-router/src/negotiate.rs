@@ -832,6 +832,9 @@ fn extract_legal(
         let nr = route_one_net(
             &mut work, &mut grid, name, id, pads, opts, &rules, history, fanout, via_cells, &pours,
             limits,
+            // Negotiation is its own driver and runs before any pass has
+            // failures to analyse, so it carries no reachability verdict.
+            &crate::reach::Reach::default(),
         );
         outcomes.insert(
             name.clone(),
