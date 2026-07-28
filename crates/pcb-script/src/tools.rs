@@ -3987,6 +3987,13 @@ fn tool_placement_auto(project: &Project, args: &Value) -> Result<Value, ToolErr
         report.final_congestion - report.initial_congestion,
         applied_moves,
     );
+    // Which stage the returned layout came from. Worth saying out loud
+    // when it is the caller's own layout: the agent asked for a placement
+    // and got its board back because nothing beat it, which reads as a
+    // no-op unless we explain it.
+    if report.kept == pcb_placer::Checkpoint::Entry {
+        text.push_str("; kept the input layout (no stage improved on it)");
+    }
     if !report.skipped.is_empty() {
         text.push_str(&format!(
             "\n  skipped {} unknown ref(s): {}",
