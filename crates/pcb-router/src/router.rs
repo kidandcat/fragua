@@ -625,6 +625,19 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// test (no new net routed and no barrel moved) or the wall clock; this
 /// only bounds a pathological board where neither ever trips.
 const MAX_RR_ROUNDS: usize = 64;
+
+/// Consecutive rounds allowed to make no improvement on the best failed
+/// count before the loop stops.
+///
+/// Without it the loop only stops on a true fixpoint — no net routed AND
+/// no barrel moved — and the rip-and-reassign lever can almost always move
+/// SOMETHING, so on a hard board the loop ran until the wall clock said
+/// stop. That made the result a function of how fast the machine was: the
+/// same board, same binary, same budget produced 16 passes and 34/39 on one
+/// run and 14 passes and 33/39 on the next. A clock-free stall rule puts
+/// the stop back under the router's control, which is the whole point of
+/// the fixpoint design.
+const MAX_RR_STALL_ROUNDS: usize = 4;
 /// How many passes a net must fail before its barrel counts as stuck. Two
 /// means the net survived a reorder and a congestion bump and still could
 /// not reach its own barrel — at that point the barrel, not the routing
@@ -648,9 +661,12 @@ const MAX_PLAN_LEGALISE_ROUNDS: usize = 64;
 /// pocket is usually walled by several barrels at once.
 const MAX_PLAN_LEGALISE_PADS: usize = 16;
 
-/// Share of the wall-clock budget the legalisation may spend before the
-/// first net is routed. It normally converges in well under this.
-const PLAN_LEGALISE_FRACTION: f64 = 0.15;
+/// Consecutive legalisation rounds allowed to make no improvement on the
+/// best entombed count before the loop gives up. The repair plateaus long
+/// before the round cap on a plan whose remaining pockets are walled by
+/// pads rather than barrels, and every extra round is budget the RR&R
+/// passes wanted.
+const PLAN_LEGALISE_STALL_ROUNDS: usize = 6;
 
 /// Fraction of `max_seconds` reserved for the tail: stitching, the
 /// organic smoothing pass and length matching. Measured on the RP2040
@@ -805,19 +821,24 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // the plan worse is discarded rather than routed.
     let all_nets: Vec<String> = order.clone();
     if !fanout.through_pads.is_empty() {
-        let legalise_deadline = deadline.map(|d| {
-            let budget = opts.max_seconds.unwrap_or(0.0).max(0.0);
-            d - Duration::from_secs_f64(budget * (1.0 - PLAN_LEGALISE_FRACTION))
-        });
         let mut verdict =
             analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
         let initial_entombed = verdict.entombed.len();
         let mut best_plan = (verdict.entombed.len(), fanout.clone());
         let mut rounds = 0usize;
-        while !verdict.entombed.is_empty() && rounds < MAX_PLAN_LEGALISE_ROUNDS {
-            if timed_out(legalise_deadline) {
-                break;
-            }
+        let mut stalled = 0usize;
+        // Deliberately CLOCK-FREE. Every other stop condition in this
+        // driver is a fixpoint precisely so a converged board does not
+        // depend on how fast the machine was; a wall-clock bound here
+        // broke that outright — the same board legalised to a different
+        // plan on a loaded box and then routed to a different number of
+        // nets. The work is bounded instead by the round cap and the
+        // stall counter, and each round is one bounded flood plus one
+        // re-assignment (~0.1 s on the RP2040 stress board).
+        while !verdict.entombed.is_empty()
+            && rounds < MAX_PLAN_LEGALISE_ROUNDS
+            && stalled < PLAN_LEGALISE_STALL_ROUNDS
+        {
             // The pocket's own barrel first (it may have a better site of
             // its own), then the barrels that form the wall, most-blame
             // first. Both are ranked deterministically.
@@ -849,6 +870,9 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             verdict = analyse_reach(board, opts, &order, &nets, &fanout, &escape_stubs, &all_nets);
             if verdict.entombed.len() < best_plan.0 {
                 best_plan = (verdict.entombed.len(), fanout.clone());
+                stalled = 0;
+            } else {
+                stalled += 1;
             }
         }
         if best_plan.0 < verdict.entombed.len() {
@@ -1027,6 +1051,8 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // barrel-site history only shrinks the lever's candidate set).
     let mut moved_last_round = 0usize;
     let mut round = 0usize;
+    let mut rr_stalled = 0usize;
+    let mut best_failed_seen = usize::MAX;
     for _ in 1..=MAX_RR_ROUNDS {
         if converged {
             break;
@@ -1260,6 +1286,26 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
                 ),
             );
             break;
+        }
+        // Clock-free stop: the lever can nearly always move SOMETHING, so
+        // the fixpoint above rarely fires on a hard board and the wall
+        // clock would otherwise decide when to stop — making the result a
+        // function of machine speed rather than of the board.
+        if failed_after < best_failed_seen {
+            best_failed_seen = failed_after;
+            rr_stalled = 0;
+        } else {
+            rr_stalled += 1;
+            if rr_stalled >= MAX_RR_STALL_ROUNDS {
+                progress(
+                    opts,
+                    format!(
+                        "route: no improvement in {MAX_RR_STALL_ROUNDS} round(s) after \
+                         {iterations_run} pass(es) — stopping"
+                    ),
+                );
+                break;
+            }
         }
 
         // Negotiated congestion: bump the corridor around each bad

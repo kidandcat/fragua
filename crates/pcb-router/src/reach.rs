@@ -239,7 +239,15 @@ pub(crate) fn analyse(
     // Which barrel owns which grid cell, so the blame can name a pad ref
     // instead of a net. Built once for the whole analysis.
     let mut barrel_of_cell: BTreeMap<(i32, i32), String> = BTreeMap::new();
-    for (pad_ref, at) in &fanout.via_positions {
+    // Sorted, NOT `fanout.via_positions` order. That is a `HashMap`, whose
+    // iteration order varies per instance within a single process, and two
+    // barrels whose copper overlaps a cell would then take turns owning it —
+    // a different blame ranking, a different legalisation, a different
+    // board. Measured before this: the same server routed the same file to
+    // 12 passes / 33 nets and 4 passes / 31 nets on alternate calls.
+    let mut barrels: Vec<(&String, &pcb_core::Point)> = fanout.via_positions.iter().collect();
+    barrels.sort_by(|a, b| a.0.cmp(b.0));
+    for (pad_ref, at) in barrels {
         let gp = grid.snap(*at, pcb_core::CopperLayer::Top);
         let r = crate::router::via_copper_cells(opts);
         for dc in -r..=r {
