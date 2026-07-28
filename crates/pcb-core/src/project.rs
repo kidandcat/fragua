@@ -919,15 +919,12 @@ impl Project {
             ));
         }
 
-        // Rotation so the declared local edge faces the requested board edge.
+        // Rotation so the declared local edge faces the requested board edge
+        // (shared helper — the placer's edge planner uses the same math).
         // If no edge_side is declared, leave the palette rotation as-is.
-        let rotation_deg = if let Some(local) = probe.edge_side {
-            let q_local = local.ccw_index();
-            let q_target = board_side.ccw_index();
-            let q = (q_target + 4 - q_local) % 4;
-            (q as f32) * 90.0
-        } else {
-            probe.rotation
+        let rotation_deg = match probe.edge_side {
+            Some(local) => local.rotation_to_face(board_side),
+            None => probe.rotation,
         };
         probe.rotation = rotation_deg;
         probe.position = Point::new(Length::from_mm(0.0), Length::from_mm(0.0));

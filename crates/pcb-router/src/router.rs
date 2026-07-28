@@ -501,6 +501,16 @@ pub struct RouteReport {
     pub dogbone_via_count: usize,
     /// Pre-laid escape/dogbone stub segments committed to the board.
     pub escape_stub_count: usize,
+    /// Pads the escape pass gave a barrel site to (via-in-pad or dogbone).
+    /// With `stranded_pads`, this is the escape-stage metric that predicts
+    /// what the search can possibly finish: a net whose pad never got a
+    /// slot cannot be routed no matter how long the search runs.
+    pub escaped_pad_count: usize,
+    /// Pads that NEEDED an escape and got none — no barrel site clears
+    /// their neighbours, or none that does can be reached by legal copper.
+    /// Geometrically stranded; reported before routing rather than
+    /// discovered as a mysterious failed net afterwards.
+    pub stranded_pads: Vec<String>,
     /// Nets the router actually attempted (pour-only nets are skipped by
     /// design and are not counted here).
     pub routable_net_count: usize,
@@ -514,8 +524,10 @@ pub struct RouteReport {
     /// Sum of `lower_bound_mm` over the same set.
     pub total_lower_bound_mm: f64,
     /// How many full rip-up-and-reroute passes the driver performed
-    /// before settling on this report. 1 = single pass (no RR&R needed
-    /// or RR&R didn't help); 2..=`MAX_RR_ITERATIONS` = RR&R kicked in.
+    /// before settling on this report — the REAL round count, not a
+    /// quota: the loop runs until it reaches a fixpoint or the budget
+    /// truncates it. 1 = a single pass was enough (or the first round
+    /// already hit the fixpoint).
     pub iterations: usize,
     /// Plain-text suggestions for the agent: which footprints to move
     /// to fix the still-failing nets. Generated post-hoc from the best
@@ -525,12 +537,6 @@ pub struct RouteReport {
     /// was routed.
     pub organic: Option<crate::organic::OrganicReport>,
 }
-
-/// Hard cap on rip-up-and-reroute passes. Each pass clears all routing
-/// and re-runs the per-net A* loop with a different ordering, so the
-/// cost is roughly linear in this constant. 3 is empirically enough to
-/// recover most fixable failures without exploding wall-clock time.
-const MAX_RR_ITERATIONS: usize = 3;
 
 /// A net is "bad" — and pulled to the front of the next iteration's
 /// order — if its detour ratio exceeds this threshold or it failed
@@ -580,7 +586,8 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// Route every net found in the board's pad assignments. Mutates
 /// `board` in place: existing routing is cleared, new routing is laid.
 ///
-/// The driver runs up to `MAX_RR_ITERATIONS` rip-up-and-reroute passes.
+/// The driver runs rip-up-and-reroute ROUNDS (one pass + one fire of the
+/// rip-and-reassign lever) until a fixpoint or the wall-clock budget.
 /// After each pass, any net that failed or whose detour ratio exceeds
 /// `BAD_DETOUR_RATIO` is pulled to the front of the order for the next
 /// pass — those bad nets get pristine corridors before the easy nets
@@ -591,9 +598,43 @@ const RIPUP_CORRIDOR_WIDEN: i32 = 4;
 /// Honours `RouteOptions::max_seconds`: when the budget is exhausted the
 /// best-so-far board is committed and remaining unrouted nets are reported
 /// as failed with a timeout reason.
+/// Safety net on the round loop. The loop's real exit is the FIXPOINT
+/// test (no new net routed and no barrel moved) or the wall clock; this
+/// only bounds a pathological board where neither ever trips.
+const MAX_RR_ROUNDS: usize = 64;
+/// How many passes a net must fail before its barrel counts as stuck. Two
+/// means the net survived a reorder and a congestion bump and still could
+/// not reach its own barrel — at that point the barrel, not the routing
+/// order, is what is wrong. (Measured at one as well on the RP2040 stress
+/// board: it fires a pass earlier and lands on the same board, so the
+/// stricter reading of "keeps failing" is the one kept.)
+const REASSIGN_MIN_STREAK: usize = 2;
+/// Most pads moved in one rip-and-reassign round. A whole package side at
+/// once would change the geometry so much that the next pass measures a
+/// different board rather than the effect of the move.
+const MAX_REASSIGN_PADS: usize = 8;
+
+/// Fraction of `max_seconds` reserved for the tail: stitching, the
+/// organic smoothing pass and length matching. Measured on the RP2040
+/// stress board, where the tail costs well under a tenth of a 180 s
+/// budget.
+const TAIL_RESERVE_FRACTION: f64 = 0.04;
+
 pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let started = Instant::now();
     let deadline = deadline_of(opts);
+    // Two nested deadlines. The RR&R rounds now run until they reach a
+    // fixpoint, so left alone they would spend the entire budget and the
+    // tail (stitching, organic smoothing, length matching) would be
+    // skipped outright, which is exactly what happened on the first v8
+    // measurement.
+    // Reserving the tail's slice up front keeps `max_seconds` honoured to
+    // the second while guaranteeing the board that comes back is a
+    // FINISHED board.
+    let budget = opts.max_seconds.unwrap_or(0.0).max(0.0);
+    let tail_deadline =
+        deadline.map(|d| d - Duration::from_secs_f64(budget * TAIL_RESERVE_FRACTION));
+    let rr_deadline = tail_deadline;
     progress(
         opts,
         format!(
@@ -623,13 +664,20 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         ),
     );
     let plan = crate::escape::plan_escapes(board, opts);
-    let (fanout, escape_stubs) = (plan.fanout, plan.stubs);
+    let (mut fanout, escape_stubs) = (plan.fanout, plan.stubs);
     progress(
         opts,
         format!(
-            "route: escape ready — {} via(s), {} stub segment(s)",
+            "route: escape ready — {} via(s), {} stub segment(s), {} pad(s) escaped, {} stranded{}",
             fanout.vias.len(),
-            escape_stubs.len()
+            fanout.stubs.len() + escape_stubs.len(),
+            fanout.through_pads.len(),
+            fanout.stranded_pads.len(),
+            if fanout.stranded_pads.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", fanout.stranded_pads.join(", "))
+            }
         ),
     );
     if nets.is_empty() {
@@ -637,6 +685,8 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         return RouteReport {
             fanout_via_count: fanout.vias.len(),
             dogbone_via_count: fanout.dogbone_pads.len(),
+            escaped_pad_count: fanout.through_pads.len(),
+            stranded_pads: fanout.stranded_pads.clone(),
             elapsed_seconds: started.elapsed().as_secs_f64(),
             ..RouteReport::default()
         };
@@ -707,10 +757,31 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     let layer_count = board.stackup.layer_count();
     let mut cost_map = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
 
+    // Rip-and-reassign bookkeeping (see the lever inside the loop).
+    let mut failing_streak: HashMap<String, usize> = HashMap::new();
+    // Every escape plan the lever has produced, as its sorted barrel
+    // sites. The lever itself only bans the site a barrel is being moved
+    // OFF (banning its whole history costs real nets — measured), so two
+    // barrels can trade pockets forever; recognising a plan we have
+    // already routed is what turns "no barrel moved" into a real
+    // fixpoint. Deterministic and clock-free, like the rest of the test.
+    let mut seen_plans: std::collections::BTreeSet<Vec<(String, i64, i64)>> =
+        std::collections::BTreeSet::new();
     let mut best: Option<(Board, RouteReport)> = None;
+    // The escape plan `best` was routed against. The rip-and-reassign
+    // lever below MOVES barrels between passes, and a barrel is fixed
+    // copper the winning board's traces already run to — so the plan has
+    // to travel with the board it produced, or the committed board would
+    // carry barrels its own traces never met.
+    let mut best_fanout = fanout.clone();
     let mut last_order: Option<Vec<String>> = None;
     let mut iterations_run = 0;
+    // Two different clocks. `hit_deadline` = the REAL budget is gone, so
+    // the tail (post passes) must be skipped. `truncated` = the search
+    // stopped because of the clock rather than because it converged —
+    // that is what the caller's `budget_hit` means.
     let mut hit_deadline = false;
+    let mut truncated = false;
     // Extra report lines the negotiation driver contributes (the corridor
     // autopsy). Empty for the classic loop.
     let mut extra_hints: Vec<String> = Vec::new();
@@ -759,8 +830,14 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             ),
         );
         hit_deadline = timed_out(deadline);
+        truncated |= hit_deadline;
         converged = neg.converged;
         best = Some((neg.board, neg.report));
+        // Negotiation runs before the first pass, so the plan it routed
+        // against is still the untouched one — snapshot it anyway, so the
+        // invariant "best_fanout is the plan that produced best" holds at
+        // every assignment site rather than by accident of ordering.
+        best_fanout = fanout.clone();
     }
 
     // The pristine order the RR loop starts from — easy-first, or (after a
@@ -769,31 +846,84 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     // substrate back.
     let original_order = order.clone();
 
-    for _ in 1..=MAX_RR_ITERATIONS {
+    // Dedicated clean-board rip-up pass. The round loop is rip-up-free, so
+    // its `best` is exactly the historical baseline. If failures remain, run
+    // ONE pass on the PRISTINE substrate — original easy-first order, zero
+    // cost bias (no reorder/congestion churn) — but with rip-up enabled. On
+    // that substrate only the genuinely congested nets fail, so targeted
+    // rip-up resolves them surgically; doing it there (rather than inside a
+    // reordered/bumped pass) avoids the global degradation greedy rip-up
+    // causes on a churned board. Kept only when strictly better, so it can
+    // never regress below baseline.
+    //
+    // It runs once per ROUND, so every escape plan the rip-and-reassign
+    // lever produces is judged by both strategies (see the call site).
+    let mut clean_pass_done = false;
+    macro_rules! run_clean_pass {
+        () => {{
+            progress(opts, "route: clean-board rip-up pass");
+            let mut work = board.clone();
+            work.clear_routing();
+            let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
+            let report = route_pass(
+                &mut work,
+                &nets,
+                &original_order,
+                opts,
+                &clean_cost,
+                &fanout,
+                &escape_stubs,
+                true,
+                tail_deadline,
+            );
+            iterations_run += 1;
+            clean_pass_done = true;
+            let take_it = match &best {
+                None => true,
+                Some((_, prev)) => report_is_better(&report, prev),
+            };
+            if take_it {
+                best = Some((work, report));
+                best_fanout = fanout.clone();
+            }
+        }};
+    }
+
+    // Rounds, not a fixed pass count. A round is one RR&R pass plus one
+    // fire of the rip-and-reassign lever, and the loop runs while the wall
+    // clock allows AND the last round made progress. It stops on a
+    // FIXPOINT — a round that routed no new net and moved no barrel — so a
+    // converged board is the same board whatever the budget was; the
+    // budget only truncates. `MAX_RR_ROUNDS` is a safety net, not the
+    // normal exit (progress is bounded: failures only fall, and the
+    // barrel-site history only shrinks the lever's candidate set).
+    let mut moved_last_round = 0usize;
+    let mut round = 0usize;
+    for _ in 1..=MAX_RR_ROUNDS {
         if converged {
             break;
         }
-        if timed_out(deadline) {
-            hit_deadline = true;
+        if timed_out(rr_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
             progress(
                 opts,
                 "route: max_seconds budget exhausted — keeping best so far",
             );
             break;
         }
-        // Stop early if reordering produced nothing new — no point
-        // re-running the exact same sequence twice.
-        if last_order.as_ref() == Some(&order) {
+        // Stop early if reordering produced nothing new AND the geometry
+        // did not move either — that pass would be byte-identical.
+        if last_order.as_ref() == Some(&order) && moved_last_round == 0 {
             break;
         }
         last_order = Some(order.clone());
+        round += 1;
         iterations_run += 1;
+        let failed_before = best.as_ref().map_or(usize::MAX, |(_, r)| count_failed(r));
         progress(
             opts,
-            format!(
-                "route: pass {iterations_run}/{MAX_RR_ITERATIONS} ({} net(s))",
-                order.len()
-            ),
+            format!("route: pass {iterations_run} ({} net(s))", order.len()),
         );
 
         let mut work = board.clone();
@@ -811,7 +941,7 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             &fanout,
             &escape_stubs,
             false,
-            deadline,
+            rr_deadline,
         );
 
         let take_it = match &best {
@@ -820,10 +950,28 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         };
         if take_it {
             best = Some((work, report.clone()));
+            best_fanout = fanout.clone();
         }
-        if timed_out(deadline) {
-            hit_deadline = true;
+        if timed_out(rr_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
             break;
+        }
+        // Both strategies, every round. The clean-board rip-up pass is
+        // judged against the escape plan the lever has built SO FAR, and
+        // on the stress board that is what decides it: the same pass
+        // scores 23 nets on the plan after two barrel moves and 17 on the
+        // pristine one. Running it once — before the lever has moved
+        // anything, or after it has moved everything — is a coin flip on
+        // which plan it happens to see; running it per round tries them
+        // all and keeps the best.
+        if count_failed(&report) > 0 && !timed_out(rr_deadline) {
+            run_clean_pass!();
+            if timed_out(rr_deadline) {
+                truncated = true;
+                hit_deadline = timed_out(deadline);
+                break;
+            }
         }
 
         // Identify bad nets for next iteration. Failed nets always go
@@ -848,6 +996,83 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             break;
         }
 
+        // Rip-and-reassign: a net that failed TWICE at a pad whose barrel
+        // we placed is not going to be saved by another reroute. The
+        // barrel is stamped on every layer and never ripped, so if it
+        // landed in a pocket the neighbouring barrels wall off, every
+        // remaining pass re-runs into the same wall. Move it instead —
+        // re-ask the escape-slot assignment for those pads with the sites
+        // they have already used excluded (`escape::reassign_escapes`), and
+        // let the next pass route against the new geometry. It fires on
+        // EVERY round now: the history ban makes each fire cost the lever a
+        // candidate, so "moved 0" is a statement about the geometry, not
+        // about a round quota that happened to run out.
+        for name in &failed {
+            *failing_streak.entry(name.clone()).or_insert(0) += 1;
+        }
+        let mut moved = 0usize;
+        if !timed_out(deadline) {
+            let mut movable: Vec<String> = Vec::new();
+            for name in &failed {
+                if failing_streak.get(name).copied().unwrap_or(0) < REASSIGN_MIN_STREAK {
+                    continue;
+                }
+                for p in nets.get(name).map_or(&[][..], Vec::as_slice) {
+                    if fanout.through_pads.contains(&p.pad_ref) {
+                        movable.push(p.pad_ref.clone());
+                    }
+                }
+            }
+            movable.sort();
+            movable.dedup();
+            movable.truncate(MAX_REASSIGN_PADS);
+            if !movable.is_empty() {
+                moved = crate::escape::reassign_escapes(
+                    board,
+                    opts,
+                    &mut fanout,
+                    &escape_stubs,
+                    &movable,
+                );
+                if moved > 0 {
+                    let mut key: Vec<(String, i64, i64)> = fanout
+                        .via_positions
+                        .iter()
+                        .map(|(p, v)| (p.clone(), v.x.0, v.y.0))
+                        .collect();
+                    key.sort();
+                    if !seen_plans.insert(key) {
+                        // A plan we have already routed: the lever is
+                        // cycling, so this round moved nothing new.
+                        moved = 0;
+                    }
+                }
+                progress(
+                    opts,
+                    format!(
+                        "route: rip-and-reassign — {moved} of {} stuck escape barrel(s) moved",
+                        movable.len()
+                    ),
+                );
+            }
+        }
+        moved_last_round = moved;
+
+        // FIXPOINT. The round routed no new net and could not move a
+        // barrel, so the geometry the next round would search is the
+        // geometry this one already failed on. Stopping here (rather than
+        // on the clock) is what makes a converged result budget-independent.
+        let failed_after = best.as_ref().map_or(usize::MAX, |(_, r)| count_failed(r));
+        if failed_after >= failed_before && moved == 0 {
+            progress(
+                opts,
+                format!(
+                    "route: fixpoint after {iterations_run} pass(es) — no new net routed and no barrel moved"
+                ),
+            );
+            break;
+        }
+
         // Negotiated congestion: bump the corridor around each bad
         // net's pads so easy nets in the NEXT pass detour around it
         // and leave the bad net a clear shot. Bias scales with
@@ -855,7 +1080,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         // next iteration applies a stronger one (capped at
         // `CONGESTION_MAX`) until A* finds a way through.
         let snap_grid = Grid::with_layers(region, opts.cell, layer_count);
-        let bump_factor = iterations_run as u32; // 1, 2, 3...
+        // Rounds, not passes: the clean-board rip-up pass also bumps
+        // `iterations_run` (it IS a pass the report must own up to), but
+        // it runs on a pristine cost map and must not double-step the
+        // congestion ramp the biased passes climb.
+        let bump_factor = round as u32; // 1, 2, 3...
         for name in &failed {
             bump_corridor(
                 &snap_grid,
@@ -883,47 +1112,19 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
         order = failed.into_iter().chain(inefficient).chain(rest).collect();
     }
 
-    // Dedicated clean-board rip-up pass. The loop above is rip-up-free, so its
-    // `best` is exactly the historical baseline. If failures remain, run ONE
-    // more pass on the PRISTINE substrate — original easy-first order, zero
-    // cost bias (no reorder/congestion churn) — but with rip-up enabled. On
-    // that substrate only the genuinely congested nets fail, so targeted
-    // rip-up resolves them surgically; doing it here (rather than inside the
-    // reordered/bumped loop) avoids the global degradation greedy rip-up
-    // causes on a churned board. Kept only when strictly better, so it can
-    // never regress below baseline. Skipped when the wall-clock budget is
-    // already exhausted.
-    if !converged && !hit_deadline && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0) {
-        if timed_out(deadline) {
-            hit_deadline = true;
+    if !converged
+        && !clean_pass_done
+        && !hit_deadline
+        && best.as_ref().is_none_or(|(_, r)| count_failed(r) > 0)
+    {
+        if timed_out(tail_deadline) {
+            truncated = true;
+            hit_deadline = timed_out(deadline);
         } else {
-            progress(opts, "route: clean-board rip-up pass");
-            // The pristine order the rip-up pass runs on: whatever the loop
-            // started from (easy-first, or negotiation's contention order).
-            let mut work = board.clone();
-            work.clear_routing();
-            let clean_cost = Grid::with_layers(region, opts.cell, layer_count).new_cost_map();
-            let report = route_pass(
-                &mut work,
-                &nets,
-                &original_order,
-                opts,
-                &clean_cost,
-                &fanout,
-                &escape_stubs,
-                true,
-                deadline,
-            );
-            iterations_run += 1;
-            let take_it = match &best {
-                None => true,
-                Some((_, prev)) => report_is_better(&report, prev),
-            };
-            if take_it {
-                best = Some((work, report));
-            }
+            run_clean_pass!();
         }
     }
+    let fanout = best_fanout;
 
     // A budget small enough that the escape/fanout pre-pass alone exhausts
     // it leaves `best` empty — the RR loop never got to run a single pass.
@@ -955,6 +1156,20 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     best_report.iterations = iterations_run;
     best_report.hints = generate_hints(&best_report, &nets);
     best_report.hints.extend(extra_hints);
+    if !fanout.stranded_pads.is_empty() {
+        // The escape-stage truth: these pads have no legal barrel site at
+        // all, so their nets are unroutable by construction. Say so up
+        // front — no amount of `max_seconds` changes it, only geometry
+        // (pitch, rule area, via size, exposed-pad shrink) does.
+        best_report.hints.insert(
+            0,
+            format!(
+                "escape: {} pad(s) stranded — no legal escape slot at the resolved rules: {}",
+                fanout.stranded_pads.len(),
+                fanout.stranded_pads.join(", ")
+            ),
+        );
+    }
     // Stamp the winning routing onto the caller's board.
     board.clear_routing();
     for trace in best_work.traces {
@@ -968,18 +1183,27 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     for via in &fanout.vias {
         board.add_via(via.clone());
     }
-    // Pre-laid escape stubs (fine-escape mode) are fixed copper too.
-    for stub in &escape_stubs {
+    // Escape stubs are fixed copper too — and they are committed from the
+    // SAME plan snapshot as the barrels above (`best_fanout`), so the pad →
+    // barrel copper on the board is always the copper the winning pass was
+    // routed against.
+    for stub in fanout.stubs.iter().chain(escape_stubs.iter()) {
         board.add_trace(stub.clone());
     }
     // Organic post-pass can also be expensive — skip it when the budget
     // is already exhausted so agents get a timely reply.
     if !hit_deadline && !timed_out(deadline) {
+        let t = Instant::now();
         post_passes(board, opts, &mut best_report);
+        progress(
+            opts,
+            format!("route: post passes in {:.1}s", t.elapsed().as_secs_f64()),
+        );
     } else {
         // Still do cheap stitching so power pours stay connected.
         crate::stitching::add_stitching_vias(board, opts);
         hit_deadline = true;
+        truncated = true;
     }
     // Truthful totals: everything above (coarse routing, fanout vias,
     // escape stubs, organic re-segmentation, pour stitching) has now been
@@ -989,10 +1213,12 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
     best_report.board_via_count = board.vias.len();
     best_report.fanout_via_count = fanout.vias.len();
     best_report.dogbone_via_count = fanout.dogbone_pads.len();
-    best_report.escape_stub_count = escape_stubs.len();
+    best_report.escape_stub_count = fanout.stubs.len() + escape_stubs.len();
+    best_report.escaped_pad_count = fanout.through_pads.len();
+    best_report.stranded_pads = fanout.stranded_pads.clone();
     best_report.routable_net_count = best_report.per_net.len();
     best_report.elapsed_seconds = started.elapsed().as_secs_f64();
-    best_report.budget_hit = hit_deadline;
+    best_report.budget_hit = truncated || hit_deadline;
     progress(
         opts,
         format!(
@@ -1001,7 +1227,11 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             best_report.board_trace_count,
             best_report.board_via_count,
             count_failed(&best_report),
-            if hit_deadline { " (budget hit)" } else { "" }
+            if best_report.budget_hit {
+                " (budget hit)"
+            } else {
+                ""
+            }
         ),
     );
     best_report
@@ -1177,14 +1407,13 @@ pub(crate) fn count_failed(r: &RouteReport) -> usize {
         .count()
 }
 
-/// Routing region. If the board has an outline, the router stays
-/// *inside* it with an inset that keeps the centre of the widest
-/// copper feature (a via) far enough from Edge.Cuts to satisfy the
-/// DRC's edge clearance check (default 0.3 mm). Without an outline we
-/// fall back to the content bbox expanded by 5 mm so the router still
-/// has slack to find paths. Pulled out so `route()` can size the
-/// negotiated-congestion cost map before the first pass.
-pub(crate) fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
+/// The area copper is allowed to occupy: the outline inset so the centre
+/// of the widest copper feature (a via) still satisfies the DRC's edge
+/// clearance (default 0.3 mm). Everything the grid holds outside this
+/// rectangle is stamped as an obstacle (see [`build_pass_grid`]) — only
+/// pad copper, which is placement and not the router's to move, is
+/// reachable there.
+fn copper_region(board: &Board, opts: &RouteOptions) -> Rect {
     let edge_clearance = Length::from_mm(0.3);
     // Widest copper feature across the *effective* trace widths (max
     // of default and any class override) and the via diameter. Used
@@ -1231,6 +1460,50 @@ pub(crate) fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
     }
 }
 
+/// The grid's extent. This is [`copper_region`] **grown until it contains
+/// every pad**, because a pad the grid does not cover is a pad no search
+/// can ever land on — the net is lost before the first expansion, and the
+/// failure gets blamed on whichever pad the search was aiming from.
+///
+/// That is not hypothetical: an edge-mounted header sits with its pads a
+/// few tenths of a mm inside Edge.Cuts, i.e. OUTSIDE the inset copper
+/// region, and `Grid::snap` truncates toward zero — so the same pad
+/// geometry was silently routable on the low side of the board and
+/// unroutable on the high side. On the RP2040 stress board that alone
+/// cost three nets (`HDRB1`, `SWCLK`, `SWDIO` at J4/J2).
+///
+/// Growth is in WHOLE CELLS so the cell lattice is bit-for-bit unchanged
+/// (only its index origin moves): a board whose pads all sit inside the
+/// copper region routes exactly as before, cell for cell.
+pub(crate) fn compute_region(board: &Board, opts: &RouteOptions) -> Rect {
+    let base = copper_region(board, opts);
+    let cell = Length(opts.cell.0.max(1));
+    // One cell of slack past the outermost pad centre, so the cell a pad
+    // snaps to always has neighbours on the pad's own side to be entered
+    // from.
+    let grow = |need: Length| -> Length {
+        if need.0 <= 0 {
+            Length(0)
+        } else {
+            Length((ceil_cells(need.0, cell.0) as i64 + 1) * cell.0)
+        }
+    };
+    let (mut lo_x, mut lo_y, mut hi_x, mut hi_y) = (Length(0), Length(0), Length(0), Length(0));
+    for fp in board.footprints_in_order() {
+        for pad in &fp.pads {
+            let c = fp.pad_world_center(pad);
+            lo_x = Length(lo_x.0.max(grow(base.min.x - c.x).0));
+            lo_y = Length(lo_y.0.max(grow(base.min.y - c.y).0));
+            hi_x = Length(hi_x.0.max(grow(c.x - base.max.x).0));
+            hi_y = Length(hi_y.0.max(grow(c.y - base.max.y).0));
+        }
+    }
+    Rect::from_corners(
+        Point::new(base.min.x - lo_x, base.min.y - lo_y),
+        Point::new(base.max.x + hi_x, base.max.y + hi_y),
+    )
+}
+
 /// Via copper radius in cells — the barrel's own half-diameter, stamped
 /// bare on every layer. Independent of trace width, so it is one number
 /// per routing pass.
@@ -1273,6 +1546,12 @@ pub(crate) fn build_pass_grid(
     // overwrite the cells they actually own so they stay reachable.
     grid.stamp_bodies(board, opts.clearance);
     grid.stamp_keepouts(board);
+    // The grid can extend past the area copper may occupy (it must cover
+    // pads sitting between the outline inset and Edge.Cuts). Everything out
+    // there is an obstacle; only the pad stamps below reopen it, so a net
+    // can land on such a pad without the router treating the board margin
+    // as free routing space.
+    grid.stamp_outside(copper_region(board, opts));
     // Stamp pads BARE (no clearance inflation): a pad cell holds its true
     // copper extent only. Edge-to-edge clearance to a pad is enforced at
     // search time by each net's own clearance disk — exact at any grid
@@ -1320,11 +1599,14 @@ pub(crate) fn build_pass_grid(
             }
         }
     }
-    // Pre-laid escape stubs (fine-escape mode): stamp them as their net's
-    // bare trace copper so foreign nets keep clearance and the escaped net
-    // can branch off them. They connect each fine-pitch pad to its breakout
-    // via, which is the DrilledPad landing stamped above.
-    for stub in escape_stubs {
+    // Escape stubs — the dogbone pad → barrel copper carried in the plan,
+    // plus any pre-laid fine-escape stubs. Stamped as their net's bare
+    // trace copper so foreign nets keep clearance and the escaped net can
+    // branch off them. They connect each fine-pitch pad to its breakout
+    // via, which is the DrilledPad landing stamped above. The plan's own
+    // stubs are read from `fanout` (never from a parallel list), so a pass
+    // always sees the stubs that belong to the barrels it is routing to.
+    for stub in fanout.stubs.iter().chain(escape_stubs.iter()) {
         if let Some(id) = net_id_lookup(&stub.net) {
             let a = grid.snap(stub.start, stub.layer);
             let b = grid.snap(stub.end, stub.layer);

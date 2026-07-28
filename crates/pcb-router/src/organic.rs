@@ -149,14 +149,14 @@ pub(crate) enum Shape {
 
 pub(crate) struct Obstacle {
     pub(crate) shape: Shape,
+    /// Clearance the obstacle's own net class demands. This is only half
+    /// the rule: a `RuleArea` covering the point where the two coppers
+    /// actually come closest REPLACES it outright, and that is resolved
+    /// per approach in `Obstacles::approach` — exactly where DRC
+    /// resolves it. Sampling the area at the obstacle's centre instead
+    /// (what this used to do) disagrees with DRC for every pair whose
+    /// closest approach lands on the other side of an area border.
     pub(crate) clearance_mm: f64,
-    /// True when `clearance_mm` came from a rule area covering this
-    /// copper: an ABSOLUTE requirement that replaces the chain's own
-    /// class clearance instead of being maxed with it. That is what
-    /// lets the smoothing pass keep the tight geometry a fine-pitch
-    /// escape zone legalised, instead of unwinding it to the board
-    /// default.
-    pub(crate) absolute: bool,
     /// Net owning the copper, when it has one — the topo engine's
     /// targeted rip-up wants to know WHO is in the way.
     pub(crate) net: Option<String>,
@@ -166,68 +166,117 @@ pub(crate) struct Obstacle {
 /// plus the outline band the centreline must stay inside.
 pub(crate) struct Obstacles {
     pub(crate) items: Vec<Obstacle>,
-    /// Outline shrink for the centreline: half-width + edge clearance.
-    pub(crate) outline_min: P2,
-    pub(crate) outline_max: P2,
-}
-
-impl Obstacle {
-    /// Clearance this obstacle demands from a chain whose own class
-    /// clearance is `clr`.
-    pub(crate) fn required(&self, clr: f64) -> f64 {
-        if self.absolute {
-            self.clearance_mm
-        } else {
-            clr.max(self.clearance_mm)
-        }
-    }
+    /// The board's rule areas, cloned so the checker can ask the ONE
+    /// resolver for the rule at an arbitrary point without borrowing a
+    /// resolver that outlives its builder (the topo engine builds one
+    /// per call). A board carries a handful of areas.
+    areas: Vec<pcb_core::RuleArea>,
+    defaults: pcb_core::RuleDefaults,
+    /// Layer these obstacles live on — rule areas can be layer-scoped.
+    layer: CopperLayer,
+    /// Largest clearance any area on this board can demand. Upper-bounds
+    /// the required distance, so an obstacle further away than that can
+    /// be discarded without resolving the rule at all.
+    worst_area_mm: f64,
+    /// Board outline, unshrunk: the centreline band folds in the chain's
+    /// own half-width at check time, because one net's chains can carry
+    /// different widths (a narrowed fine-pitch stub and its 0.25 mm run).
+    pub(crate) outline: pcb_core::Rect,
+    /// Edge clearance the centreline band adds on top of the half-width.
+    edge_mm: f64,
 }
 
 impl Obstacles {
+    /// Clearance a rule area imposes at `site`, if any. Goes through
+    /// `RuleResolver` so area priority/specificity is derived in exactly
+    /// one place (see `pcb_core::rules`).
+    fn area_clearance_at(&self, site: P2) -> Option<f64> {
+        if self.areas.is_empty() {
+            return None;
+        }
+        pcb_core::RuleResolver::new(&self.areas, self.defaults)
+            .area_clearance(to_point(site), Some(self.layer))
+            .map(|l| l.to_mm())
+    }
+
+    /// Centreline band for a chain of half-width `hw`.
+    fn band(&self, hw: f64) -> (P2, P2) {
+        let m = hw + self.edge_mm;
+        (
+            [
+                self.outline.min.x.to_mm() + m,
+                self.outline.min.y.to_mm() + m,
+            ],
+            [
+                self.outline.max.x.to_mm() - m,
+                self.outline.max.y.to_mm() - m,
+            ],
+        )
+    }
+
+    /// Copper-edge distance from segment `ab` to `ob` and the clearance
+    /// required there, or `None` when no rule on this board could be
+    /// violated at that distance (the fast path — it skips resolving the
+    /// area, which needs the point of closest approach).
+    fn approach(&self, a: P2, b: P2, ob: &Obstacle, hw: f64, clr: f64) -> Option<(f64, f64)> {
+        let d = match &ob.shape {
+            Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
+            Shape::Capsule {
+                a: c,
+                b: d2,
+                half_w,
+            } => seg_seg_dist(a, b, *c, *d2) - half_w,
+            Shape::Circle { c, r } => point_seg_dist(*c, a, b) - r,
+        };
+        let class_need = hw + clr.max(ob.clearance_mm);
+        if d >= class_need.max(hw + self.worst_area_mm) {
+            return None;
+        }
+        let site = match &ob.shape {
+            Shape::Rect { min, max } => seg_rect_site(a, b, *min, *max),
+            Shape::Capsule { a: c, b: d2, .. } => seg_seg_site(a, b, *c, *d2),
+            Shape::Circle { c, r } => seg_circle_site(a, b, *c, *r),
+        };
+        let need = self.area_clearance_at(site).map_or(class_need, |c| hw + c);
+        Some((d, need))
+    }
+
+    fn describe(ob: &Obstacle) -> String {
+        match &ob.shape {
+            Shape::Rect { min, max } => format!(
+                "pad rect ({:.2},{:.2})-({:.2},{:.2})",
+                min[0], min[1], max[0], max[1]
+            ),
+            Shape::Capsule { a, b, .. } => {
+                format!("trace ({:.2},{:.2})->({:.2},{:.2})", a[0], a[1], b[0], b[1])
+            }
+            Shape::Circle { c, .. } => format!("via ({:.2},{:.2})", c[0], c[1]),
+        }
+    }
+
     /// Debug twin of `polyline_clear`: description of the first
     /// violation, or `None` when the polyline is clear.
     pub(crate) fn first_violation(&self, pts: &[P2], hw: f64, clr: f64) -> Option<String> {
+        let (lo, hi) = self.band(hw);
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             for p in [a, b] {
-                if p[0] < self.outline_min[0]
-                    || p[1] < self.outline_min[1]
-                    || p[0] > self.outline_max[0]
-                    || p[1] > self.outline_max[1]
-                {
+                if p[0] < lo[0] || p[1] < lo[1] || p[0] > hi[0] || p[1] > hi[1] {
                     return Some(format!("outline band at ({:.2},{:.2})", p[0], p[1]));
                 }
             }
             for ob in &self.items {
-                let need = hw + ob.required(clr);
-                let (d, what) = match &ob.shape {
-                    Shape::Rect { min, max } => (
-                        seg_rect_dist(a, b, *min, *max),
-                        format!(
-                            "pad rect ({:.2},{:.2})-({:.2},{:.2})",
-                            min[0], min[1], max[0], max[1]
-                        ),
-                    ),
-                    Shape::Capsule {
-                        a: c,
-                        b: d2,
-                        half_w,
-                    } => (
-                        seg_seg_dist(a, b, *c, *d2) - half_w,
-                        format!(
-                            "trace ({:.2},{:.2})->({:.2},{:.2})",
-                            c[0], c[1], d2[0], d2[1]
-                        ),
-                    ),
-                    Shape::Circle { c, r } => (
-                        point_seg_dist(*c, a, b) - r,
-                        format!("via ({:.2},{:.2})", c[0], c[1]),
-                    ),
+                let Some((d, need)) = self.approach(a, b, ob, hw, clr) else {
+                    continue;
                 };
-                if d < need {
+                if d < need - 1e-6 {
                     return Some(format!(
-                        "{what}: d {d:.3} < need {need:.3} on seg ({:.2},{:.2})->({:.2},{:.2})",
-                        a[0], a[1], b[0], b[1]
+                        "{}: d {d:.3} < need {need:.3} on seg ({:.2},{:.2})->({:.2},{:.2})",
+                        Self::describe(ob),
+                        a[0],
+                        a[1],
+                        b[0],
+                        b[1]
                     ));
                 }
             }
@@ -241,15 +290,8 @@ impl Obstacles {
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             for ob in &self.items {
-                let need = hw + ob.required(clr);
-                let d = match &ob.shape {
-                    Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
-                    Shape::Capsule {
-                        a: c,
-                        b: d2,
-                        half_w,
-                    } => seg_seg_dist(a, b, *c, *d2) - half_w,
-                    Shape::Circle { c, r } => point_seg_dist(*c, a, b) - r,
+                let Some((d, need)) = self.approach(a, b, ob, hw, clr) else {
+                    continue;
                 };
                 if d < need - 1e-6 {
                     if let Some(n) = &ob.net {
@@ -264,28 +306,18 @@ impl Obstacles {
     /// True when every segment of `pts` keeps clearance. `hw` is the
     /// chain's half-width, `clr` its net clearance.
     pub(crate) fn polyline_clear(&self, pts: &[P2], hw: f64, clr: f64) -> bool {
+        let (lo, hi) = self.band(hw);
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             // Stay inside the outline band.
             for p in [a, b] {
-                if p[0] < self.outline_min[0]
-                    || p[1] < self.outline_min[1]
-                    || p[0] > self.outline_max[0]
-                    || p[1] > self.outline_max[1]
-                {
+                if p[0] < lo[0] || p[1] < lo[1] || p[0] > hi[0] || p[1] > hi[1] {
                     return false;
                 }
             }
             for ob in &self.items {
-                let need = hw + ob.required(clr);
-                let d = match &ob.shape {
-                    Shape::Rect { min, max } => seg_rect_dist(a, b, *min, *max),
-                    Shape::Capsule {
-                        a: c,
-                        b: d2,
-                        half_w,
-                    } => seg_seg_dist(a, b, *c, *d2) - half_w,
-                    Shape::Circle { c, r } => point_seg_dist(*c, a, b) - r,
+                let Some((d, need)) = self.approach(a, b, ob, hw, clr) else {
+                    continue;
                 };
                 // Micro-epsilon: an exactly-at-clearance geometry (a
                 // trace laid tangent to the window) must count as
@@ -297,6 +329,69 @@ impl Obstacles {
         }
         true
     }
+}
+
+/// Point on segment `ab` closest to `p`.
+fn closest_on_seg(p: P2, a: P2, b: P2) -> P2 {
+    let ab = sub(b, a);
+    let len2 = dot(ab, ab);
+    if len2 <= 1e-18 {
+        return a;
+    }
+    let t = (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0);
+    [a[0] + t * ab[0], a[1] + t * ab[1]]
+}
+
+fn mid(a: P2, b: P2) -> P2 {
+    [f64::midpoint(a[0], b[0]), f64::midpoint(a[1], b[1])]
+}
+
+/// Midpoint of the closest approach between two segments — the same
+/// site `pcb_drc`'s trace/trace check resolves the rule at.
+fn seg_seg_site(a0: P2, a1: P2, b0: P2, b1: P2) -> P2 {
+    let cands = [
+        (a0, closest_on_seg(a0, b0, b1)),
+        (a1, closest_on_seg(a1, b0, b1)),
+        (closest_on_seg(b0, a0, a1), b0),
+        (closest_on_seg(b1, a0, a1), b1),
+    ];
+    let mut best = cands[0];
+    let mut best_d = f64::INFINITY;
+    for (p, q) in cands {
+        let d = dot(sub(p, q), sub(p, q));
+        if d < best_d {
+            best_d = d;
+            best = (p, q);
+        }
+    }
+    mid(best.0, best.1)
+}
+
+fn clamp_to_rect(p: P2, min: P2, max: P2) -> P2 {
+    [p[0].clamp(min[0], max[0]), p[1].clamp(min[1], max[1])]
+}
+
+/// Midpoint of the closest approach between a segment and a rect — the
+/// same site `pcb_drc`'s trace/pad check resolves the rule at.
+fn seg_rect_site(a: P2, b: P2, min: P2, max: P2) -> P2 {
+    let centre = mid(min, max);
+    let on_seg = closest_on_seg(centre, a, b);
+    let on_rect = clamp_to_rect(on_seg, min, max);
+    let on_seg = closest_on_seg(on_rect, a, b);
+    mid(on_seg, on_rect)
+}
+
+/// Midpoint of the closest approach between a segment and a via barrel.
+fn seg_circle_site(a: P2, b: P2, c: P2, r: f64) -> P2 {
+    let on_seg = closest_on_seg(c, a, b);
+    let v = sub(on_seg, c);
+    let l = norm(v);
+    let on_circle = if l < 1e-9 {
+        c
+    } else {
+        [c[0] + v[0] / l * r, c[1] + v[1] / l * r]
+    };
+    mid(on_seg, on_circle)
 }
 
 /// Map key for exact endpoint matching (nm-resolution fixed point).
@@ -353,16 +448,20 @@ where
     .with_schematic(schematic.as_deref());
 
     for net in &nets {
-        let (width, clearance) = rules(route_opts, net);
-        let hw = width.to_mm() / 2.0;
+        let (_class_width, clearance) = rules(route_opts, net);
         let clr = clearance.to_mm();
 
         for layer in [CopperLayer::Top, CopperLayer::Bottom] {
-            let obstacles = collect_obstacles(
-                board, net, layer, route_opts, &rules, hw, clr, outline, &resolver,
-            );
+            let obstacles =
+                collect_obstacles(board, net, layer, route_opts, &rules, clr, outline, &resolver);
             let chains = extract_chains(board, net, layer);
-            for chain in chains {
+            for (chain, width) in chains {
+                // The chain keeps the width the ROUTER gave it. Rewriting
+                // it at the net's class width used to silently fatten the
+                // fine-pitch escape stubs the fanout had narrowed on
+                // purpose (0.15/0.20 mm → 0.25 mm), which ate 0.025–0.100
+                // mm of clearance that nothing ever re-checked.
+                let hw = width.to_mm() / 2.0;
                 report.chains += 1;
                 report.segments_before += chain.len() - 1;
                 let pts: Vec<P2> = chain.iter().map(|p| to_mm(*p)).collect();
@@ -370,6 +469,17 @@ where
 
                 let pulled = string_pull(&pts, &obstacles, hw, clr);
                 let smooth = fillet(&pulled, &obstacles, hw, clr, opts);
+                // Last gate: what gets committed must pass the same test
+                // DRC runs. `string_pull`/`fillet` return the input
+                // untouched when they find no improvement, so without
+                // this an input that was never itself validated could
+                // ride through — geometry that fails the test is never
+                // committed (the v6 principle).
+                let smooth = if obstacles.polyline_clear(&smooth, hw, clr) {
+                    smooth
+                } else {
+                    pts.clone()
+                };
 
                 report.segments_after += smooth.len() - 1;
                 report.length_after_mm += polyline_len(&smooth);
@@ -392,7 +502,6 @@ pub(crate) fn collect_obstacles<F>(
     layer: CopperLayer,
     route_opts: &RouteOptions,
     rules: &F,
-    hw: f64,
     clr: f64,
     outline: pcb_core::Rect,
     resolver: &pcb_core::RuleResolver<'_>,
@@ -401,9 +510,6 @@ where
     F: Fn(&RouteOptions, &str) -> (Length, Length),
 {
     let mut items: Vec<Obstacle> = Vec::new();
-    // A rule area covering the obstacle overrides the class rule there.
-    let area_at =
-        |p: Point| -> Option<f64> { resolver.area_clearance(p, Some(layer)).map(|l| l.to_mm()) };
     // Cache per-net rule lookups; boards have few distinct nets.
     let mut rule_cache: HashMap<String, (f64, f64)> = HashMap::new();
     let mut rules_of = |n: &str| -> (f64, f64) {
@@ -427,17 +533,13 @@ where
             }
             let c = fp.pad_world_center(pad);
             let (w, h) = fp.pad_world_size(pad);
-            let area = area_at(c);
-            let clearance_mm =
-                area.unwrap_or_else(|| pad.net.as_deref().map_or(clr, |n| rules_of(n).1));
             let cm = to_mm(c);
             items.push(Obstacle {
                 shape: Shape::Rect {
                     min: [cm[0] - w.to_mm() / 2.0, cm[1] - h.to_mm() / 2.0],
                     max: [cm[0] + w.to_mm() / 2.0, cm[1] + h.to_mm() / 2.0],
                 },
-                clearance_mm,
-                absolute: area.is_some(),
+                clearance_mm: pad.net.as_deref().map_or(clr, |n| rules_of(n).1),
                 net: None, // pads are immovable — never rip-up targets
             });
         }
@@ -446,20 +548,17 @@ where
         if t.net == net || t.layer != layer {
             continue;
         }
-        let (w_o, c_o) = rules_of(&t.net);
-        let mid = Point::new(
-            Length((t.start.x.0 + t.end.x.0) / 2),
-            Length((t.start.y.0 + t.end.y.0) / 2),
-        );
-        let area = area_at(mid);
+        // The obstacle's copper is its OWN width, whatever the router
+        // laid — a fine-pitch stub is deliberately narrower than the
+        // class width and the checker must not fatten it back.
+        let c_o = rules_of(&t.net).1;
         items.push(Obstacle {
             shape: Shape::Capsule {
                 a: to_mm(t.start),
                 b: to_mm(t.end),
-                half_w: w_o / 2.0,
+                half_w: t.width.to_mm() / 2.0,
             },
-            clearance_mm: area.unwrap_or(c_o),
-            absolute: area.is_some(),
+            clearance_mm: c_o,
             net: Some(t.net.clone()),
         });
     }
@@ -468,39 +567,42 @@ where
             continue;
         }
         let c_o = rules_of(&v.net).1;
-        let area = area_at(v.position);
         items.push(Obstacle {
             shape: Shape::Circle {
                 c: to_mm(v.position),
                 r: v.diameter.to_mm() / 2.0,
             },
-            clearance_mm: area.unwrap_or(c_o),
-            absolute: area.is_some(),
+            clearance_mm: c_o,
             net: Some(v.net.clone()),
         });
     }
 
     // Board edge: centreline band. Matches the DRC edge check (0.2 mm
-    // default) plus the chain's own half width.
-    let edge = 0.3;
+    // default); the chain's own half width is folded in at check time.
+    let worst_area_mm = resolver
+        .areas()
+        .iter()
+        .filter(|a| a.covers_layer(Some(layer)))
+        .filter_map(|a| a.clearance_mm)
+        .fold(0.0f64, f64::max);
     Obstacles {
         items,
-        outline_min: [
-            outline.min.x.to_mm() + hw + edge,
-            outline.min.y.to_mm() + hw + edge,
-        ],
-        outline_max: [
-            outline.max.x.to_mm() - hw - edge,
-            outline.max.y.to_mm() - hw - edge,
-        ],
+        areas: resolver.areas().to_vec(),
+        defaults: resolver.defaults(),
+        layer,
+        worst_area_mm,
+        outline,
+        edge_mm: 0.3,
     }
 }
 
 /// Split `net`'s copper on `layer` into maximal chains whose interior
 /// points have degree exactly 2 and coincide with nothing else. Chain
 /// ends are pads' connection points, vias, junctions (degree ≥ 3) — the
-/// points the pass must not move.
-fn extract_chains(board: &Board, net: &str, layer: CopperLayer) -> Vec<Vec<Point>> {
+/// points the pass must not move. A width change also ends a chain, so
+/// every chain carries ONE width (returned with it) and the smoothing
+/// never has to pick between the widths it merged.
+fn extract_chains(board: &Board, net: &str, layer: CopperLayer) -> Vec<(Vec<Point>, Length)> {
     // Adjacency over exact endpoints.
     let mut adj: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     let segs: Vec<&Trace> = board
@@ -530,11 +632,17 @@ fn extract_chains(board: &Board, net: &str, layer: CopperLayer) -> Vec<Vec<Point
     }
 
     let is_anchor = |k: &(i64, i64), adj: &HashMap<(i64, i64), Vec<usize>>| -> bool {
-        hard.contains(k) || adj.get(k).is_none_or(|v| v.len() != 2)
+        if hard.contains(k) {
+            return true;
+        }
+        match adj.get(k) {
+            Some(v) if v.len() == 2 => segs[v[0]].width.0 != segs[v[1]].width.0,
+            _ => true,
+        }
     };
 
     let mut used = vec![false; segs.len()];
-    let mut chains: Vec<Vec<Point>> = Vec::new();
+    let mut chains: Vec<(Vec<Point>, Length)> = Vec::new();
 
     // Walk from every anchor endpoint.
     let mut anchor_keys: Vec<(i64, i64)> =
@@ -575,7 +683,7 @@ fn extract_chains(board: &Board, net: &str, layer: CopperLayer) -> Vec<Vec<Point
                 cur_seg = next_seg;
             }
             if chain.len() >= 2 {
-                chains.push(chain);
+                chains.push((chain, segs[first].width));
             }
         }
     }
@@ -761,8 +869,18 @@ mod tests {
     fn obs_none(outline_mm: f64) -> Obstacles {
         Obstacles {
             items: Vec::new(),
-            outline_min: [0.0, 0.0],
-            outline_max: [outline_mm, outline_mm],
+            areas: Vec::new(),
+            defaults: pcb_core::RuleDefaults::default(),
+            layer: CopperLayer::Top,
+            worst_area_mm: 0.0,
+            outline: pcb_core::Rect {
+                min: Point::new(Length::from_mm(-1.0), Length::from_mm(-1.0)),
+                max: Point::new(
+                    Length::from_mm(outline_mm + 1.0),
+                    Length::from_mm(outline_mm + 1.0),
+                ),
+            },
+            edge_mm: 0.0,
         }
     }
 
@@ -795,7 +913,6 @@ mod tests {
                 max: [6.0, 2.0],
             },
             clearance_mm: 0.2,
-            absolute: false,
             net: None,
         });
         let out = string_pull(&pts, &obs, 0.125, 0.2);
@@ -830,5 +947,114 @@ mod tests {
         // Piercing the rect → 0.
         let d = seg_rect_dist([0.0, 1.5], [10.0, 1.5], [4.0, 1.0], [6.0, 2.0]);
         assert_eq!(d, 0.0);
+    }
+
+    /// v8 regression: the pass must not FATTEN the copper it smooths.
+    ///
+    /// A fine-pitch escape stub is laid narrower than its net's class
+    /// width on purpose — that is the only way copper leaves a 0.20 mm
+    /// pad at 0.4 mm pitch. `replace_chain` used to rewrite every chain
+    /// at the class width, so a stub sitting exactly on a rule area's
+    /// 0.12 mm line lost 0.05 mm of clearance, and nothing re-checked
+    /// it: `string_pull`/`fillet` hand back their input untouched when
+    /// they find no improvement, so the widened geometry was committed
+    /// without ever being tested against anything.
+    #[test]
+    fn smoothing_never_widens_a_chain_into_a_violation() {
+        use pcb_core::{Footprint, Id, Pad, Rect, RuleArea};
+
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(12.0), Length::from_mm(12.0)),
+        ));
+        // The whole board is a tight-clearance zone, as a fine-pitch
+        // escape pocket is.
+        let mut area = RuleArea::new(
+            "fine",
+            Rect::from_corners(
+                Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+                Point::new(Length::from_mm(12.0), Length::from_mm(12.0)),
+            ),
+        );
+        area.clearance_mm = Some(0.12);
+        board.rule_areas.push(area);
+
+        // Foreign copper: a 0.2 x 4.0 mm bar of net B at x = 5.9..6.1.
+        board.add_footprint(Footprint {
+            id: Id::new(),
+            reference: "U1".into(),
+            value: String::new(),
+            library: "test".into(),
+            position: Point::new(Length::from_mm(6.0), Length::from_mm(6.0)),
+            rotation: 0.0,
+            layer: CopperLayer::Top,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: String::new(),
+                offset: Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+                size: (Length::from_mm(0.2), Length::from_mm(4.0)),
+                layer: CopperLayer::Top,
+                net: Some("B".into()),
+                drill: None,
+            }],
+            key: String::new(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: Vec::new(),
+        });
+        // Net A: a 0.15 mm stub 0.20 mm off the bar's edge — legal at the
+        // area's 0.12 mm rule (0.20 - 0.075 = 0.125 mm of gap), illegal
+        // the moment anything rewrites it at the 0.25 mm class width.
+        board.add_trace(Trace {
+            id: pcb_core::Id::new(),
+            layer: CopperLayer::Top,
+            start: Point::new(Length::from_mm(6.30), Length::from_mm(4.5)),
+            end: Point::new(Length::from_mm(6.30), Length::from_mm(7.5)),
+            width: Length::from_mm(0.15),
+            net: "A".into(),
+        });
+
+        let route_opts = RouteOptions {
+            cell: Length::from_mm(0.20),
+            trace_width: Length::from_mm(0.25),
+            clearance: Length::from_mm(0.20),
+            organic: true,
+            ..RouteOptions::default()
+        };
+        organic_pass(
+            &mut board,
+            &OrganicOptions::default(),
+            &route_opts,
+            crate::router::effective_net_rules,
+        );
+
+        for t in board.traces.iter().filter(|t| t.net == "A") {
+            assert_eq!(
+                t.width.to_mm(),
+                0.15,
+                "smoothing rewrote a 0.15 mm stub at {:.3} mm",
+                t.width.to_mm()
+            );
+        }
+        let drc = pcb_drc::run(&board, &pcb_drc::DrcOptions::default());
+        let bad: Vec<&str> = drc
+            .violations
+            .iter()
+            .filter(|v| v.severity == pcb_drc::Severity::Error)
+            .filter(|v| {
+                matches!(
+                    v.kind,
+                    pcb_drc::ViolationKind::TraceTraceClearance
+                        | pcb_drc::ViolationKind::TracePadClearance
+                )
+            })
+            .map(|v| v.message.as_str())
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "organic pass committed copper DRC rejects: {bad:?}"
+        );
     }
 }

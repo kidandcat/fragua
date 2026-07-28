@@ -726,6 +726,39 @@ impl Grid {
         }
     }
 
+    /// Stamp every cell whose centre falls OUTSIDE `keep` as `Obstacle`,
+    /// on every layer. The grid may be larger than the area copper is
+    /// allowed to occupy (it has to cover pads that sit between the
+    /// outline inset and Edge.Cuts — see `router::compute_region`), and
+    /// this is what keeps the router from treating that margin as routable
+    /// space. Call it BEFORE `stamp_pads`, so the pads themselves — fixed
+    /// placement, not the router's to move — stay reachable.
+    pub fn stamp_outside(&mut self, keep: Rect) {
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                let p = self.unsnap(GridPoint {
+                    layer: 0,
+                    col: c,
+                    row: r,
+                });
+                if p.x >= keep.min.x && p.x <= keep.max.x && p.y >= keep.min.y && p.y <= keep.max.y
+                {
+                    continue;
+                }
+                for layer in 0..self.layer_count {
+                    self.set(
+                        GridPoint {
+                            layer,
+                            col: c,
+                            row: r,
+                        },
+                        Cell::Obstacle,
+                    );
+                }
+            }
+        }
+    }
+
     /// Rasterise every keepout polygon into `Obstacle` cells on the
     /// applicable layers. Only the "blocks all nets" case is honoured
     /// in this iteration (every `keepout.nets_allowed` is treated as

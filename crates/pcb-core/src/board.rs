@@ -593,6 +593,33 @@ impl EdgeSide {
         Self::from_ccw_index(self.ccw_index() + q)
     }
 
+    /// Rotation (degrees CCW, a multiple of 90) that turns this LOCAL side
+    /// so it faces `board_side`.
+    ///
+    /// Single source of truth for the edge-mount rotation math: both
+    /// `Project::place_edge_from_palette` (the `edge-place` verb) and the
+    /// placer's edge planner call it, so the manual and automatic paths can
+    /// never drift apart.
+    #[must_use]
+    pub fn rotation_to_face(self, board_side: Self) -> f32 {
+        let q = (board_side.ccw_index() + 4 - self.ccw_index()) % 4;
+        (q as f32) * 90.0
+    }
+
+    /// Inverse of [`Self::world_side`]: the LOCAL side that ends up against
+    /// `board_side` when the footprint is rotated `rotation_deg` CCW.
+    ///
+    /// Needed when a pose is chosen on geometry (a pin header must lie with
+    /// its pad row PARALLEL to the edge) and the footprint's declared side
+    /// then has to be updated to name whatever physically faces the cut —
+    /// otherwise `edge_mount_violation` would reject the very pose the
+    /// planner committed.
+    #[must_use]
+    pub fn local_facing(board_side: Self, rotation_deg: f32) -> Self {
+        let q = (f64::from(rotation_deg).rem_euclid(360.0) / 90.0).round() as u32 % 4;
+        Self::from_ccw_index(board_side.ccw_index() + 4 - q)
+    }
+
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {

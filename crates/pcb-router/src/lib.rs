@@ -12,6 +12,8 @@
 //! here is ours. `KiCad` and `FreeRouting` are reference material only.
 
 mod astar;
+#[cfg(test)]
+mod diag;
 mod escape;
 mod fanout;
 mod grid;
@@ -19,6 +21,7 @@ mod length_match;
 mod negotiate;
 mod organic;
 mod router;
+mod slots;
 mod stitching;
 mod topo;
 

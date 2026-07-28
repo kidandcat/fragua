@@ -10,6 +10,7 @@ pcb-core = { path = "../pcb-core" }
 spade = "2.15.1"
 
 [dev-dependencies]
+pcb-drc = { path = "../pcb-drc" }
 serde_json = "1"
 
 [lints]

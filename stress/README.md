@@ -21,7 +21,8 @@ and [Mitayi-Pico-D1](https://github.com/CIRCUITSTATE/Mitayi-Pico-D1) (MIT).
 |------|------|
 | `rp2040-minimal.fragua` | Live project (schematic + placement + route) |
 | `01_schematic.fragua.txt` | Script that builds libs + schematic |
-| `rp2040-minimal-v3.png` | Latest board screenshot |
+| `rp2040-out.png` | Latest board screenshot (v7 route) |
+| `rp2040-minimal-v3.png` | v3 board screenshot |
 | `07_route_v3.txt` | Latest route API log |
 
 ## How to drive
@@ -130,6 +131,110 @@ corridor away from the net that can afford a detour and gives it to the one
 that cannot — from either routing order), and on this board it is worth
 running for the autopsy alone.
 
+### v7 (2026-07-27) — escape-slot matching: the plateau breaks
+
+The v6 verdict said the wall was escape geometry — dogbones picked per pad,
+in pad order, walling their own neighbours off. v7 replaces that with a
+**global escape-slot assignment** (`pcb-router/src/slots.rs`): candidate
+barrel sites form a lattice per package side (5 outward + 3 inward depth
+ranks × 13 sub-pitch lateral offsets, so a barrel may sit *between* two
+pins), and pad → slot is solved as a **min-cost max-cardinality matching**
+whose costs price stub length, the direction the net actually travels,
+exit-ray blockage, and lane tightness — two barrels closer than one
+routable lane wall each other off even when via-to-via clearance passes.
+Assignment runs three rounds, pricing the previous round's exit pressure
+PathFinder-style; pads with no legal site are **stranded** and named in
+the route text before the search wastes budget on them.
+
+Chasing the survivors with a flood-fill autopsy (`src/diag.rs`, test-only)
+then turned up three more mechanisms, all fixed:
+
+- **The routing grid did not contain every pad.** The outline inset plus
+  truncating snap left edge-header pads out of the grid on the high side
+  of the board only — HDRB1/SWCLK/SWDIO were failing at *J4/J2*, while
+  every autopsy blamed their U1 pads (the search names its target, not
+  the entombed seed). The grid now grows in whole cells to cover every
+  pad; the margin is stamped unroutable, only pad copper reachable.
+- **Edge-mounted parts never got escapes.** The escape axis aims at the
+  footprint pad centroid; for a USB-C receptacle that points at the board
+  edge, so every barrel site failed edge clearance — and the surface probe
+  happily believed escape rays that leave the board (nothing out there to
+  block them). `escape_axis` flips off-board directions; the whole USB
+  group (J1 + series resistors) finally fans out.
+- **Escape stubs did not travel with their barrels.** The dogbone stubs
+  were hoisted into a list the driver never updated, which turned into
+  illegal copper the moment the new **rip-and-reassign lever** started
+  moving barrels: a net that failed two RR&R passes at a fanned pad gets
+  its barrel ripped, the site banned, and the assignment re-run against
+  the surviving copper (a pad with no better site gets its exact barrel
+  back). Barrel + stub are now one unit snapshotted with every best
+  board, so the committed board is always the exact copper that was
+  measured — at any budget, any number of lever firings.
+
+| Run (2-layer, `route max_seconds=180`, idle box, back-to-back) | Copper | Fully connected | DRC |
+|---|---|---|---|
+| v6 baseline (greedy dogbones) | 951 traces / 46 vias (25 dogbones) | **20-21/39** | 4E (NetSplit) / 74W, 0 clearance |
+| escape-slot matching alone | 1150 / 63 (32 escapes, 0 stranded) | **26/39** | 3E (NetSplit) / 65W, 0 clearance |
+| + grid/edge fixes + rip-and-reassign | 1310 / 58 (33 escapes, 0 stranded) | **28/39** | 3E (NetSplit) / 61W, **0 clearance** |
+
+Deterministic to the trace (probe and server agree byte-for-byte, twice),
+and 300 s lands on the same board as 180 s — the lever fires at ~95 s,
+moves 7 stuck barrels, and the post-lever pass completes inside the
+budget. "Blocked even when sharing" fell 12–13 → ~5, and part of that
+residue is provably an over-report (foreign barrels are hard in negotiate
+mode; the flood shows GPIO1/HDRB1/SWDIO connectable end-to-end).
+
+The remaining 11 nets are two honest walls and a budget line: **SWCLK**
+(U1.23's barrel sits in a 19-cell pocket walled by +1V1/SWDIO pads and
+RUN/SWDIO barrels — every alternative site on that side is taken or
+fails via-to-via clearance) and **+3V3** (U1.21, same shape, and the net
+needs all 23 of its pads); **USB_DP/VBUS** at J1, where 0.7 mm pitch
+with a 0.46 mm barrel leaves exactly one rank of legal sites and not
+enough of them (the honest fix is a rule area over J1, a board edit, not
+a router change); and the GPIO/QSPI churn, which is now plain
+congestion-under-budget — the first frame in this campaign where the
+limit is compute, not geometry.
+
+### v8 (2026-07-28) — compact, escape-aware placement
+
+Jairo's review of the v7 render: the 80×45 mm outline with headers parked on
+the far edges is obviously suboptimal, and the deliverable is the TOOL —
+placement must come from Fragua's verbs, never from hand-tuning the board.
+
+**Product (pcb-placer + script):** bundle-crossing term in the placement
+score, decoupling-ring placement for 2-pad passives at their IC power pin,
+`edge-plan REF... [seed=N]` (picks WHICH edge each edge-mounted part gets by
+minimizing net-bundle wirelength+crossings), compact `allow_failed=N` /
+`route_seconds=N` knobs with footprint-anchored rule areas, and the
+`bench-dev` cargo profile (no LTO, 16 CGUs: incremental rebuilds 2–3 min →
+~5 s, near-release runtime; publish final numbers with `--release`).
+
+**Board result (same schematic as v7, all-algorithmic placement):**
+
+| Board | Area | Fully connected @ 180 s |
+|-------|------|--------------------------|
+| v7, 80×45 mm | 3600 mm² | 28/39 |
+| **v8, 36×30 mm** | **1080 mm² (3.3× smaller)** | **25/39** (24/39 @ 480 s earlier run — run-to-run ±1) |
+| probe, 44×34 mm re-place | 1496 mm² | 21/39 (invalid point — see auto-place bug below) |
+
+Escape stays perfect on the compact board: 33/33 pads slotted, 0 stranded.
+The ~3-net cost vs v7 is the same U1 cluster squeezed into a third of the
+area — an honest compactness↔connectivity trade-off, not a regression.
+
+**New open problems found while measuring:**
+
+- **auto-place can return a worse-than-initial solution** (measured: HPWL
+  +78 mm, congestion +606 cells, crossings 4→5 on the 44×34 re-place). The
+  SA needs a best-seen clamp. Until fixed, curve points that re-place from
+  a good layout are unreliable.
+- **Shutdown autosave race:** the server autosaves on SIGTERM, so
+  `git checkout <file>` + restart silently loses the restore unless the
+  process is confirmed dead FIRST (stop unit → verify no `fragua` process →
+  restore file → start).
+- `compact` pinned at its own size runs 0 candidates (it only re-places
+  while shrinking) — growing a board needs `outline` + `edge-plan` +
+  `auto-place`, there is no single re-place-at-size verb yet.
+
 ### What works
 
 - End-to-end agent loop: libs → confirm → schematic → place → route → screenshot
@@ -141,14 +246,13 @@ running for the autopsy alone.
 
 ### Still hard
 
-1. **QFN-56 full connectivity on 2 layers** — dogbone stubs + no fine-pitch
-   body moat took us 5→21/39, and it plateaus there regardless of budget.
-   Rule areas (v5) made the escape *legal* but not *routable*, and
-   negotiated congestion (v6) proved the remaining wall is not contention
-   at all: a dozen nets cannot reach their U1 pads even when allowed to
-   share every foreign trace. The next lever is escape-slot assignment
-   (which pad gets which dogbone, so that a legal lane survives), not the
-   router.
+1. **QFN-56 full connectivity on 2 layers** — v7's escape-slot matching
+   broke the 21/39 plateau (**28/39**), and the wall changed character:
+   two pads are genuinely entombed (SWCLK, +3V3 — see v7), two J1 pins
+   need a rule area the board doesn't declare, and the rest is congestion
+   under a 180 s budget. The next levers are compute-shaped (cheaper
+   passes, a smarter second-pass order), plus the J1 rule area as a board
+   edit.
 2. **4-layer path** — fixed (O8): 3L/4L now reach 22/39 inside budget, one
    net better than 2L. Extra layers cost ~1.5× per pass, so they buy far
    less than the fine-pitch wall costs.
@@ -157,6 +261,15 @@ running for the autopsy alone.
 
 ## Code changes from this stress pass
 
+- **v7 pass:** global escape-slot assignment in `pcb-router/src/slots.rs`
+  (per-side candidate lattice, min-cost max-cardinality matching, exit-lane
+  pricing, stranded-pad reporting in text/report/hints); whole-board grid
+  (`compute_region` grows to cover every pad, margin stamped unroutable);
+  `escape_axis` + outline-aware surface probe (edge-mounted parts fan out);
+  dogbone stubs live inside the fanout plan and travel with the best board;
+  rip-and-reassign lever between RR&R passes; flood-fill escape autopsy
+  (`src/diag.rs`, test-only); probe prints the script's connectivity/DRC
+  headline from the same `pcb_drc` source of truth
 - `confirm-lib` / `list-pending` / `discard-pending`
 - `list-lib` + placement FAIL text
 - `edge-place REF left|right|top|bottom [along=N]`

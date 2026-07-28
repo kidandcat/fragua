@@ -674,11 +674,9 @@ impl<'a> TopoEngine<'a> {
             },
         )
         .with_schematic(schematic.as_deref());
-        organic::collect_obstacles(
-            self.board, net, layer, self.opts, &rules,
-            0.0, // half-width folded in at check time by polyline_clear callers
-            clr, outline, &resolver,
-        )
+        // The half-width is folded in at check time by the
+        // `polyline_clear` callers — the obstacle set is width-agnostic.
+        organic::collect_obstacles(self.board, net, layer, self.opts, &rules, clr, outline, &resolver)
     }
 
     /// Targeted rip-up: remove a net's committed copper so a starving

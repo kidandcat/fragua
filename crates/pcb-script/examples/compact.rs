@@ -41,7 +41,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let in_path = args.get(1).cloned().unwrap_or_else(|| {
         eprintln!(
-            "usage: compact <in.json> <out.json> [seed=N] [aspect=keep|free] [step=MM] [iters=N] [min_w=MM] [min_h=MM] [solder_gap=MM]"
+            "usage: compact <in.json> <out.json> [seed=N] [aspect=keep|free] [step=MM] [iters=N] [min_w=MM] [min_h=MM] [solder_gap=MM] [allow_failed=N] [route_seconds=N] [max_checks=N] [budget_seconds=N]"
         );
         std::process::exit(2);
     });
@@ -67,6 +67,21 @@ fn main() {
     if let Some(v) = parse_kv(kv, "solder_gap").and_then(|s| s.parse().ok()) {
         opts.solder_gap_mm = v;
     }
+    // Boards that never fully route (a fine-pitch QFN stress board tops out
+    // well below 100 % routed) can only be compacted with a tolerance.
+    if let Some(v) = parse_kv(kv, "allow_failed").and_then(|s| s.parse().ok()) {
+        opts.allow_failed = v;
+    }
+    if let Some(v) = parse_kv(kv, "route_seconds").and_then(|s| s.parse().ok()) {
+        opts.route_seconds = v;
+    }
+    // Total wall clock ≈ max_checks × route_seconds, so both are knobs here.
+    if let Some(v) = parse_kv(kv, "max_checks").and_then(|s| s.parse().ok()) {
+        opts.max_checks = v;
+    }
+    if let Some(v) = parse_kv(kv, "budget_seconds").and_then(|s| s.parse::<u64>().ok()) {
+        opts.time_budget = std::time::Duration::from_secs(v);
+    }
     opts.min_w_mm = parse_kv(kv, "min_w").and_then(|s| s.parse().ok());
     opts.min_h_mm = parse_kv(kv, "min_h").and_then(|s| s.parse().ok());
     opts.aspect_free = matches!(parse_kv(kv, "aspect").as_deref(), Some("free"));
@@ -91,11 +106,13 @@ fn main() {
     let m = &outcome.metrics;
     println!("=== FRAGUA COMPACT: {} ===", pf.name);
     println!(
-        "seed={} aspect={} step={} iters={}  wall={:.1?}",
+        "seed={} aspect={} step={} iters={} allow_failed={} route_seconds={}  wall={:.1?}",
         opts.seed,
         if opts.aspect_free { "free" } else { "keep" },
         opts.step_mm,
         opts.place_iters,
+        opts.allow_failed,
+        opts.route_seconds,
         elapsed,
     );
     println!(
