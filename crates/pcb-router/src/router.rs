@@ -821,12 +821,12 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             // The pocket's own barrel first (it may have a better site of
             // its own), then the barrels that form the wall, most-blame
             // first. Both are ranked deterministically.
-            let mut movable: Vec<String> = verdict
-                .entombed
-                .keys()
-                .filter(|p| fanout.through_pads.contains(*p))
-                .cloned()
-                .collect();
+            // Both repairs at once: a pad WITH a barrel in a pocket wants
+            // a different site, and a pad with NO barrel that the flood
+            // proves sealed in wants one — the planner's exact-millimetre
+            // surface probe is finer than the grid the router searches, so
+            // "escapes on the surface" is sometimes not true at 0.20 mm.
+            let mut movable: Vec<String> = verdict.entombed.keys().cloned().collect();
             movable.extend(
                 verdict
                     .blamed_barrels
@@ -1313,6 +1313,18 @@ pub fn route(board: &mut Board, opts: &RouteOptions) -> RouteReport {
             run_clean_pass!();
         }
     }
+
+    // NOT here: negotiated congestion as a closer. With the escape plan
+    // proved reachable, the survivors of the RR&R fixpoint are contention
+    // by elimination — exactly what PathFinder exists to arbitrate, and the
+    // v6 verdict ("negotiation loses because the wall is geometry") no
+    // longer applies for its original reason. Measured on the compact
+    // stress board anyway: handed the legalised plan and the ~95 s the
+    // converged loop had left, negotiation reaches 11 failed nets against
+    // the classic loop's 9. So the verdict survives for a new reason —
+    // a global reroute priced by congestion is worse at these survivors
+    // than targeted rip-up is — and the code stays out of the driver.
+
     let fanout = best_fanout;
 
     // A budget small enough that the escape/fanout pre-pass alone exhausts
