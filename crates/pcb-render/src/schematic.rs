@@ -4,6 +4,9 @@
 //! are 2.54 mm stubs poking out of each side, with the connected net
 //! name (or pin name, if unconnected) as a label at the stub's tip.
 //!
+//! Nets with 2+ pins get orthogonal (manhattan) wire geometry so the
+//! sheet reads as a real schematic, not an unconnected parts dump.
+//!
 //! The renderer never moves symbols — it draws what the agent placed.
 //! Auto-placement (when the agent omits a position) happens in
 //! `pcb-script` before the symbol enters the model.
@@ -26,7 +29,7 @@ const IC_BODY_W_MM: f64 = 12.7; // 5 × 2.54
 #[must_use]
 pub fn render_schematic_svg(schematic: &Schematic) -> String {
     let view = view_box(schematic);
-    let mut svg = String::with_capacity(2048);
+    let mut svg = String::with_capacity(8192);
     let _ = write!(
         svg,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{:.2} {:.2} {:.2} {:.2}" width="100%" height="100%">"#,
@@ -39,6 +42,8 @@ pub fn render_schematic_svg(schematic: &Schematic) -> String {
     );
     // Light dot grid so the human can read pitch at a glance.
     write_grid(&mut svg, view);
+    // Wires under symbols so bodies stay readable.
+    write_net_wires(&mut svg, schematic);
 
     for sym in schematic.symbols_in_order() {
         write_symbol(&mut svg, schematic, sym);
@@ -193,6 +198,196 @@ impl SideCounter {
     }
 }
 
+/// Tip of a pin stub in schematic space (mm), plus the body edge root.
+fn pin_geometry(sym: &Symbol, pin: &SchPin, pin_index_on_side: usize) -> (f64, f64, f64, f64) {
+    let cx = sym.position.x.to_mm();
+    let cy = sym.position.y.to_mm();
+    let (bw, bh) = body_size(&sym.kind);
+    let bx = cx - bw / 2.0;
+    let by = cy - bh / 2.0;
+    #[allow(clippy::cast_precision_loss)]
+    let i_f = pin_index_on_side as f64;
+    match pin.side {
+        PinSide::Left => {
+            let y = by + PIN_PITCH_MM * (i_f + 1.0);
+            (bx, y, bx - PIN_LEN_MM, y)
+        }
+        PinSide::Right => {
+            let y = by + PIN_PITCH_MM * (i_f + 1.0);
+            (bx + bw, y, bx + bw + PIN_LEN_MM, y)
+        }
+        PinSide::Top => {
+            let x = bx + PIN_PITCH_MM * (i_f + 1.0);
+            (x, by, x, by - PIN_LEN_MM)
+        }
+        PinSide::Bottom => {
+            let x = bx + PIN_PITCH_MM * (i_f + 1.0);
+            (x, by + bh, x, by + bh + PIN_LEN_MM)
+        }
+    }
+}
+
+/// Map each `(symbol_id, pin_number)` → index among pins on the same side
+/// (same ordering as `write_pin` / `SideCounter`).
+fn pin_side_indices(sym: &Symbol) -> std::collections::HashMap<String, usize> {
+    let mut counts = SideCounter::default();
+    let mut out = std::collections::HashMap::new();
+    for pin in sym.kind.pins() {
+        let i = counts.next(pin.side);
+        out.insert(pin.number.clone(), i);
+    }
+    out
+}
+
+/// Draw orthogonal wires for every multi-pin net. Pins are chained by
+/// nearest-neighbour so long power nets don't star into a spaghetti hub.
+fn write_net_wires(svg: &mut String, schematic: &Schematic) {
+    svg.push_str(r##"<g fill="none" stroke-linecap="round" stroke-linejoin="round">"##);
+
+    // Precompute side indices per symbol once.
+    let mut side_idx: std::collections::HashMap<pcb_core::Id, std::collections::HashMap<String, usize>> =
+        std::collections::HashMap::new();
+    for sym in schematic.symbols_in_order() {
+        side_idx.insert(sym.id, pin_side_indices(sym));
+    }
+
+    let mut net_names: Vec<&String> = schematic.nets.keys().collect();
+    net_names.sort();
+
+    for name in net_names {
+        let Some(net) = schematic.nets.get(name) else {
+            continue;
+        };
+        if net.connections.len() < 2 {
+            continue;
+        }
+
+        let mut tips: Vec<(f64, f64)> = Vec::with_capacity(net.connections.len());
+        for c in &net.connections {
+            let Some(sym) = schematic.symbols.get(&c.symbol_id) else {
+                continue;
+            };
+            let Some(pin) = sym.kind.pins().into_iter().find(|p| p.number == c.pin_number) else {
+                continue;
+            };
+            let idx = side_idx
+                .get(&c.symbol_id)
+                .and_then(|m| m.get(&c.pin_number).copied())
+                .unwrap_or(0);
+            let (_sx, _sy, tip_x, tip_y) = pin_geometry(sym, &pin, idx);
+            tips.push((tip_x, tip_y));
+        }
+        if tips.len() < 2 {
+            continue;
+        }
+
+        // Nearest-neighbour order starting from left-most tip.
+        let mut order = Vec::with_capacity(tips.len());
+        let mut used = vec![false; tips.len()];
+        let mut cur = tips
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                a.1 .0
+                    .partial_cmp(&b.1 .0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        a.1 .1
+                            .partial_cmp(&b.1 .1)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        order.push(cur);
+        used[cur] = true;
+        while order.len() < tips.len() {
+            let (cx, cy) = tips[cur];
+            let mut best = None;
+            let mut best_d = f64::INFINITY;
+            for (i, &(x, y)) in tips.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let d = (x - cx).hypot(y - cy);
+                if d < best_d {
+                    best_d = d;
+                    best = Some(i);
+                }
+            }
+            let Some(n) = best else {
+                break;
+            };
+            used[n] = true;
+            order.push(n);
+            cur = n;
+        }
+
+        let stroke = wire_color(name);
+        let width = if is_power_net(name) { 0.28 } else { 0.18 };
+
+        for w in order.windows(2) {
+            let (x1, y1) = tips[w[0]];
+            let (x2, y2) = tips[w[1]];
+            write_manhattan(svg, x1, y1, x2, y2, stroke, width);
+        }
+    }
+
+    svg.push_str("</g>");
+}
+
+fn is_power_net(name: &str) -> bool {
+    let u = name.to_ascii_uppercase();
+    u == "GND"
+        || u == "VSS"
+        || u == "VDD"
+        || u == "VCC"
+        || u == "VBUS"
+        || u.starts_with('+')
+        || u.starts_with("V") && u.chars().any(|c| c.is_ascii_digit())
+        || u.contains("3V3")
+        || u.contains("1V8")
+        || u.contains("5V")
+}
+
+fn wire_color(name: &str) -> &'static str {
+    if is_power_net(name) {
+        "#3fb950" // phosphor green — power
+    } else {
+        "#58a6ff" // signal blue
+    }
+}
+
+fn write_manhattan(
+    svg: &mut String,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    stroke: &str,
+    width: f64,
+) {
+    if (x1 - x2).abs() < 0.05 {
+        let _ = write!(
+            svg,
+            r##"<line x1="{x1:.2}" y1="{y1:.2}" x2="{x2:.2}" y2="{y2:.2}" stroke="{stroke}" stroke-width="{width:.2}"/>"##
+        );
+        return;
+    }
+    if (y1 - y2).abs() < 0.05 {
+        let _ = write!(
+            svg,
+            r##"<line x1="{x1:.2}" y1="{y1:.2}" x2="{x2:.2}" y2="{y2:.2}" stroke="{stroke}" stroke-width="{width:.2}"/>"##
+        );
+        return;
+    }
+    // Prefer horizontal-first then vertical (classic schematic habit).
+    let _ = write!(
+        svg,
+        r##"<polyline points="{x1:.2},{y1:.2} {x2:.2},{y1:.2} {x2:.2},{y2:.2}" stroke="{stroke}" stroke-width="{width:.2}"/>"##
+    );
+}
+
 fn write_pin(
     svg: &mut String,
     schematic: &Schematic,
@@ -201,59 +396,14 @@ fn write_pin(
     body: (f64, f64, f64, f64),
     counts: &mut SideCounter,
 ) {
-    let (bx, by, bw, bh) = body;
     let i = counts.next(pin.side);
-    #[allow(clippy::cast_precision_loss)]
-    let i_f = i as f64;
-    let (start_x, start_y, end_x, end_y, label_x, label_y, label_anchor) = match pin.side {
-        PinSide::Left => {
-            let y = by + PIN_PITCH_MM * (i_f + 1.0);
-            (
-                bx,
-                y,
-                bx - PIN_LEN_MM,
-                y,
-                bx - PIN_LEN_MM - 0.4,
-                y + 0.4,
-                "end",
-            )
-        }
-        PinSide::Right => {
-            let y = by + PIN_PITCH_MM * (i_f + 1.0);
-            (
-                bx + bw,
-                y,
-                bx + bw + PIN_LEN_MM,
-                y,
-                bx + bw + PIN_LEN_MM + 0.4,
-                y + 0.4,
-                "start",
-            )
-        }
-        PinSide::Top => {
-            let x = bx + PIN_PITCH_MM * (i_f + 1.0);
-            (
-                x,
-                by,
-                x,
-                by - PIN_LEN_MM,
-                x,
-                by - PIN_LEN_MM - 0.4,
-                "middle",
-            )
-        }
-        PinSide::Bottom => {
-            let x = bx + PIN_PITCH_MM * (i_f + 1.0);
-            (
-                x,
-                by + bh,
-                x,
-                by + bh + PIN_LEN_MM,
-                x,
-                by + bh + PIN_LEN_MM + 1.2,
-                "middle",
-            )
-        }
+    let (start_x, start_y, end_x, end_y) = pin_geometry(sym, pin, i);
+    let (bx, by, bw, bh) = body;
+    let (label_x, label_y, label_anchor) = match pin.side {
+        PinSide::Left => (end_x - 0.4, end_y + 0.4, "end"),
+        PinSide::Right => (end_x + 0.4, end_y + 0.4, "start"),
+        PinSide::Top => (end_x, end_y - 0.4, "middle"),
+        PinSide::Bottom => (end_x, end_y + 1.2, "middle"),
     };
 
     // Pin stub line.
