@@ -426,6 +426,12 @@ fn layout_is_legal(
         if !pads_inside_board(board, fp, outline, opts.edge_clearance_mm) {
             return false;
         }
+        // Pad-pad clearance is ALWAYS hard — even when one body is
+        // elevated over the other. Body gap may skip (headers lift the
+        // module), but copper pads still cannot collide.
+        if board.first_overlapper(fp, Some(*id)).is_some() {
+            return false;
+        }
         if board
             .body_outline_violation(fp, margin_for_fp(fp, margins))
             .is_some()
@@ -769,6 +775,16 @@ pub fn place(
         // edge — same rule as place/move/DRC (`body_outline_violation`)
         // so an OLED / breakout can sit header-on-board, body off-edge.
         if !pads_inside_board(board, &probe, outline, opts.edge_clearance_mm) {
+            continue;
+        }
+        // Pad-pad is always hard, independent of elevation. Body-gap
+        // below skips elevated/non-elevated pairs; copper still must not
+        // collide (this was letting auto-place stack passives under a
+        // SuperMini header onto its pads).
+        if board
+            .first_overlapper(&probe, Some(probe.id))
+            .is_some()
+        {
             continue;
         }
         {
