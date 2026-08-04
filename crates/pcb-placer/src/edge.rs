@@ -982,7 +982,7 @@ fn is_legal(
     let Some(fp) = board.footprints.get(&id) else {
         return false;
     };
-    if !pads_inside_outline(fp, outline, opts.edge_clearance_mm) {
+    if !pads_inside_outline(board, fp, outline, opts.edge_clearance_mm) {
         return false;
     }
     if board

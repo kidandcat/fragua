@@ -596,15 +596,122 @@ impl LibraryEntry {
     /// clamped to ≥ 0 so a body smaller than the pads yields no margin.
     #[must_use]
     pub fn margin_from_body_rect(&self, body: &BodyRect) -> PlacementMargin {
+        self.margin_from_hull(body.min_x_mm, body.min_y_mm, body.max_x_mm, body.max_y_mm)
+    }
+
+    /// Axis-aligned hull in footprint-local mm covering **pads + silk +
+    /// body_rect**. This is what the human sees on the board canvas and
+    /// therefore what placement / DRC must keep clear of neighbours.
+    ///
+    /// Without silk, a tiny hand-authored `body_rect` around the pads
+    /// alone used to let modules sit "legally" under each other's silk
+    /// outlines — Fragua looked broken. The collision hull always
+    /// includes every silk line endpoint and a conservative text box so
+    /// the keep-out matches the drawing.
+    #[must_use]
+    pub fn geometry_hull_mm(&self) -> Option<(f64, f64, f64, f64)> {
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        let mut any = false;
+        let expand = |min_x: &mut f64, min_y: &mut f64, max_x: &mut f64, max_y: &mut f64, x: f64, y: f64| {
+            *min_x = min_x.min(x);
+            *min_y = min_y.min(y);
+            *max_x = max_x.max(x);
+            *max_y = max_y.max(y);
+        };
+        if let Some((a, b, c, d)) = self.pads_bbox_mm() {
+            any = true;
+            min_x = a;
+            min_y = b;
+            max_x = c;
+            max_y = d;
+        }
+        if let Some(body) = &self.body_rect {
+            any = true;
+            expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, body.min_x_mm, body.min_y_mm);
+            expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, body.max_x_mm, body.max_y_mm);
+        }
+        for s in &self.silk {
+            match s {
+                LibrarySilk::Line {
+                    x1_mm,
+                    y1_mm,
+                    x2_mm,
+                    y2_mm,
+                    width_mm,
+                    ..
+                } => {
+                    any = true;
+                    let hw = (*width_mm).max(0.0) / 2.0;
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x1_mm - hw, *y1_mm - hw);
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x1_mm + hw, *y1_mm + hw);
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x2_mm - hw, *y2_mm - hw);
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x2_mm + hw, *y2_mm + hw);
+                }
+                LibrarySilk::Text {
+                    x_mm,
+                    y_mm,
+                    text,
+                    size_mm,
+                    anchor,
+                    ..
+                } => {
+                    any = true;
+                    // Conservative glyph box: ~0.6×size per char, height = size.
+                    let w = (*size_mm).max(0.0) * 0.6 * (text.chars().count().max(1) as f64);
+                    let h = (*size_mm).max(0.0);
+                    let (x0, x1) = match anchor {
+                        SilkAnchor::Start => (*x_mm, *x_mm + w),
+                        SilkAnchor::Middle => (*x_mm - w / 2.0, *x_mm + w / 2.0),
+                        SilkAnchor::End => (*x_mm - w, *x_mm),
+                    };
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, x0, *y_mm - h / 2.0);
+                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, x1, *y_mm + h / 2.0);
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        Some((min_x, min_y, max_x, max_y))
+    }
+
+    /// Placement margin that inflates the pad AABB out to `hull`.
+    #[must_use]
+    pub fn margin_from_hull(
+        &self,
+        hull_min_x: f64,
+        hull_min_y: f64,
+        hull_max_x: f64,
+        hull_max_y: f64,
+    ) -> PlacementMargin {
         let Some((min_x, min_y, max_x, max_y)) = self.pads_bbox_mm() else {
-            return PlacementMargin::default();
+            return PlacementMargin {
+                elevated: self.elevated,
+                ..PlacementMargin::default()
+            };
         };
         PlacementMargin {
-            top_mm: (body.max_y_mm - max_y).max(0.0),
-            right_mm: (body.max_x_mm - max_x).max(0.0),
-            bottom_mm: (min_y - body.min_y_mm).max(0.0),
-            left_mm: (min_x - body.min_x_mm).max(0.0),
+            top_mm: (hull_max_y - max_y).max(0.0),
+            right_mm: (hull_max_x - max_x).max(0.0),
+            bottom_mm: (min_y - hull_min_y).max(0.0),
+            left_mm: (min_x - hull_min_x).max(0.0),
             elevated: self.elevated,
+        }
+    }
+
+    /// Recompute `placement_margin` from pads + silk + body_rect so
+    /// collision matches what is drawn. Call after any geometry edit.
+    pub fn refresh_placement_margin(&mut self) {
+        if let Some((min_x, min_y, max_x, max_y)) = self.geometry_hull_mm() {
+            self.placement_margin = self.margin_from_hull(min_x, min_y, max_x, max_y);
+        } else {
+            self.placement_margin = PlacementMargin {
+                elevated: self.elevated,
+                ..PlacementMargin::default()
+            };
         }
     }
 
@@ -614,8 +721,15 @@ impl LibraryEntry {
     /// library must go through here — reading `placement_margin`
     /// directly silently drops the elevation and turns a legal
     /// module-over-passives layout back into a body collision.
+    ///
+    /// Always re-derives from live geometry (pads/silk/body_rect) so a
+    /// stale `placement_margin` field on disk cannot under-report silk
+    /// and let modules stack under each other's outlines.
     #[must_use]
     pub fn body_keepout(&self) -> PlacementMargin {
+        if let Some((min_x, min_y, max_x, max_y)) = self.geometry_hull_mm() {
+            return self.margin_from_hull(min_x, min_y, max_x, max_y);
+        }
         PlacementMargin {
             elevated: self.elevated,
             ..self.placement_margin
@@ -719,6 +833,9 @@ impl Library {
         if entry.created_at == 0 {
             entry.created_at = now_secs();
         }
+        // Keep-out always tracks pads + silk + body so place/DRC match
+        // the silkscreen drawing, not a stale margin field.
+        entry.refresh_placement_margin();
         let mut inner = self.inner.write().expect("library lock poisoned");
         if let Some(existing) = inner.entries.iter().position(|e| e.key == entry.key) {
             // Preserve attachments from the existing entry if the
@@ -1001,8 +1118,10 @@ impl Library {
         let Some(entry) = inner.entries.iter_mut().find(|e| e.key == key) else {
             return Err(format!("library: no entry with key {key}"));
         };
-        entry.placement_margin = entry.margin_from_body_rect(&body);
         entry.body_rect = Some(body);
+        // Hull = body ∪ silk ∪ pads — a tiny body_rect cannot shrink the
+        // keep-out below the silkscreen the user sees on the canvas.
+        entry.refresh_placement_margin();
         let snapshot = inner.clone();
         drop(inner);
         self.save(&snapshot)?;
@@ -1382,6 +1501,69 @@ mod tests {
         approx(m.right_mm, 3.0);
         approx(m.top_mm, 2.0);
         approx(m.bottom_mm, 0.0);
+    }
+
+    #[test]
+    fn body_keepout_includes_silk_even_when_body_rect_is_tiny() {
+        // Pads only around origin; silk box extends to ±8 mm; a cheating
+        // body_rect hugs the pads. Keep-out must still respect the silk.
+        let mut e = entry_with_pads(vec![
+            pad("1", -1.0, -1.0, 1.0, 1.0),
+            pad("2", 1.0, -1.0, 1.0, 1.0),
+        ]);
+        e.silk = vec![
+            LibrarySilk::Line {
+                layer: SilkLayer::Top,
+                x1_mm: -8.0,
+                y1_mm: -8.0,
+                x2_mm: 8.0,
+                y2_mm: -8.0,
+                width_mm: 0.15,
+            },
+            LibrarySilk::Line {
+                layer: SilkLayer::Top,
+                x1_mm: 8.0,
+                y1_mm: -8.0,
+                x2_mm: 8.0,
+                y2_mm: 8.0,
+                width_mm: 0.15,
+            },
+            LibrarySilk::Line {
+                layer: SilkLayer::Top,
+                x1_mm: 8.0,
+                y1_mm: 8.0,
+                x2_mm: -8.0,
+                y2_mm: 8.0,
+                width_mm: 0.15,
+            },
+            LibrarySilk::Line {
+                layer: SilkLayer::Top,
+                x1_mm: -8.0,
+                y1_mm: 8.0,
+                x2_mm: -8.0,
+                y2_mm: -8.0,
+                width_mm: 0.15,
+            },
+        ];
+        e.body_rect = Some(BodyRect {
+            min_x_mm: -1.5,
+            min_y_mm: -1.5,
+            max_x_mm: 1.5,
+            max_y_mm: -0.5,
+        });
+        e.refresh_placement_margin();
+        let k = e.body_keepout();
+        // Pad max y ≈ -0.5; silk to +8 → top margin ≥ 8
+        assert!(
+            k.top_mm >= 7.5,
+            "top keep-out must include silk, got {}",
+            k.top_mm
+        );
+        assert!(
+            k.left_mm >= 6.0,
+            "left keep-out must include silk, got {}",
+            k.left_mm
+        );
     }
 
     #[test]

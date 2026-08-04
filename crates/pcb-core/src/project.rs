@@ -1090,11 +1090,25 @@ impl Project {
         Ok((id, x_mm, y_mm, rotation_deg))
     }
 
-    /// Move a palette item onto the board at `position`. The footprint
-    /// disappears from the palette. Returns the new board id, or an
-    /// error if no palette item with that reference exists or if the
-    /// proposed bbox would intersect an existing footprint's bbox.
+    /// Move a palette item onto the board at `position`, keeping the
+    /// palette item's current rotation. See [`Self::place_from_palette_at`].
     pub fn place_from_palette(&self, reference: &str, position: Point) -> Result<Id, String> {
+        self.place_from_palette_at(reference, position, None)
+    }
+
+    /// Move a palette item onto the board at `position` with an optional
+    /// final rotation. Collision checks (pad gap, body/silk keep-out from
+    /// [`LibraryEntry::body_keepout`], body-off-board, edge-mount) all run
+    /// against the **final** pose before the palette item is removed — so
+    /// a place+rotate that would collide is rejected atomically and the
+    /// part stays in the palette. `rotation_deg = None` keeps the palette
+    /// item's existing rotation.
+    pub fn place_from_palette_at(
+        &self,
+        reference: &str,
+        position: Point,
+        rotation_deg: Option<f32>,
+    ) -> Result<Id, String> {
         let library = Arc::clone(&self.library);
         let margin_for = |fp: &Footprint| {
             if fp.key.is_empty() {
@@ -1114,19 +1128,24 @@ impl Project {
             .ok_or_else(|| format!("no palette item named {reference}"))?;
         let mut fp = inner.palette[idx].clone();
         fp.position = position;
+        if let Some(rot) = rotation_deg {
+            fp.rotation = rot;
+        }
         if let Some(other) = inner.board.first_overlapper(&fp, None) {
             return Err(format!(
-                "{reference} at ({:.2}, {:.2}) mm would overlap {} — pick another position",
+                "{reference} at ({:.2}, {:.2}) mm rot={:.0}° would overlap {} — pick another position",
                 position.x.to_mm(),
                 position.y.to_mm(),
+                fp.rotation,
                 other,
             ));
         }
         if let Some(other) = inner.board.first_body_overlapper(&fp, None, &margin_for) {
             return Err(format!(
-                "{reference} body at ({:.2}, {:.2}) mm would overlap {} body — pick another position",
+                "{reference} body at ({:.2}, {:.2}) mm rot={:.0}° would overlap {} body — pick another position",
                 position.x.to_mm(),
                 position.y.to_mm(),
+                fp.rotation,
                 other,
             ));
         }
@@ -1144,6 +1163,9 @@ impl Project {
         }
         let mut fp = inner.palette.remove(idx);
         fp.position = position;
+        if let Some(rot) = rotation_deg {
+            fp.rotation = rot;
+        }
         let id = fp.id;
         let reference_string = fp.reference.clone();
         let _ = inner.board.add_footprint(fp);
@@ -1157,6 +1179,46 @@ impl Project {
             reference: reference_string,
         });
         Ok(id)
+    }
+
+    /// Send a board footprint back to the palette (routing on its pads
+    /// is cleared). Used to roll back a failed place+rotate and by
+    /// legalize flows that refuse to leave overlapping parts on copper.
+    pub fn unplace_to_palette(&self, reference: &str) -> Result<(), String> {
+        let (id, palette_count, traces_removed, vias_removed, trace_count, via_count) = {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            let id = inner
+                .board
+                .footprints
+                .iter()
+                .find(|(_, f)| f.reference == reference)
+                .map(|(id, _)| *id)
+                .ok_or_else(|| format!("no board footprint named {reference}"))?;
+            let (fp, traces_removed, vias_removed, _orphans) = inner
+                .board
+                .remove_footprint_and_routing(id)
+                .ok_or_else(|| format!("footprint {reference} vanished mid-unplace"))?;
+            inner.palette.push(fp);
+            (
+                id,
+                inner.palette.len(),
+                traces_removed,
+                vias_removed,
+                inner.board.traces.len(),
+                inner.board.vias.len(),
+            )
+        };
+        self.bus.publish(Event::FootprintRemoved { id });
+        self.bus.publish(Event::PaletteChanged {
+            count: palette_count,
+        });
+        if traces_removed > 0 || vias_removed > 0 {
+            self.bus.publish(Event::RoutingChanged {
+                trace_count,
+                via_count,
+            });
+        }
+        Ok(())
     }
 
     /// Set the rotation (in degrees, CCW) of a footprint already on

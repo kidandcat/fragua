@@ -1256,6 +1256,19 @@ impl Board {
         crate::geometry::point_in_board_shape(p, &outer, &cutouts)
     }
 
+    /// True if `p` is inside the **outer** polygonal outline (cutouts
+    /// ignored). Used for body keep-out checks: a slot joint's silk
+    /// deliberately overlaps its milled cutout, and a part may sit
+    /// next to a window without being "off-board".
+    #[must_use]
+    pub fn in_outer_outline(&self, p: Point) -> bool {
+        let outer = self.outer_path();
+        if outer.len() < 3 {
+            return true;
+        }
+        crate::geometry::point_in_polygon(p, &outer)
+    }
+
     pub fn add_footprint(&mut self, footprint: Footprint) -> Id {
         let id = footprint.id;
         self.footprint_order.push(id);
@@ -1482,6 +1495,35 @@ impl Board {
     ) -> Option<String> {
         let outline = self.outline?;
         let bbox = probe.inflated_bbox(margin)?;
+        // Polygonal boards (X-frames, etc.): require the **pad** bbox to
+        // sit on the outer path. Inflated body (silk) may hang into the
+        // empty quadrants at a re-entrant corner or over a milled slot
+        // — that is normal for a vertical-card joint on the core edge.
+        // Body-vs-body still uses silk keep-outs via first_body_overlapper.
+        if self.outline_poly.is_some() {
+            let pad_bb = probe.bounds()?;
+            let samples = [
+                Point::new(pad_bb.min.x, pad_bb.min.y),
+                Point::new(pad_bb.max.x, pad_bb.min.y),
+                Point::new(pad_bb.max.x, pad_bb.max.y),
+                Point::new(pad_bb.min.x, pad_bb.max.y),
+                Point::new(
+                    Length((pad_bb.min.x.0 + pad_bb.max.x.0) / 2),
+                    Length((pad_bb.min.y.0 + pad_bb.max.y.0) / 2),
+                ),
+            ];
+            for p in samples {
+                if !self.in_outer_outline(p) {
+                    return Some(format!(
+                        "pads at ({:.2}, {:.2}) mm are outside the polygonal board outline",
+                        p.x.to_mm(),
+                        p.y.to_mm()
+                    ));
+                }
+            }
+            let _ = bbox; // silence unused when poly path returns early
+            return None;
+        }
         let tol_nm = (EDGE_TOUCH_TOLERANCE_MM * 1_000_000.0) as i64;
         let over_left = outline.min.x.0 - bbox.min.x.0;
         let over_right = bbox.max.x.0 - outline.max.x.0;

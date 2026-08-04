@@ -407,7 +407,7 @@ fn ring_place(
             );
             let mut probe = oriented.clone();
             probe.position = pos;
-            if !pads_inside_outline(&probe, outline, opts.edge_clearance_mm) {
+            if !pads_inside_outline(board, &probe, outline, opts.edge_clearance_mm) {
                 continue;
             }
             if board
@@ -497,7 +497,7 @@ fn pull_to_centroid(
             return;
         };
         probe.position = candidate;
-        if !pads_inside_outline(&probe, outline, opts.edge_clearance_mm) {
+        if !pads_inside_outline(board, &probe, outline, opts.edge_clearance_mm) {
             continue;
         }
         if board

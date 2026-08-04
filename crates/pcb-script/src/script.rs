@@ -36,6 +36,9 @@ pub(crate) const VERBS: &[&str] = &[
     "clear-palette",
     "list-palette",
     "place",
+    "place-legal",
+    "place-cutout",
+    "unplace",
     "move",
     "rotate",
     "delete",
@@ -1412,6 +1415,70 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                     args: json!({"reference": reference, "x_mm": x, "y_mm": y}),
                 })
             }
+        }
+        "place-legal" => {
+            // place-legal REF [seed=N] [tries=N] [rot=DEG]
+            // Sample random board positions until place succeeds (silk/
+            // body keep-out + polygonal outline). For agents that must
+            // not invent coordinates by hand.
+            need_args(line, tokens, 1, "place-legal REF [seed=N] [tries=N] [rot=DEG]")?;
+            let mut args = json!({ "reference": tokens[1].clone() });
+            apply_kv(
+                &mut args,
+                &tokens[2..],
+                line,
+                &[
+                    ("seed", AttrType::NumInto("seed")),
+                    ("tries", AttrType::NumInto("tries")),
+                    ("rot", AttrType::NumInto("rotation_deg")),
+                ],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "placement.place_legal".into(),
+                args,
+            })
+        }
+        "place-cutout" => {
+            // place-cutout REF LABEL [rot=DEG]
+            // Place a palette item at the centroid of a labelled cutout
+            // (ToF slots, windows). Collision-checked with body/silk keepout.
+            need_args(line, tokens, 2, "place-cutout REF LABEL [rot=DEG]")?;
+            let mut args = json!({
+                "reference": tokens[1].clone(),
+                "label": tokens[2].clone(),
+            });
+            apply_kv(
+                &mut args,
+                &tokens[3..],
+                line,
+                &[("rot", AttrType::NumInto("rotation_deg"))],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "placement.place_cutout".into(),
+                args,
+            })
+        }
+        "unplace" => {
+            // unplace REF [REF...] — board → palette, clear pad routing
+            need_args(line, tokens, 1, "unplace REF [REF...]")?;
+            let refs: Vec<String> = tokens[1..]
+                .iter()
+                .filter(|t| !t.contains('='))
+                .cloned()
+                .collect();
+            if refs.is_empty() {
+                return Err(ParseError {
+                    line,
+                    message: "unplace: at least one reference required".into(),
+                });
+            }
+            Ok(Cmd {
+                line,
+                tool: "placement.unplace".into(),
+                args: json!({ "refs": refs }),
+            })
         }
         "edge-place" => {
             // edge-place REF left|right|top|bottom [along=N]

@@ -423,7 +423,7 @@ fn layout_is_legal(
         let Some(fp) = board.footprints.get(id) else {
             continue;
         };
-        if !pads_inside_outline(fp, outline, opts.edge_clearance_mm) {
+        if !pads_inside_board(board, fp, outline, opts.edge_clearance_mm) {
             return false;
         }
         if board
@@ -768,7 +768,7 @@ pub fn place(
         // body may hang off an edge whose pads already touch that
         // edge — same rule as place/move/DRC (`body_outline_violation`)
         // so an OLED / breakout can sit header-on-board, body off-edge.
-        if !pads_inside_outline(&probe, outline, opts.edge_clearance_mm) {
+        if !pads_inside_board(board, &probe, outline, opts.edge_clearance_mm) {
             continue;
         }
         {
@@ -1399,10 +1399,35 @@ fn would_overlap(
 /// mounted parts must be able to touch the outline. The plastic body is
 /// deliberately NOT considered here — `body_outline_violation` at the
 /// call site owns that rule.
-fn pads_inside_outline(probe: &Footprint, outline: pcb_core::Rect, edge_clearance_mm: f64) -> bool {
+///
+/// On **polygonal** boards the AABB of Edge.Cuts is a lie (X-frames
+/// have empty quadrants inside the box). Pad corners must sit on the
+/// real copper shape via [`Board::contains_point`].
+fn pads_inside_board(
+    board: &Board,
+    probe: &Footprint,
+    outline: pcb_core::Rect,
+    edge_clearance_mm: f64,
+) -> bool {
     let Some(b) = probe.bounds() else {
         return false;
     };
+    if board.outline_poly.is_some() {
+        let samples = [
+            Point::new(b.min.x, b.min.y),
+            Point::new(b.max.x, b.min.y),
+            Point::new(b.max.x, b.max.y),
+            Point::new(b.min.x, b.max.y),
+            Point::new(
+                Length((b.min.x.0 + b.max.x.0) / 2),
+                Length((b.min.y.0 + b.max.y.0) / 2),
+            ),
+        ];
+        // Outer path only: pads may sit beside a milled slot without
+        // being "off copper" for placement purposes (router still
+        // stamps cutouts as obstacles for traces).
+        return samples.iter().all(|p| board.in_outer_outline(*p));
+    }
     // Free parts keep the same edge clearance the global stage enforces
     // so the DRC's edge check never flags an auto-placed pad; edge-
     // mounted parts must be able to touch the outline.
@@ -1415,6 +1440,16 @@ fn pads_inside_outline(probe: &Footprint, outline: pcb_core::Rect, edge_clearanc
         && b.min.y.0 >= outline.min.y.0 + e.0
         && b.max.x.0 <= outline.max.x.0 - e.0
         && b.max.y.0 <= outline.max.y.0 - e.0
+}
+
+/// Rectangle-only helper used by submodules that already hold `board`.
+pub(crate) fn pads_inside_outline(
+    board: &Board,
+    probe: &Footprint,
+    outline: pcb_core::Rect,
+    edge_clearance_mm: f64,
+) -> bool {
+    pads_inside_board(board, probe, outline, edge_clearance_mm)
 }
 
 /// Library placement margin for a probe footprint, if any.

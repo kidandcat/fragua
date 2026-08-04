@@ -312,6 +312,18 @@ PALETTE / PLACEMENT:\n\
                                                  view transform, same as `place X Y ROT`.\n\
   clear-palette\n\
   place REF X Y [ROT_DEG]                      — drop palette item at (x, y) mm; rejects if it\n\
+                                                 pad-overlaps, body/silk-overlaps (library\n\
+                                                 body_keepout = pads∪silk∪body_rect), or leaves\n\
+                                                 pads outside the polygonal outline. Rotation is\n\
+                                                 checked atomically with the position.\n\
+  place-legal REF [seed=N] [tries=N] [rot=DEG] — sample random legal board positions until place\n\
+                                                 succeeds. On polygonal boards (X-frames) rejects\n\
+                                                 samples outside the outer path. Prefer this over\n\
+                                                 inventing coordinates by hand.\n\
+  place-cutout REF LABEL [rot=DEG]             — place at the centroid of a labelled cutout\n\
+                                                 (e.g. slot joint on tof_right). Body/silk checked.\n\
+  unplace REF [REF ...]                        — board → palette (clears pad routing). Prefer over\n\
+                                                 `delete` when you will re-place the same refs.\n\
   edge-place REF left|right|top|bottom [along=N]\n\
                                                — place an edge-mounted palette item on a board\n\
                                                  outline edge. Computes rotation (so the library\n\
@@ -600,6 +612,9 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "library.delete_attachment" => tool_library_delete_attachment(project, args),
         "library.delete" => tool_library_delete(project, args),
         "placement.place_from_palette" => tool_place_from_palette(project, args),
+        "placement.place_legal" => tool_place_legal(project, args),
+        "placement.place_cutout" => tool_place_cutout(project, args),
+        "placement.unplace" => tool_placement_unplace(project, args),
         "placement.edge_place" => tool_placement_edge_place(project, args),
         "placement.edge_plan" => tool_placement_edge_plan(project, args),
         "placement.batch" => tool_placement_batch(project, args),
@@ -3089,6 +3104,229 @@ fn tool_place_from_palette(project: &Project, args: &Value) -> Result<Value, Too
 }
 
 #[derive(Debug, Deserialize)]
+struct PlaceLegalInput {
+    reference: String,
+    #[serde(default)]
+    seed: Option<f64>,
+    #[serde(default)]
+    tries: Option<f64>,
+    #[serde(default)]
+    rotation_deg: Option<f64>,
+}
+
+/// Place a palette item at a random legal position (body/silk keep-out
+/// + polygonal outer outline). Samples the outline AABB, rejects points
+/// outside the real poly (X-frames etc.), then places with the final
+/// rotation in one atomic check so agents never invent coordinates by
+/// hand and never leave a part at the wrong rot after a failed rotate.
+fn tool_place_legal(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: PlaceLegalInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("placement.place_legal: {e}")))?;
+    let tries = input.tries.unwrap_or(800.0).clamp(1.0, 10_000.0) as u32;
+    let mut state = input.seed.unwrap_or(1.0) as u64;
+    if state == 0 {
+        state = 1;
+    }
+    // None → keep palette rotation; Some → force that rot at place time.
+    let rot_override = input.rotation_deg.map(|r| r as f32);
+    let snap = project.read();
+    let board = snap.board();
+    let outline = board
+        .outline
+        .ok_or_else(|| ToolError::invalid_params("place-legal: board has no outline"))?;
+    let has_poly = board.outline_poly.is_some();
+    let ox = outline.min.x.to_mm();
+    let oy = outline.min.y.to_mm();
+    let ow = outline.width().to_mm().max(1.0);
+    let oh = outline.height().to_mm().max(1.0);
+    drop(snap);
+
+    let mut last_err = String::from("no attempt");
+    let mut skipped_outside = 0u32;
+    for i in 0..tries {
+        // LCG — two samples for (x, y)
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let fx = ((state >> 33) as f64) / ((1u64 << 31) as f64);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let fy = ((state >> 33) as f64) / ((1u64 << 31) as f64);
+        // 2 mm inset so pads have room; poly boards still re-check below.
+        let x = ox + 2.0 + fx * (ow - 4.0).max(0.0);
+        let y = oy + 2.0 + fy * (oh - 4.0).max(0.0);
+        if has_poly {
+            let snap = project.read();
+            let inside = snap.board().in_outer_outline(Point::new(
+                Length::from_mm(x),
+                Length::from_mm(y),
+            ));
+            drop(snap);
+            if !inside {
+                skipped_outside += 1;
+                continue;
+            }
+        }
+        let result = project.place_from_palette_at(
+            &input.reference,
+            Point::new(Length::from_mm(x), Length::from_mm(y)),
+            rot_override,
+        );
+        match result {
+            Ok(id) => {
+                project.log(
+                    ActivityLevel::Info,
+                    format!(
+                        "placement.place_legal: {} at ({x:.2}, {y:.2}) mm after {} try(s)",
+                        input.reference,
+                        i + 1
+                    ),
+                );
+                return Ok(text_result(format!(
+                    "Placed {} at ({x:.2}, {y:.2}) mm (try {})",
+                    input.reference,
+                    i + 1
+                ))
+                .with_data(json!({
+                    "id": id.0.to_string(),
+                    "x_mm": x,
+                    "y_mm": y,
+                    "tries": i + 1,
+                    "skipped_outside_poly": skipped_outside,
+                })));
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(ToolError::invalid_params(format!(
+        "place-legal {}: no legal spot in {tries} tries (skipped_outside_poly={skipped_outside}; last: {last_err})",
+        input.reference
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaceCutoutInput {
+    reference: String,
+    label: String,
+    #[serde(default)]
+    rotation_deg: Option<f64>,
+}
+
+/// Place a palette item at the centroid of a labelled cutout (ToF slot
+/// joints, cable windows). Rotation is applied atomically with the
+/// body/silk keep-out checks — agents never invent slot coordinates.
+fn tool_place_cutout(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: PlaceCutoutInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("placement.place_cutout: {e}")))?;
+    let rot = input.rotation_deg.map(|r| r as f32);
+    let snap = project.read();
+    let cutout = snap
+        .board()
+        .cutouts
+        .iter()
+        .find(|c| c.label.eq_ignore_ascii_case(&input.label))
+        .ok_or_else(|| {
+            let known: Vec<&str> = snap
+                .board()
+                .cutouts
+                .iter()
+                .map(|c| c.label.as_str())
+                .filter(|s| !s.is_empty())
+                .collect();
+            ToolError::invalid_params(format!(
+                "place-cutout: no cutout labelled {:?} (known: {})",
+                input.label,
+                if known.is_empty() {
+                    "(none)".into()
+                } else {
+                    known.join(", ")
+                }
+            ))
+        })?;
+    if cutout.polygon.len() < 3 {
+        return Err(ToolError::invalid_params(format!(
+            "place-cutout: cutout {:?} has no usable polygon",
+            input.label
+        )));
+    }
+    let n = cutout.polygon.len() as f64;
+    let (sx, sy) = cutout.polygon.iter().fold((0.0, 0.0), |(ax, ay), p| {
+        (ax + p.x.to_mm(), ay + p.y.to_mm())
+    });
+    let x = sx / n;
+    let y = sy / n;
+    drop(snap);
+
+    let id = project
+        .place_from_palette_at(
+            &input.reference,
+            Point::new(Length::from_mm(x), Length::from_mm(y)),
+            rot,
+        )
+        .map_err(ToolError::invalid_params)?;
+    project.log(
+        ActivityLevel::Info,
+        format!(
+            "placement.place_cutout: {} at cutout {:?} ({x:.2}, {y:.2}) mm rot={}",
+            input.reference,
+            input.label,
+            rot.map(|r| format!("{r:.0}")).unwrap_or_else(|| "palette".into())
+        ),
+    );
+    Ok(text_result(format!(
+        "Placed {} at cutout {} ({x:.2}, {y:.2}) mm",
+        input.reference, input.label
+    ))
+    .with_data(json!({
+        "id": id.0.to_string(),
+        "x_mm": x,
+        "y_mm": y,
+        "label": input.label,
+        "rotation_deg": rot,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct UnplaceInput {
+    refs: Vec<String>,
+}
+
+/// Return placed footprints to the palette and clear routing on their pads.
+fn tool_placement_unplace(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: UnplaceInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("placement.unplace: {e}")))?;
+    if input.refs.is_empty() {
+        return Err(ToolError::invalid_params(
+            "unplace: at least one reference required",
+        ));
+    }
+    let mut ok = Vec::new();
+    let mut errs = Vec::new();
+    for r in &input.refs {
+        match project.unplace_to_palette(r) {
+            Ok(()) => ok.push(r.clone()),
+            Err(e) => errs.push(format!("{r}: {e}")),
+        }
+    }
+    if ok.is_empty() {
+        return Err(ToolError::invalid_params(format!(
+            "unplace failed: {}",
+            errs.join("; ")
+        )));
+    }
+    project.log(
+        ActivityLevel::Info,
+        format!("placement.unplace: {} → palette", ok.join(", ")),
+    );
+    let mut msg = format!("Unplaced {} → palette", ok.join(", "));
+    if !errs.is_empty() {
+        msg.push_str(&format!(" (errors: {})", errs.join("; ")));
+    }
+    Ok(text_result(msg).with_data(json!({ "unplaced": ok, "errors": errs })))
+}
+
+#[derive(Debug, Deserialize)]
 struct EdgePlaceInput {
     reference: String,
     side: String,
@@ -3156,24 +3394,14 @@ fn tool_placement_batch(project: &Project, args: &Value) -> Result<Value, ToolEr
     let mut fail_count = 0_usize;
     for item in input.items {
         let pos = Point::new(Length::from_mm(item.x_mm), Length::from_mm(item.y_mm));
-        let placed = project.place_from_palette(&item.reference, pos);
+        // Final pose (position + rotation) is validated atomically so a
+        // colliding rotated place never leaves the part at rot 0 on the
+        // board — that was a real source of "legal" pad placement with a
+        // body/silk overlay the agent then had to fix by hand.
+        let placed =
+            project.place_from_palette_at(&item.reference, pos, item.rotation);
         match placed {
             Ok(id) => {
-                // Apply rotation after placement so it shares the same
-                // overlap-vs-edge gates as a manual call would.
-                if let Some(deg) = item.rotation {
-                    if let Err(rot_err) = project.rotate_footprint(&item.reference, deg) {
-                        fail_count += 1;
-                        results.push(json!({
-                            "reference": item.reference,
-                            "ok": false,
-                            "stage": "rotate",
-                            "error": rot_err,
-                            "id": id.0.to_string(),
-                        }));
-                        continue;
-                    }
-                }
                 ok_count += 1;
                 results.push(json!({
                     "reference": item.reference,
