@@ -111,32 +111,50 @@ pub fn render_svg_with_margins_and_bodies(
         // "bare substrate, no copper".
         let radius_mm = board.outline_corner_radius.to_mm();
         let outer = board.outer_path();
-        if outer.len() >= 3 && board.outline_poly.is_some() {
+        let poly_board = outer.len() >= 3 && board.outline_poly.is_some();
+        if poly_board {
             write_poly_fill(&mut svg, &outer, "#5a3a1f", 0.55);
-            // Punch cutouts visually (dark canvas colour).
+            // Punch cutouts visually (dark canvas colour) — stroke is
+            // redrawn later on top of pours so Edge.Cuts stays readable.
             for cut in &board.cutouts {
                 if cut.polygon.len() >= 3 {
                     write_poly_fill(&mut svg, &cut.polygon, "#0e1116", 1.0);
-                    write_poly_stroke(&mut svg, &cut.polygon, "#d6905b", 0.25);
                 }
             }
-            write_poly_stroke(&mut svg, &outer, "#d6905b", 0.4);
         } else {
             write_substrate_fill(&mut svg, outline, radius_mm);
             for cut in &board.cutouts {
                 if cut.polygon.len() >= 3 {
                     write_poly_fill(&mut svg, &cut.polygon, "#0e1116", 1.0);
-                    write_poly_stroke(&mut svg, &cut.polygon, "#d6905b", 0.25);
                 }
             }
-            write_rect_stroke(&mut svg, outline, "#d6905b", 0.4, radius_mm);
         }
         // Pours sit on the substrate. Each pour is the outline
         // (inset by the edge clearance) MINUS the clearance keepouts
         // around every foreign-net pad / trace / via — same geometry
-        // the Gerber writer emits.
+        // the Gerber writer emits. On polygonal boards the pour mask
+        // also voids everything outside the outer path / inside cutouts
+        // so copper does not paint over the empty quadrants of an X-frame.
         for pour in &board.pours {
             write_pour_polygon(&mut svg, board, pour, outline);
+        }
+        // Edge.Cuts AFTER pours: the pour used to be a full AABB rect
+        // that buried the poly stroke and made X-frame boards look
+        // outline-less. Cutout + outer strokes sit on top of copper.
+        if poly_board {
+            for cut in &board.cutouts {
+                if cut.polygon.len() >= 3 {
+                    write_poly_stroke(&mut svg, &cut.polygon, "#e8a86a", 0.30);
+                }
+            }
+            write_poly_stroke(&mut svg, &outer, "#e8a86a", 0.55);
+        } else {
+            for cut in &board.cutouts {
+                if cut.polygon.len() >= 3 {
+                    write_poly_stroke(&mut svg, &cut.polygon, "#d6905b", 0.25);
+                }
+            }
+            write_rect_stroke(&mut svg, outline, "#d6905b", 0.4, radius_mm);
         }
         write_outline_dimensions(&mut svg, outline);
         // Mount holes (NPTH) as dashed circles.
@@ -209,6 +227,21 @@ pub fn render_svg_with_margins_and_bodies(
     // hatched fill with a solid outline. The frontend may toggle
     // visibility, but the default render shows them.
     write_keepouts(&mut svg, board);
+
+    // Final Edge.Cuts pass: copper / silk / pours must never hide the
+    // board perimeter. Especially important for polygonal boards where
+    // the shape is the design (X-frames, slots).
+    if board.outline.is_some() {
+        let outer = board.outer_path();
+        if outer.len() >= 3 && board.outline_poly.is_some() {
+            for cut in &board.cutouts {
+                if cut.polygon.len() >= 3 {
+                    write_poly_stroke(&mut svg, &cut.polygon, "#e8a86a", 0.30);
+                }
+            }
+            write_poly_stroke(&mut svg, &outer, "#e8a86a", 0.55);
+        }
+    }
 
     svg.push_str("</g></svg>");
     svg
@@ -1408,6 +1441,24 @@ fn write_pour_polygon(svg: &mut String, board: &Board, pour: &pcb_core::Pour, ou
 
     let cell_x = |i: usize| x0 + (i as f64 + 0.5) * cell;
     let cell_y = |j: usize| y0 + (j as f64 + 0.5) * cell;
+
+    // Polygonal boards / boards with milled cutouts: the pour AABB is a
+    // lie (X-frames have empty quadrants). Void every cell that is not
+    // on copper-bearing board material so pour copper cannot paint over
+    // the open air or a milled slot. Matches `Board::contains_point`.
+    if board.outline_poly.is_some() || !board.cutouts.is_empty() {
+        for j in 0..rows {
+            for i in 0..cols {
+                let p = pcb_core::Point::new(
+                    pcb_core::Length::from_mm(cell_x(i)),
+                    pcb_core::Length::from_mm(cell_y(j)),
+                );
+                if !board.contains_point(p) {
+                    void[j * cols + i] = true;
+                }
+            }
+        }
+    }
 
     let mark_rect = |grid: &mut [bool], rx: f64, ry: f64, rw: f64, rh: f64| {
         let i0 = (((rx - x0) / cell).floor() as i64).max(0) as usize;
