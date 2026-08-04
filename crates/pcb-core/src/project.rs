@@ -555,7 +555,8 @@ impl Project {
     /// Set the rectangular outline plus a corner radius. Radius is
     /// clamped to half the shorter side so the resulting shape is
     /// always a valid closed rounded rectangle (a radius wider than
-    /// half the board would degenerate the geometry).
+    /// half the board would degenerate the geometry). Clears any
+    /// polygonal outline so the board becomes a pure rectangle again.
     pub fn set_outline_with_radius(&self, outline: Rect, corner_radius: crate::Length) {
         let cap = (outline.width().0.min(outline.height().0)) / 2;
         let radius_clamped = crate::Length(corner_radius.0.max(0).min(cap));
@@ -563,6 +564,86 @@ impl Project {
             let mut inner = self.inner.write().expect("project lock poisoned");
             inner.board.outline = Some(outline);
             inner.board.outline_corner_radius = radius_clamped;
+            inner.board.outline_poly = None;
+        }
+        self.bus.publish(Event::OutlineChanged);
+    }
+
+    /// Set a polygonal outer path (≥ 3 vertices). Updates `outline` to
+    /// the polygon's AABB and clears `outline_corner_radius` (radius
+    /// only applies to pure rectangles).
+    pub fn set_outline_poly(&self, vertices: Vec<Point>) -> Result<(), String> {
+        if vertices.len() < 3 {
+            return Err("outline-poly needs ≥ 3 vertices".into());
+        }
+        let bbox = crate::geometry::polygon_bbox(&vertices)
+            .ok_or_else(|| "outline-poly: empty polygon".to_string())?;
+        {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.outline = Some(bbox);
+            inner.board.outline_poly = Some(vertices);
+            inner.board.outline_corner_radius = crate::Length::ZERO;
+        }
+        self.bus.publish(Event::OutlineChanged);
+        Ok(())
+    }
+
+    /// Add an internal milled cutout (slot / window). Polygon ≥ 3 verts.
+    pub fn add_cutout(&self, polygon: Vec<Point>, label: String) -> Result<Id, String> {
+        if polygon.len() < 3 {
+            return Err("cutout needs ≥ 3 vertices".into());
+        }
+        let id = Id::new();
+        {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.cutouts.push(crate::board::Cutout {
+                id,
+                polygon,
+                label,
+            });
+        }
+        self.bus.publish(Event::OutlineChanged);
+        Ok(id)
+    }
+
+    /// Remove every cutout.
+    pub fn clear_cutouts(&self) {
+        {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.cutouts.clear();
+        }
+        self.bus.publish(Event::OutlineChanged);
+    }
+
+    /// Add a board-level NPTH mounting hole.
+    pub fn add_mount_hole(
+        &self,
+        center: Point,
+        diameter: crate::Length,
+        label: String,
+    ) -> Result<Id, String> {
+        if diameter.0 <= 0 {
+            return Err("hole diameter must be > 0".into());
+        }
+        let id = Id::new();
+        {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.mount_holes.push(crate::board::MountHole {
+                id,
+                center,
+                diameter,
+                label,
+            });
+        }
+        self.bus.publish(Event::OutlineChanged);
+        Ok(id)
+    }
+
+    /// Remove every board-level mount hole.
+    pub fn clear_mount_holes(&self) {
+        {
+            let mut inner = self.inner.write().expect("project lock poisoned");
+            inner.board.mount_holes.clear();
         }
         self.bus.publish(Event::OutlineChanged);
     }

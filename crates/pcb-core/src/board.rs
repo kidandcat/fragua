@@ -760,6 +760,32 @@ pub struct Keepout {
     pub label: String,
 }
 
+/// Board-level mechanical hole (mounting screws, motor holes, etc.).
+/// Emitted as **NPTH** in the Excellon drill file — not a copper pad.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MountHole {
+    pub id: Id,
+    pub center: Point,
+    /// Finished hole diameter.
+    pub diameter: Length,
+    /// Optional label for silk / UI (`motor_fr`, `stack_m3`, …).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// A closed polygonal cutout milled inside the board (slots for
+/// vertical daughter cards, cable windows, lightening holes).
+/// Emitted on Edge.Cuts as an inner path; also stamped as a routing
+/// obstacle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cutout {
+    pub id: Id,
+    /// Closed polygon (≥ 3 verts). Loop closes last→first.
+    pub polygon: Vec<Point>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
 /// Kind of a single copper layer in the stackup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1097,18 +1123,31 @@ fn is_default_stackup(s: &LayerStackup) -> bool {
 /// The board itself.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Board {
-    /// Optional rectangular outline. `None` means "not set yet"; the
-    /// agent or the human assigns one before manufacturing.
+    /// Axis-aligned bounding box of the board outline. Always set
+    /// together with a rectangular or polygonal outer path — placer,
+    /// DRC and the router use it as a fast extent. `None` means "not
+    /// set yet".
     pub outline: Option<Rect>,
-    /// Corner radius of the outline rectangle, in nm. `0` (the
-    /// default) gives sharp corners — the historical behaviour. Any
-    /// positive value rounds all four corners by the same radius;
-    /// the renderer, the Gerber Edge.Cuts emitter, and the router's
-    /// inset all respect it. Capped at half the shorter board side
-    /// when the outline is set; values larger than that wouldn't
-    /// produce a closed shape.
+    /// Corner radius of a *rectangular* outline, in nm. `0` (the
+    /// default) gives sharp corners — the historical behaviour. Only
+    /// applied when `outline_poly` is `None` (pure rectangle). Capped
+    /// at half the shorter board side when the outline is set.
     #[serde(default, skip_serializing_if = "is_zero_length")]
     pub outline_corner_radius: Length,
+    /// Optional polygonal outer path (≥ 3 vertices, board coords).
+    /// When `Some`, Edge.Cuts / render / point-in-board tests use this
+    /// polygon instead of the rectangle. The `outline` rect is kept as
+    /// the polygon's AABB. `None` = classic rectangle from `outline`
+    /// (+ optional corner radius).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_poly: Option<Vec<Point>>,
+    /// Internal milled cutouts (slots, windows). Each is a closed
+    /// polygon on Edge.Cuts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cutouts: Vec<Cutout>,
+    /// NPTH mechanical holes (motor screws, stack mounts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mount_holes: Vec<MountHole>,
     pub footprints: HashMap<Id, Footprint>,
     /// Insertion order for deterministic rendering and serialisation.
     pub footprint_order: Vec<Id>,
@@ -1184,6 +1223,37 @@ impl Board {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Outer path used for Edge.Cuts / containment. Prefer
+    /// `outline_poly` when set; otherwise the four corners of
+    /// `outline` (empty if neither is set).
+    #[must_use]
+    pub fn outer_path(&self) -> Vec<Point> {
+        if let Some(poly) = self.outline_poly.as_ref() {
+            return poly.clone();
+        }
+        if let Some(r) = self.outline {
+            return vec![
+                Point::new(r.min.x, r.min.y),
+                Point::new(r.max.x, r.min.y),
+                Point::new(r.max.x, r.max.y),
+                Point::new(r.min.x, r.max.y),
+            ];
+        }
+        Vec::new()
+    }
+
+    /// True if `p` is on copper-bearing board material: inside the
+    /// outer path and outside every cutout.
+    #[must_use]
+    pub fn contains_point(&self, p: Point) -> bool {
+        let outer = self.outer_path();
+        if outer.len() < 3 {
+            return true; // no outline yet — do not block
+        }
+        let cutouts: Vec<Vec<Point>> = self.cutouts.iter().map(|c| c.polygon.clone()).collect();
+        crate::geometry::point_in_board_shape(p, &outer, &cutouts)
     }
 
     pub fn add_footprint(&mut self, footprint: Footprint) -> Id {

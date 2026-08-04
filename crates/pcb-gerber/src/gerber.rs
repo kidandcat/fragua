@@ -565,11 +565,28 @@ pub fn write_mask(board: &Board, side: Side, w: &mut impl Write) -> io::Result<(
     footer(w)
 }
 
-/// Write the Edge.Cuts layer (board outline). If the board has no
-/// explicit outline we fall back to the content bounding box plus a
-/// 2 mm margin so the fab still has *something* to cut.
+/// Write the Edge.Cuts layer (board outline + internal cutouts). If the
+/// board has no explicit outline we fall back to the content bounding
+/// box plus a 2 mm margin so the fab still has *something* to cut.
 pub fn write_edge_cuts(board: &Board, w: &mut impl Write) -> io::Result<()> {
     write_header(w, "Edge.Cuts")?;
+    let mut table = Table::default();
+    let id = table.intern(Aperture::Round { d: EDGE_STROKE });
+    write_apertures(w, &table)?;
+    select(w, id)?;
+
+    // Prefer a polygonal outer path when present.
+    let outer = board.outer_path();
+    if outer.len() >= 3 {
+        write_closed_poly(w, &outer)?;
+        for cut in &board.cutouts {
+            if cut.polygon.len() >= 3 {
+                write_closed_poly(w, &cut.polygon)?;
+            }
+        }
+        return footer(w);
+    }
+
     let outline = board.outline.or_else(|| {
         board
             .content_bounds()
@@ -579,10 +596,6 @@ pub fn write_edge_cuts(board: &Board, w: &mut impl Write) -> io::Result<()> {
         footer(w)?;
         return Ok(());
     };
-    let mut table = Table::default();
-    let id = table.intern(Aperture::Round { d: EDGE_STROKE });
-    write_apertures(w, &table)?;
-    select(w, id)?;
 
     // Sharp corners — single rectangle of straight segments.
     let radius = board.outline_corner_radius;
@@ -596,6 +609,11 @@ pub fn write_edge_cuts(board: &Board, w: &mut impl Write) -> io::Result<()> {
         line_to(w, p11)?;
         line_to(w, p01)?;
         line_to(w, p00)?;
+        for cut in &board.cutouts {
+            if cut.polygon.len() >= 3 {
+                write_closed_poly(w, &cut.polygon)?;
+            }
+        }
         return footer(w);
     }
 
@@ -636,7 +654,24 @@ pub fn write_edge_cuts(board: &Board, w: &mut impl Write) -> io::Result<()> {
     line_to(w, p_left_end)?;
     // Bottom-left arc: centre (xmin + r, ymin + r). Offset = (+r, 0).
     arc_to_ccw(w, p_bottom_start, r, Length(0))?;
+    for cut in &board.cutouts {
+        if cut.polygon.len() >= 3 {
+            write_closed_poly(w, &cut.polygon)?;
+        }
+    }
     footer(w)
+}
+
+fn write_closed_poly(w: &mut impl Write, poly: &[Point]) -> io::Result<()> {
+    if poly.is_empty() {
+        return Ok(());
+    }
+    move_to(w, poly[0])?;
+    for p in poly.iter().skip(1) {
+        line_to(w, *p)?;
+    }
+    line_to(w, poly[0])?;
+    Ok(())
 }
 
 /// Default silk text stroke width when none is provided. Roughly

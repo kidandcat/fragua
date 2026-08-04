@@ -63,7 +63,28 @@ pub fn write(board: &Board, plated: bool, w: &mut impl Write) -> io::Result<()> 
             }
         }
     } else {
+        // NPTH: board-level mount holes (motor screws, stack mounts).
+        let mut groups: BTreeMap<i64, Vec<(f64, f64)>> = BTreeMap::new();
+        for h in &board.mount_holes {
+            groups
+                .entry(h.diameter.0)
+                .or_default()
+                .push((h.center.x.to_mm(), h.center.y.to_mm()));
+        }
+        for (i, drill_nm) in groups.keys().enumerate() {
+            let tool_id = i + 1;
+            let drill_mm = Length(*drill_nm).to_mm();
+            writeln!(w, "T{tool_id}C{drill_mm:.3}")?;
+        }
         writeln!(w, "%")?;
+        writeln!(w, "G90")?;
+        for (i, (_drill, points)) in groups.iter().enumerate() {
+            let tool_id = i + 1;
+            writeln!(w, "T{tool_id}")?;
+            for (x, y) in points {
+                writeln!(w, "X{x:.3}Y{y:.3}")?;
+            }
+        }
     }
 
     writeln!(w, "M30")?;

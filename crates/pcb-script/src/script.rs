@@ -21,6 +21,11 @@ use serde_json::{json, Value};
 /// the user is most likely groping for when they guess a name.
 pub(crate) const VERBS: &[&str] = &[
     "outline",
+    "outline-poly",
+    "cutout",
+    "clear-cutouts",
+    "hole",
+    "clear-holes",
     "lib",
     "sym",
     "net",
@@ -938,6 +943,104 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                 args,
             })
         }
+        "outline-poly" => {
+            // outline-poly x1 y1 x2 y2 ... xn yn  (≥ 3 vertices)
+            need_args(
+                line,
+                tokens,
+                6,
+                "outline-poly x1 y1 x2 y2 x3 y3 [... xn yn]",
+            )?;
+            let coords = &tokens[1..];
+            if coords.len() % 2 != 0 {
+                return Err(ParseError {
+                    line,
+                    message: "outline-poly: need an even number of coordinates (x y pairs)".into(),
+                });
+            }
+            if coords.len() < 6 {
+                return Err(ParseError {
+                    line,
+                    message: "outline-poly: need ≥ 3 vertices".into(),
+                });
+            }
+            let mut verts = Vec::new();
+            for pair in coords.chunks(2) {
+                let x = parse_num(&pair[0], line, "x")?;
+                let y = parse_num(&pair[1], line, "y")?;
+                verts.push(json!({"x_mm": x, "y_mm": y}));
+            }
+            Ok(Cmd {
+                line,
+                tool: "board.set_outline_poly".into(),
+                args: json!({ "vertices": verts }),
+            })
+        }
+        "cutout" => {
+            // cutout x1 y1 x2 y2 ... [label=NAME]
+            need_args(line, tokens, 6, "cutout x1 y1 x2 y2 x3 y3 [...] [label=NAME]")?;
+            let mut kv_start = tokens.len();
+            for (i, t) in tokens.iter().enumerate().skip(1) {
+                if t.contains('=') {
+                    kv_start = i;
+                    break;
+                }
+            }
+            let coords = &tokens[1..kv_start];
+            if coords.len() % 2 != 0 || coords.len() < 6 {
+                return Err(ParseError {
+                    line,
+                    message: "cutout: need ≥ 3 x/y pairs before optional label=".into(),
+                });
+            }
+            let mut verts = Vec::new();
+            for pair in coords.chunks(2) {
+                let x = parse_num(&pair[0], line, "x")?;
+                let y = parse_num(&pair[1], line, "y")?;
+                verts.push(json!({"x_mm": x, "y_mm": y}));
+            }
+            let mut args = json!({ "vertices": verts });
+            apply_kv(
+                &mut args,
+                &tokens[kv_start..],
+                line,
+                &[("label", AttrType::StrInto("label"))],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "board.add_cutout".into(),
+                args,
+            })
+        }
+        "clear-cutouts" => Ok(Cmd {
+            line,
+            tool: "board.clear_cutouts".into(),
+            args: json!({}),
+        }),
+        "hole" => {
+            // hole X Y D [label=NAME]
+            need_args(line, tokens, 3, "hole X Y D [label=NAME]")?;
+            let x = parse_num(&tokens[1], line, "X")?;
+            let y = parse_num(&tokens[2], line, "Y")?;
+            let d = parse_num(&tokens[3], line, "D")?;
+            let mut args = json!({"x_mm": x, "y_mm": y, "d_mm": d});
+            apply_kv(
+                &mut args,
+                &tokens[4..],
+                line,
+                &[("label", AttrType::StrInto("label"))],
+            )?;
+            Ok(Cmd {
+                line,
+                tool: "board.add_hole".into(),
+                args,
+            })
+        }
+        "clear-holes" => Ok(Cmd {
+            line,
+            tool: "board.clear_holes".into(),
+            args: json!({}),
+        }),
 
         "net" => {
             // net NAME PIN1 [PIN2 ...] [class=NAME]

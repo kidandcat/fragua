@@ -22,12 +22,12 @@ pub mod thermal;
 pub mod units;
 
 pub use board::{
-    rotate_margin_trbl, Board, CopperLayer, Dielectric, EdgeSide, Footprint, FootprintSilk, Id,
-    Keepout, Layer, LayerKind, LayerSpec, LayerStackup, Pad, Pour, SilkAnchor, SilkLayer, SilkLine,
-    SilkText, StitchPolicy, ThermalRelief, Trace, Via, MIN_FOOTPRINT_GAP_MM,
+    rotate_margin_trbl, Board, CopperLayer, Cutout, Dielectric, EdgeSide, Footprint, FootprintSilk,
+    Id, Keepout, Layer, LayerKind, LayerSpec, LayerStackup, MountHole, Pad, Pour, SilkAnchor,
+    SilkLayer, SilkLine, SilkText, StitchPolicy, ThermalRelief, Trace, Via, MIN_FOOTPRINT_GAP_MM,
 };
 pub use event::{ActivityLevel, Event, EventBus};
-pub use geometry::{Point, Rect};
+pub use geometry::{point_in_board_shape, point_in_polygon, polygon_bbox, Point, Rect};
 pub use library::{
     affine_compose, derive_photo_transform, Attachment, BodyRect, Library, LibraryEntry,
     LibraryPad, LibrarySilk, PhotoCalibration, PlacementMargin, RectifyOutcome,

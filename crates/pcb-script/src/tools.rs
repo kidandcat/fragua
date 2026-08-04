@@ -568,6 +568,11 @@ pub async fn dispatch(project: &Project, name: &str, args: &Value) -> Result<Val
         "project.save" => tool_project_save(project, args),
         "project.screenshot" => tool_screenshot(project, args),
         "board.set_outline" => tool_board_set_outline(project, args),
+        "board.set_outline_poly" => tool_board_set_outline_poly(project, args),
+        "board.add_cutout" => tool_board_add_cutout(project, args),
+        "board.clear_cutouts" => tool_board_clear_cutouts(project, args),
+        "board.add_hole" => tool_board_add_hole(project, args),
+        "board.clear_holes" => tool_board_clear_holes(project, args),
         "placement.add" => tool_placement_add(project, args),
         "view.snapshot" => tool_view_snapshot(project),
         "view.summary" => tool_view_summary(project),
@@ -926,6 +931,141 @@ fn tool_board_set_outline(project: &Project, args: &Value) -> Result<Value, Tool
         "h_mm": input.h_mm,
         "corner_radius_mm": radius_mm,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexMm {
+    x_mm: f64,
+    y_mm: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetOutlinePolyInput {
+    vertices: Vec<VertexMm>,
+}
+
+fn tool_board_set_outline_poly(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: SetOutlinePolyInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("board.set_outline_poly: {e}")))?;
+    let verts: Vec<Point> = input
+        .vertices
+        .iter()
+        .map(|v| Point::new(Length::from_mm(v.x_mm), Length::from_mm(v.y_mm)))
+        .collect();
+    let n = verts.len();
+    project
+        .set_outline_poly(verts)
+        .map_err(ToolError::invalid_params)?;
+    let snap = project.read();
+    let bbox = snap.board().outline;
+    let (w, h) = bbox
+        .map(|r| (r.width().to_mm(), r.height().to_mm()))
+        .unwrap_or((0.0, 0.0));
+    project.log(
+        ActivityLevel::Info,
+        format!("board.set_outline_poly: {n} vertices, AABB {w:.1} × {h:.1} mm"),
+    );
+    Ok(text_result(format!(
+        "Polygonal outline set ({n} vertices), bounding box {w:.1} × {h:.1} mm"
+    ))
+    .with_data(json!({ "n_vertices": n, "w_mm": w, "h_mm": h })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddCutoutInput {
+    vertices: Vec<VertexMm>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+fn tool_board_add_cutout(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: AddCutoutInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("board.add_cutout: {e}")))?;
+    let verts: Vec<Point> = input
+        .vertices
+        .iter()
+        .map(|v| Point::new(Length::from_mm(v.x_mm), Length::from_mm(v.y_mm)))
+        .collect();
+    let n = verts.len();
+    let label = input.label.unwrap_or_default();
+    let id = project
+        .add_cutout(verts, label.clone())
+        .map_err(ToolError::invalid_params)?;
+    project.log(
+        ActivityLevel::Info,
+        format!(
+            "board.add_cutout: {n} vertices{}",
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!(" ({label})")
+            }
+        ),
+    );
+    Ok(text_result(format!("Cutout added ({n} vertices)")).with_data(json!({
+        "id": id.0.to_string(),
+        "n_vertices": n,
+        "label": label,
+    })))
+}
+
+fn tool_board_clear_cutouts(project: &Project, _args: &Value) -> Result<Value, ToolError> {
+    project.clear_cutouts();
+    project.log(ActivityLevel::Info, "board.clear_cutouts");
+    Ok(text_result("All cutouts cleared").into())
+}
+
+#[derive(Debug, Deserialize)]
+struct AddHoleInput {
+    x_mm: f64,
+    y_mm: f64,
+    d_mm: f64,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+fn tool_board_add_hole(project: &Project, args: &Value) -> Result<Value, ToolError> {
+    let input: AddHoleInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolError::invalid_params(format!("board.add_hole: {e}")))?;
+    let label = input.label.unwrap_or_default();
+    let id = project
+        .add_mount_hole(
+            Point::new(Length::from_mm(input.x_mm), Length::from_mm(input.y_mm)),
+            Length::from_mm(input.d_mm),
+            label.clone(),
+        )
+        .map_err(ToolError::invalid_params)?;
+    project.log(
+        ActivityLevel::Info,
+        format!(
+            "board.add_hole: Ø{:.2} mm at ({:.2}, {:.2}){}",
+            input.d_mm,
+            input.x_mm,
+            input.y_mm,
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!(" [{label}]")
+            }
+        ),
+    );
+    Ok(text_result(format!(
+        "Mount hole Ø{:.2} mm at ({:.2}, {:.2})",
+        input.d_mm, input.x_mm, input.y_mm
+    ))
+    .with_data(json!({
+        "id": id.0.to_string(),
+        "x_mm": input.x_mm,
+        "y_mm": input.y_mm,
+        "d_mm": input.d_mm,
+        "label": label,
+    })))
+}
+
+fn tool_board_clear_holes(project: &Project, _args: &Value) -> Result<Value, ToolError> {
+    project.clear_mount_holes();
+    project.log(ActivityLevel::Info, "board.clear_holes");
+    Ok(text_result("All mount holes cleared").into())
 }
 
 fn tool_project_status(project: &Project) -> Result<Value, ToolError> {

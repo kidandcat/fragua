@@ -110,7 +110,27 @@ pub fn render_svg_with_margins_and_bodies(
         // edge clearance) shows this brown so the eye reads it as
         // "bare substrate, no copper".
         let radius_mm = board.outline_corner_radius.to_mm();
-        write_substrate_fill(&mut svg, outline, radius_mm);
+        let outer = board.outer_path();
+        if outer.len() >= 3 && board.outline_poly.is_some() {
+            write_poly_fill(&mut svg, &outer, "#5a3a1f", 0.55);
+            // Punch cutouts visually (dark canvas colour).
+            for cut in &board.cutouts {
+                if cut.polygon.len() >= 3 {
+                    write_poly_fill(&mut svg, &cut.polygon, "#0e1116", 1.0);
+                    write_poly_stroke(&mut svg, &cut.polygon, "#d6905b", 0.25);
+                }
+            }
+            write_poly_stroke(&mut svg, &outer, "#d6905b", 0.4);
+        } else {
+            write_substrate_fill(&mut svg, outline, radius_mm);
+            for cut in &board.cutouts {
+                if cut.polygon.len() >= 3 {
+                    write_poly_fill(&mut svg, &cut.polygon, "#0e1116", 1.0);
+                    write_poly_stroke(&mut svg, &cut.polygon, "#d6905b", 0.25);
+                }
+            }
+            write_rect_stroke(&mut svg, outline, "#d6905b", 0.4, radius_mm);
+        }
         // Pours sit on the substrate. Each pour is the outline
         // (inset by the edge clearance) MINUS the clearance keepouts
         // around every foreign-net pad / trace / via — same geometry
@@ -118,8 +138,11 @@ pub fn render_svg_with_margins_and_bodies(
         for pour in &board.pours {
             write_pour_polygon(&mut svg, board, pour, outline);
         }
-        write_rect_stroke(&mut svg, outline, "#d6905b", 0.4, radius_mm);
         write_outline_dimensions(&mut svg, outline);
+        // Mount holes (NPTH) as dashed circles.
+        for h in &board.mount_holes {
+            write_mount_hole(&mut svg, h);
+        }
     }
 
     // Placeholder for the webview's real-scale component-photo overlay.
@@ -1288,6 +1311,54 @@ fn write_substrate_fill(svg: &mut String, outline: Rect, corner_radius_mm: f64) 
         w = outline.width().to_mm(),
         h = outline.height().to_mm(),
     );
+}
+
+fn write_poly_fill(svg: &mut String, poly: &[pcb_core::Point], fill: &str, opacity: f64) {
+    if poly.len() < 3 {
+        return;
+    }
+    svg.push_str(r#"<path d=""#);
+    for (i, p) in poly.iter().enumerate() {
+        let cmd = if i == 0 { 'M' } else { 'L' };
+        let _ = write!(svg, "{cmd}{:.3},{:.3} ", p.x.to_mm(), p.y.to_mm());
+    }
+    let _ = write!(
+        svg,
+        r##"Z" fill="{fill}" fill-opacity="{opacity:.2}" pointer-events="none"/>"##
+    );
+}
+
+fn write_poly_stroke(svg: &mut String, poly: &[pcb_core::Point], color: &str, width: f64) {
+    if poly.len() < 3 {
+        return;
+    }
+    svg.push_str(r#"<path d=""#);
+    for (i, p) in poly.iter().enumerate() {
+        let cmd = if i == 0 { 'M' } else { 'L' };
+        let _ = write!(svg, "{cmd}{:.3},{:.3} ", p.x.to_mm(), p.y.to_mm());
+    }
+    let _ = write!(
+        svg,
+        r##"Z" fill="none" stroke="{color}" stroke-width="{width:.3}" pointer-events="none"/>"##
+    );
+}
+
+fn write_mount_hole(svg: &mut String, h: &pcb_core::MountHole) {
+    let cx = h.center.x.to_mm();
+    let cy = h.center.y.to_mm();
+    let r = h.diameter.to_mm() / 2.0;
+    let _ = write!(
+        svg,
+        r##"<circle cx="{cx:.3}" cy="{cy:.3}" r="{r:.3}" fill="none" stroke="#8ab4f8" stroke-width="0.15" stroke-dasharray="0.4 0.3" pointer-events="none"/>"##
+    );
+    if !h.label.is_empty() {
+        let _ = write!(
+            svg,
+            r##"<text x="{cx:.3}" y="{y:.3}" fill="#8ab4f8" font-size="0.8" text-anchor="middle" pointer-events="none">{label}</text>"##,
+            y = cy + r + 1.2,
+            label = h.label,
+        );
+    }
 }
 
 /// Render a copper pour as a black-filled rectangle (the outline

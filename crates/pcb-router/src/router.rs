@@ -1867,7 +1867,13 @@ pub(crate) fn build_pass_grid(
     // there is an obstacle; only the pad stamps below reopen it, so a net
     // can land on such a pad without the router treating the board margin
     // as free routing space.
-    grid.stamp_outside(copper_region(board, opts));
+    // Polygonal boards (and any board with milled cutouts) use point-in-
+    // shape so the router never lays copper outside arms / inside slots.
+    if board.outline_poly.is_some() || !board.cutouts.is_empty() {
+        grid.stamp_outside_board(board);
+    } else {
+        grid.stamp_outside(copper_region(board, opts));
+    }
     // Stamp pads BARE (no clearance inflation): a pad cell holds its true
     // copper extent only. Edge-to-edge clearance to a pad is enforced at
     // search time by each net's own clearance disk — exact at any grid

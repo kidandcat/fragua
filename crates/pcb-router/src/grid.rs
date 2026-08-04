@@ -759,6 +759,40 @@ impl Grid {
         }
     }
 
+    /// Stamp every cell whose centre is outside the board's copper-bearing
+    /// shape (polygonal outer path minus cutouts) as Obstacle. Falls back
+    /// to a no-op when the board has no outline yet.
+    pub fn stamp_outside_board(&mut self, board: &Board) {
+        let outer = board.outer_path();
+        if outer.len() < 3 {
+            return;
+        }
+        let cutouts: Vec<Vec<pcb_core::Point>> =
+            board.cutouts.iter().map(|c| c.polygon.clone()).collect();
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                let p = self.unsnap(GridPoint {
+                    layer: 0,
+                    col: c,
+                    row: r,
+                });
+                if pcb_core::point_in_board_shape(p, &outer, &cutouts) {
+                    continue;
+                }
+                for layer in 0..self.layer_count {
+                    self.set(
+                        GridPoint {
+                            layer,
+                            col: c,
+                            row: r,
+                        },
+                        Cell::Obstacle,
+                    );
+                }
+            }
+        }
+    }
+
     /// Rasterise every keepout polygon into `Obstacle` cells on the
     /// applicable layers. Only the "blocks all nets" case is honoured
     /// in this iteration (every `keepout.nets_allowed` is treated as
