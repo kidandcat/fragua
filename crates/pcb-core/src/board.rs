@@ -799,6 +799,13 @@ pub struct MountHole {
     /// Optional label for silk / UI (`motor_fr`, `stack_m3`, …).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// Physical component base keep-out diameter (mm-scale Length), e.g.
+    /// a 1404 motor can (~14.3 mm OD) around the shaft hole. Place/DRC
+    /// reject pads **and silk body** inside this disc; the Excellon drill
+    /// still uses only [`Self::diameter`]. `None` = hole radius +
+    /// [`MOUNT_HOLE_CLEARANCE_MM`] only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepout_diameter: Option<Length>,
 }
 
 /// A closed polygonal cutout milled inside the board (slots for
@@ -1554,20 +1561,33 @@ impl Board {
         None
     }
 
-    /// Label of the first NPTH [`MountHole`] whose keep-out disc
-    /// (hole radius + [`MOUNT_HOLE_CLEARANCE_MM`]) hits any pad of
-    /// `probe` or the probe's pad AABB. Used by place / move / rotate /
-    /// auto-place so connectors cannot land on motor or mounting holes.
+    /// Keep-out radius (mm) for place/DRC around a mount hole: the larger
+    /// of (drill/2 + clearance) and optional physical base radius.
+    #[must_use]
+    pub fn mount_hole_keepout_radius_mm(hole: &MountHole) -> f64 {
+        let drill_r = hole.diameter.to_mm() / 2.0 + MOUNT_HOLE_CLEARANCE_MM;
+        match hole.keepout_diameter {
+            Some(d) if d.to_mm() > 0.0 => drill_r.max(d.to_mm() / 2.0),
+            _ => drill_r,
+        }
+    }
+
+    /// Label of the first NPTH [`MountHole`] whose keep-out disc hits any
+    /// pad **or silk body** of `probe`. Disc = hole radius +
+    /// [`MOUNT_HOLE_CLEARANCE_MM`], or the optional motor/base
+    /// [`MountHole::keepout_diameter`] when larger. Used by place / move
+    /// / rotate / auto-place / DRC so parts cannot land on a motor can
+    /// or mounting screw pattern.
     ///
-    /// Returns a short human label (`NPTH hole 'RL_e'`) suitable for
-    /// error strings. `None` if the board has no holes or `probe` is clear.
+    /// Returns a short human label (`NPTH hole 'RL_shaft' (motor base)`)
+    /// suitable for error strings. `None` if clear.
     #[must_use]
     pub fn first_mount_hole_hitter(&self, probe: &Footprint) -> Option<String> {
         if self.mount_holes.is_empty() {
             return None;
         }
         for hole in &self.mount_holes {
-            let hr = hole.diameter.to_mm() / 2.0 + MOUNT_HOLE_CLEARANCE_MM;
+            let hr = Self::mount_hole_keepout_radius_mm(hole);
             let hx = hole.center.x.to_mm();
             let hy = hole.center.y.to_mm();
             let hole_name = if hole.label.is_empty() {
@@ -1575,7 +1595,13 @@ impl Board {
             } else {
                 hole.label.clone()
             };
-            // Pad copper vs hole disc (circle–circle with pad half-diagonal).
+            let drill_r = hole.diameter.to_mm() / 2.0 + MOUNT_HOLE_CLEARANCE_MM;
+            let label = if hr > drill_r + 1e-9 {
+                format!("NPTH hole '{hole_name}' (component base keep-out)")
+            } else {
+                format!("NPTH hole '{hole_name}'")
+            };
+            // Pad copper vs keep-out disc (circle–circle with pad half-diagonal).
             for pad in &probe.pads {
                 let c = probe.pad_world_center(pad);
                 let (w, h) = probe.pad_world_size(pad);
@@ -1583,15 +1609,22 @@ impl Board {
                 let dx = c.x.to_mm() - hx;
                 let dy = c.y.to_mm() - hy;
                 if dx.hypot(dy) < hr + pad_r {
-                    return Some(format!("NPTH hole '{hole_name}'"));
+                    return Some(label);
                 }
             }
-            // Pad AABB covering the hole (multi-pad footprint parked on it).
-            if let Some(bb) = probe.bounds() {
+            // Body (pads ∪ silk) AABB vs disc — motor can under a GY-530
+            // silk outline with pads just clear of the shaft.
+            if let Some(bb) = probe.body_bounds() {
                 let cx = hx.clamp(bb.min.x.to_mm(), bb.max.x.to_mm());
                 let cy = hy.clamp(bb.min.y.to_mm(), bb.max.y.to_mm());
                 if (hx - cx).hypot(hy - cy) < hr {
-                    return Some(format!("NPTH hole '{hole_name}'"));
+                    return Some(label);
+                }
+            } else if let Some(bb) = probe.bounds() {
+                let cx = hx.clamp(bb.min.x.to_mm(), bb.max.x.to_mm());
+                let cy = hy.clamp(bb.min.y.to_mm(), bb.max.y.to_mm());
+                if (hx - cx).hypot(hy - cy) < hr {
+                    return Some(label);
                 }
             }
         }
@@ -2633,6 +2666,7 @@ mod tests {
             center: Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
             diameter: Length::from_mm(3.2),
             label: "motor_shaft".into(),
+            keepout_diameter: None,
         });
         // Two-pad connector sitting on the hole.
         let mut fp = Footprint {
@@ -2678,6 +2712,78 @@ mod tests {
         assert!(
             board.first_mount_hole_hitter(&fp).is_none(),
             "far-away connector must be clear"
+        );
+    }
+
+    /// Motor can keep-out (keepout_diameter) rejects silk body near shaft
+    /// even when pads clear the small NPTH drill.
+    #[test]
+    fn mount_hole_base_keepout_rejects_body_near_motor() {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(40.0), Length::from_mm(40.0)),
+        ));
+        // 3.2 mm shaft drill, 14.3 mm motor can (1404-class).
+        board.mount_holes.push(MountHole {
+            id: Id::new(),
+            center: Point::new(Length::from_mm(12.38), Length::from_mm(12.38)),
+            diameter: Length::from_mm(3.2),
+            label: "RL_shaft".into(),
+            keepout_diameter: Some(Length::from_mm(14.3)),
+        });
+        // Pads clear of drill; silk body overlaps the motor can.
+        let fp = Footprint {
+            id: Id::new(),
+            reference: "SF".into(),
+            value: String::new(),
+            library: "demo".into(),
+            position: Point::new(Length::from_mm(21.14), Length::from_mm(15.49)),
+            rotation: 0.0,
+            layer: CopperLayer::Top,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: "VIN".into(),
+                offset: Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+                size: (Length::from_mm(2.0), Length::from_mm(2.0)),
+                layer: CopperLayer::Top,
+                net: Some("+3V3".into()),
+                drill: Some(Length::from_mm(1.0)),
+            }],
+            key: "gy530".into(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: vec![
+                FootprintSilk::Line {
+                    layer: SilkLayer::Top,
+                    start: Point::new(Length::from_mm(7.5), Length::from_mm(-0.5)),
+                    end: Point::new(Length::from_mm(-7.5), Length::from_mm(-0.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Top,
+                    start: Point::new(Length::from_mm(-7.5), Length::from_mm(-0.5)),
+                    end: Point::new(Length::from_mm(-7.5), Length::from_mm(1.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Top,
+                    start: Point::new(Length::from_mm(-7.5), Length::from_mm(1.5)),
+                    end: Point::new(Length::from_mm(7.5), Length::from_mm(1.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Top,
+                    start: Point::new(Length::from_mm(7.5), Length::from_mm(1.5)),
+                    end: Point::new(Length::from_mm(7.5), Length::from_mm(-0.5)),
+                    width: Length::from_mm(0.15),
+                },
+            ],
+        };
+        assert!(
+            board.first_mount_hole_hitter(&fp).is_some(),
+            "silk over motor can must hit base keep-out"
         );
     }
 

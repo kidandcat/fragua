@@ -1043,23 +1043,32 @@ struct AddHoleInput {
     d_mm: f64,
     #[serde(default)]
     label: Option<String>,
+    /// Physical component base keep-out diameter (mm). Motor can, flange, …
+    #[serde(default)]
+    keepout_mm: Option<f64>,
 }
 
 fn tool_board_add_hole(project: &Project, args: &Value) -> Result<Value, ToolError> {
     let input: AddHoleInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolError::invalid_params(format!("board.add_hole: {e}")))?;
     let label = input.label.unwrap_or_default();
+    let keepout = input.keepout_mm.map(Length::from_mm);
     let id = project
         .add_mount_hole(
             Point::new(Length::from_mm(input.x_mm), Length::from_mm(input.y_mm)),
             Length::from_mm(input.d_mm),
             label.clone(),
+            keepout,
         )
         .map_err(ToolError::invalid_params)?;
+    let ko = input
+        .keepout_mm
+        .map(|k| format!(" keepout=Ø{k:.2}"))
+        .unwrap_or_default();
     project.log(
         ActivityLevel::Info,
         format!(
-            "board.add_hole: Ø{:.2} mm at ({:.2}, {:.2}){}",
+            "board.add_hole: Ø{:.2} mm at ({:.2}, {:.2}){}{ko}",
             input.d_mm,
             input.x_mm,
             input.y_mm,
@@ -1071,7 +1080,7 @@ fn tool_board_add_hole(project: &Project, args: &Value) -> Result<Value, ToolErr
         ),
     );
     Ok(text_result(format!(
-        "Mount hole Ø{:.2} mm at ({:.2}, {:.2})",
+        "Mount hole Ø{:.2} mm at ({:.2}, {:.2}){ko}",
         input.d_mm, input.x_mm, input.y_mm
     ))
     .with_data(json!({
@@ -1080,6 +1089,7 @@ fn tool_board_add_hole(project: &Project, args: &Value) -> Result<Value, ToolErr
         "y_mm": input.y_mm,
         "d_mm": input.d_mm,
         "label": label,
+        "keepout_mm": input.keepout_mm,
     })))
 }
 

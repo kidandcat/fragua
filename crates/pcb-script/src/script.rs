@@ -1021,8 +1021,9 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
             args: json!({}),
         }),
         "hole" => {
-            // hole X Y D [label=NAME]
-            need_args(line, tokens, 3, "hole X Y D [label=NAME]")?;
+            // hole X Y D [label=NAME] [keepout=N]
+            // keepout = physical base diameter (motor can, flange) for place/DRC.
+            need_args(line, tokens, 3, "hole X Y D [label=NAME] [keepout=N]")?;
             let x = parse_num(&tokens[1], line, "X")?;
             let y = parse_num(&tokens[2], line, "Y")?;
             let d = parse_num(&tokens[3], line, "D")?;
@@ -1031,7 +1032,10 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
                 &mut args,
                 &tokens[4..],
                 line,
-                &[("label", AttrType::StrInto("label"))],
+                &[
+                    ("label", AttrType::StrInto("label")),
+                    ("keepout", AttrType::NumInto("keepout_mm")),
+                ],
             )?;
             Ok(Cmd {
                 line,

@@ -616,14 +616,22 @@ impl Project {
     }
 
     /// Add a board-level NPTH mounting hole.
+    ///
+    /// `keepout_diameter`: optional physical base diameter (motor can,
+    /// standoff flange, …). Place/DRC use max(drill+clearance, keepout);
+    /// Excellon still drills only `diameter`.
     pub fn add_mount_hole(
         &self,
         center: Point,
         diameter: crate::Length,
         label: String,
+        keepout_diameter: Option<crate::Length>,
     ) -> Result<Id, String> {
         if diameter.0 <= 0 {
             return Err("hole diameter must be > 0".into());
+        }
+        if keepout_diameter.is_some_and(|k| k.0 <= 0) {
+            return Err("hole keepout diameter must be > 0 when set".into());
         }
         let id = Id::new();
         {
@@ -633,6 +641,7 @@ impl Project {
                 center,
                 diameter,
                 label,
+                keepout_diameter,
             });
         }
         self.bus.publish(Event::OutlineChanged);
