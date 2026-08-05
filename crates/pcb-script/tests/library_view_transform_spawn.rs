@@ -98,6 +98,16 @@ fn spawn(project: &Project, reference: &str, key: &str) {
     .expect("palette.add_from_library");
 }
 
+fn spawn_on_layer(project: &Project, reference: &str, key: &str, layer: &str) {
+    block_on(pcb_script::tools::dispatch(
+        project,
+        "palette.add_from_library",
+        &json!({"reference": reference, "key": key, "layer": layer}),
+    ))
+    .map_err(|e| e.message)
+    .expect("palette.add_from_library layer");
+}
+
 #[test]
 fn flip_h_mirrors_pad_x_at_palette_spawn() {
     let _g = home_guard();
@@ -260,5 +270,86 @@ fn view_rotation_composes_with_place_rotation() {
         (world.y.to_mm() - 25.0).abs() < 1e-3,
         "expected world y=25, got {}",
         world.y.to_mm()
+    );
+}
+
+#[test]
+fn bottom_layer_spawn_x_mirrors_pad_offsets() {
+    // Library pads authored for top/component-face view. Spawning on
+    // bottom must X-mirror so component-side pin order still matches
+    // the library when looking at the bottom of the board.
+    let _g = home_guard();
+    sandbox_home("bottom-mirror");
+    let project = Project::new("vt-bottom-mirror");
+    create_two_pad_entry(&project, "test_bottom");
+
+    add_symbol(&project, "U1");
+    spawn_on_layer(&project, "U1", "test_bottom", "bottom");
+
+    let snap = project.read();
+    let fp = snap
+        .palette()
+        .iter()
+        .find(|f| f.reference == "U1")
+        .expect("U1 in palette");
+
+    assert!(
+        !fp.layer.is_top(),
+        "footprint must be on bottom copper"
+    );
+    // Pad "1" native (2, 0) → bottom mirror (-2, 0).
+    let pad1 = fp.pads.iter().find(|p| p.number == "1").expect("pad 1");
+    assert!(
+        (pad1.offset.x.to_mm() - (-2.0)).abs() < 1e-6,
+        "pad 1 x should be -2 after bottom mirror, got {}",
+        pad1.offset.x.to_mm()
+    );
+    assert!(pad1.offset.y.to_mm().abs() < 1e-6);
+    // Pad "2" native (-2, 0) → bottom mirror (+2, 0).
+    let pad2 = fp.pads.iter().find(|p| p.number == "2").expect("pad 2");
+    assert!(
+        (pad2.offset.x.to_mm() - 2.0).abs() < 1e-6,
+        "pad 2 x should be +2 after bottom mirror, got {}",
+        pad2.offset.x.to_mm()
+    );
+    // Pad copper face is bottom.
+    assert!(!pad1.layer.is_top());
+}
+
+#[test]
+fn bottom_layer_composes_with_view_flip_h() {
+    // view flip_h then bottom X-mirror = two flips = identity on X.
+    let _g = home_guard();
+    sandbox_home("bottom-compose-flip");
+    let project = Project::new("vt-bottom-compose");
+    create_two_pad_entry(&project, "test_bc");
+
+    project
+        .library()
+        .set_footprint_view_transform(
+            "test_bc",
+            ViewTransform {
+                rotation_deg: 0,
+                flip_h: true,
+                flip_v: false,
+            },
+        )
+        .expect("set view transform");
+
+    add_symbol(&project, "U1");
+    spawn_on_layer(&project, "U1", "test_bc", "bottom");
+
+    let snap = project.read();
+    let fp = snap
+        .palette()
+        .iter()
+        .find(|f| f.reference == "U1")
+        .expect("U1 in palette");
+    // native (2,0) → flip_h (-2,0) → bottom mirror (+2,0)
+    let pad1 = fp.pads.iter().find(|p| p.number == "1").expect("pad 1");
+    assert!(
+        (pad1.offset.x.to_mm() - 2.0).abs() < 1e-6,
+        "flip_h + bottom mirror should restore +2, got {}",
+        pad1.offset.x.to_mm()
     );
 }

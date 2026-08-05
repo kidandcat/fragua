@@ -256,6 +256,30 @@ impl PlacementMargin {
         self.elevated != other.elevated
     }
 
+    /// Swap left/right keep-out so an asymmetric body matches a
+    /// bottom-side footprint whose pad/silk offsets were X-mirrored at
+    /// palette spawn (`palette REF KEY layer=bottom`). Top/bottom sides
+    /// are unchanged (Y is not mirrored for bottom mount).
+    #[must_use]
+    pub fn mirrored_for_bottom(self) -> Self {
+        Self {
+            left_mm: self.right_mm,
+            right_mm: self.left_mm,
+            ..self
+        }
+    }
+
+    /// Resolve this keep-out for a placed (or palette) footprint: bottom
+    /// copper mounts get [`Self::mirrored_for_bottom`].
+    #[must_use]
+    pub fn for_mount_side(self, top_side: bool) -> Self {
+        if top_side {
+            self
+        } else {
+            self.mirrored_for_bottom()
+        }
+    }
+
     /// True when every side is zero (or negative — treated as no
     /// inflation). Callers can skip the rotated-inflate maths in the
     /// common case.

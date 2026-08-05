@@ -447,6 +447,45 @@ fn two_elevated_bodies_overlapping_is_still_an_error() {
 }
 
 #[test]
+fn top_and_bottom_bodies_sharing_xy_are_not_a_body_overlap() {
+    // MPU on top + SuperMini on bottom may share the same plan-view
+    // rectangle; they live on opposite faces of the FR4.
+    let mut board = Board::new();
+    board.outline = Some(Rect::from_corners(
+        Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+        Point::new(Length::from_mm(60.0), Length::from_mm(60.0)),
+    ));
+    let mut top = fp("U2", 30.0, 30.0, vec![pad("1", 0.0, 0.0, Some("A"))]);
+    top.key = "imu".into();
+    top.layer = CopperLayer::Top;
+    board.add_footprint(top);
+    let mut bot = fp("U1", 30.0, 30.0, vec![pad("1", 0.0, 0.0, Some("B"))]);
+    bot.key = "mcu".into();
+    bot.layer = CopperLayer::Bottom;
+    board.add_footprint(bot);
+
+    let margin = |w: f64| PlacementMargin {
+        top_mm: w,
+        right_mm: w,
+        bottom_mm: w,
+        left_mm: w,
+        elevated: false,
+    };
+    let mut margins = HashMap::new();
+    margins.insert("imu".to_string(), margin(8.0));
+    margins.insert("mcu".to_string(), margin(8.0));
+    let opts = DrcOptions {
+        placement_margins: margins,
+        ..DrcOptions::default()
+    };
+    let v = body_overlaps(&board, &opts);
+    assert!(
+        v.is_empty(),
+        "opposite faces must not BodyOverlap, got {v:#?}"
+    );
+}
+
+#[test]
 fn body_off_board_is_unaffected_by_elevated() {
     // Same geometry as `body_off_board_is_error_even_for_edge_mounted`,
     // with the part socketed on headers: floating above the copper does

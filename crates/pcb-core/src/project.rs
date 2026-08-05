@@ -980,6 +980,7 @@ impl Project {
                     .find(&fp.key)
                     .map(|e| e.body_keepout())
                     .unwrap_or_default()
+                    .for_mount_side(fp.layer.is_top())
             }
         };
 
@@ -1069,6 +1070,12 @@ impl Project {
         {
             return Err(format!("{reference} {reason}"));
         }
+        if let Some(reason) = inner
+            .board
+            .footprint_hits_keepout(&probe, margin_for(&probe))
+        {
+            return Err(format!("{reference} {reason}"));
+        }
         if let Some(reason) = inner.board.edge_mount_violation(&probe) {
             return Err(format!("{reference} is edge-mounted but {reason}"));
         }
@@ -1118,6 +1125,7 @@ impl Project {
                     .find(&fp.key)
                     .map(|e| e.body_keepout())
                     .unwrap_or_default()
+                    .for_mount_side(fp.layer.is_top())
             }
         };
         let mut inner = self.inner.write().expect("project lock poisoned");
@@ -1154,6 +1162,9 @@ impl Project {
         // legitimately touch the outline, but the plastic body of the
         // part can never extend past it.
         if let Some(reason) = inner.board.body_outline_violation(&fp, margin_for(&fp)) {
+            return Err(format!("{reference} {reason}"));
+        }
+        if let Some(reason) = inner.board.footprint_hits_keepout(&fp, margin_for(&fp)) {
             return Err(format!("{reference} {reason}"));
         }
         if let Some(reason) = inner.board.edge_mount_violation(&fp) {
@@ -1234,6 +1245,7 @@ impl Project {
                     .find(&fp.key)
                     .map(|e| e.body_keepout())
                     .unwrap_or_default()
+                    .for_mount_side(fp.layer.is_top())
             }
         };
         let mut inner = self.inner.write().expect("project lock poisoned");
@@ -1269,6 +1281,14 @@ impl Project {
                 "{reference} rotated to {rotation_deg:.0}°: {reason}"
             ));
         }
+        if let Some(reason) = inner
+            .board
+            .footprint_hits_keepout(&probe, margin_for(&probe))
+        {
+            return Err(format!(
+                "{reference} rotated to {rotation_deg:.0}°: {reason}"
+            ));
+        }
         if let Some(reason) = inner.board.edge_mount_violation(&probe) {
             return Err(format!(
                 "{reference} is edge-mounted but after rotation {reason}",
@@ -1297,6 +1317,7 @@ impl Project {
                     .find(&fp.key)
                     .map(|e| e.body_keepout())
                     .unwrap_or_default()
+                    .for_mount_side(fp.layer.is_top())
             }
         };
         let mut inner = self.inner.write().expect("project lock poisoned");
@@ -1331,6 +1352,16 @@ impl Project {
         if let Some(reason) = inner
             .board
             .body_outline_violation(&probe, margin_for(&probe))
+        {
+            return Err(format!(
+                "moving {reference} to ({:.2}, {:.2}) mm: {reason}",
+                position.x.to_mm(),
+                position.y.to_mm(),
+            ));
+        }
+        if let Some(reason) = inner
+            .board
+            .footprint_hits_keepout(&probe, margin_for(&probe))
         {
             return Err(format!(
                 "moving {reference} to ({:.2}, {:.2}) mm: {reason}",

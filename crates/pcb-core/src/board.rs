@@ -1495,6 +1495,13 @@ impl Board {
             if Some(fp.id) == ignore_id {
                 continue;
             }
+            // Opposite copper faces never body-collide (MPU on top +
+            // SuperMini on bottom can share the same XY). Pad-on-pad is
+            // still rejected separately by `first_overlapper` for PTH
+            // rings that occupy every layer.
+            if probe.layer != fp.layer {
+                continue;
+            }
             let margin = margin_for(fp);
             // One of the two is socketed on headers and the other is
             // not: the bodies live at different heights, so a plan-view

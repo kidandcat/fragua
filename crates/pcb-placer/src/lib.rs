@@ -112,11 +112,14 @@ pub(crate) fn is_elevated(fp: &Footprint, margins: &MarginMap) -> bool {
 }
 
 /// True when the two footprints' bodies share the board plane and
-/// therefore compete for the same area. False when exactly one is
-/// socketed on headers — the module's plastic floats over the other
-/// part, so every gap/overlap measure between them is vacuous. Two
-/// elevated bodies DO interact: they sit at the same header height.
+/// therefore compete for the same area. False when:
+/// - they sit on opposite copper faces (top vs bottom — can share XY), or
+/// - exactly one is socketed on headers (elevated clears flat underneath).
+/// Two elevated bodies on the same face DO interact (same header height).
 pub(crate) fn bodies_interact(a: &Footprint, b: &Footprint, margins: &MarginMap) -> bool {
+    if a.layer != b.layer {
+        return false;
+    }
     is_elevated(a, margins) == is_elevated(b, margins)
 }
 
@@ -432,10 +435,11 @@ fn layout_is_legal(
         if board.first_overlapper(fp, Some(*id)).is_some() {
             return false;
         }
-        if board
-            .body_outline_violation(fp, margin_for_fp(fp, margins))
-            .is_some()
-        {
+        let margin = margin_for_fp(fp, margins);
+        if board.body_outline_violation(fp, margin).is_some() {
+            return false;
+        }
+        if board.footprint_hits_keepout(fp, margin).is_some() {
             return false;
         }
         if board.edge_mount_violation(fp).is_some() {
@@ -792,6 +796,10 @@ pub fn place(
             // Synthesize a temporary board view: body_outline_violation
             // only needs `outline` + the probe footprint's geometry.
             if board.body_outline_violation(&probe, margin).is_some() {
+                continue;
+            }
+            // Mechanical keepouts (motor bases, etc.) — same gate as place.
+            if board.footprint_hits_keepout(&probe, margin).is_some() {
                 continue;
             }
         }

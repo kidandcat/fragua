@@ -310,6 +310,12 @@ PALETTE / PLACEMENT:\n\
                                                  footprint matches what the user saw in the review.\n\
                                                  The optional `rot=` is then layered on top of that\n\
                                                  view transform, same as `place X Y ROT`.\n\
+                                                 `layer=bottom` also X-mirrors pad/silk geometry so\n\
+                                                 component-side pin order matches the library (top\n\
+                                                 view looks mirrored — correct for bottom mount).\n\
+                                                 Body keep-out left/right swaps for bottom; body\n\
+                                                 overlap only applies same copper face (top vs\n\
+                                                 bottom can share XY).\n\
   clear-palette\n\
   place REF X Y [ROT_DEG]                      — drop palette item at (x, y) mm; rejects if it\n\
                                                  pad-overlaps, body/silk-overlaps (library\n\
@@ -2099,11 +2105,23 @@ fn anchor_to_str(a: SilkAnchor) -> &'static str {
 /// lands on the **bottom** copper, those strokes must go to
 /// `SilkLayer::Bottom` (B.SilkS), otherwise the Gerber and canvas paint
 /// bottom modules' outlines on the top face.
+///
+/// Bottom mount also **X-mirrors** geometry (after `vt`) so pin order
+/// matches the library when looking at the component face.
 fn library_silk_to_footprint_with_view(
     s: &LibrarySilk,
     vt: pcb_core::ViewTransform,
     copper_side: CopperLayer,
 ) -> FootprintSilk {
+    let bottom = !copper_side.is_top();
+    let map_pt = |x: f64, y: f64| {
+        let (x, y) = vt.apply_point_mm(x, y);
+        if bottom {
+            (-x, y)
+        } else {
+            (x, y)
+        }
+    };
     let map_layer = |lib: SilkLayer| -> SilkLayer {
         if copper_side.is_top() {
             return lib;
@@ -2123,8 +2141,8 @@ fn library_silk_to_footprint_with_view(
             y2_mm,
             width_mm,
         } => {
-            let (x1, y1) = vt.apply_point_mm(*x1_mm, *y1_mm);
-            let (x2, y2) = vt.apply_point_mm(*x2_mm, *y2_mm);
+            let (x1, y1) = map_pt(*x1_mm, *y1_mm);
+            let (x2, y2) = map_pt(*x2_mm, *y2_mm);
             FootprintSilk::Line {
                 layer: map_layer(*layer),
                 start: Point::new(Length::from_mm(x1), Length::from_mm(y1)),
@@ -2142,13 +2160,18 @@ fn library_silk_to_footprint_with_view(
             anchor,
             width_mm,
         } => {
-            let (x, y) = vt.apply_point_mm(*x_mm, *y_mm);
+            let (x, y) = map_pt(*x_mm, *y_mm);
+            // Bottom X-mirror flips text handedness the same way flip_h does.
+            let mut rot = vt.apply_angle_deg(*rotation_deg);
+            if bottom {
+                rot = -rot;
+            }
             FootprintSilk::Text {
                 layer: map_layer(*layer),
                 position: Point::new(Length::from_mm(x), Length::from_mm(y)),
                 text: text.clone(),
                 size: Length::from_mm(*size_mm),
-                rotation: vt.apply_angle_deg(*rotation_deg),
+                rotation: rot,
                 anchor: *anchor,
                 width: Length::from_mm(*width_mm),
             }
@@ -2987,7 +3010,7 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
     // Pull value/key/description/edge from the schematic symbol if it
     // exists, falling back to the library entry's defaults. The
     // schematic also carries the per-pad net assignment.
-    let (resolved_value, key_field, description_field, pads, edge_from_schematic) = {
+    let (resolved_value, key_field, description_field, pads, edge_from_schematic, copper_side, vt) = {
         let snap = project.read();
         let sch = snap.schematic();
         let symbol = sch.find_by_reference(&input.reference).ok_or_else(|| {
@@ -3015,6 +3038,12 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
             symbol.description.clone()
         };
         let vt = entry.footprint_view_transform;
+        // Bottom copper: after the library view transform, X-mirror so
+        // looking at the board from the component face matches the
+        // library pin order (top-view of a top-mounted part). Viewing
+        // through the top, bottom parts appear mirrored — correct.
+        let copper_side: CopperLayer = input.layer.clone().into();
+        let bottom = !copper_side.is_top();
         let pads: Vec<Pad> = entry
             .pads
             .iter()
@@ -3040,14 +3069,17 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
                 // layers `place X Y ROT` on top of this. The original
                 // `LibraryPad` (and `index.json`) stay untouched so the
                 // review pane still drives off the native data.
-                let (x_mm, y_mm) = vt.apply_point_mm(p.x_mm, p.y_mm);
+                let (mut x_mm, y_mm) = vt.apply_point_mm(p.x_mm, p.y_mm);
+                if bottom {
+                    x_mm = -x_mm;
+                }
                 let (w_mm, h_mm) = vt.apply_size_mm(p.w_mm, p.h_mm);
                 Pad {
                     number: p.number.clone(),
                     name: p.name.clone(),
                     offset: Point::new(Length::from_mm(x_mm), Length::from_mm(y_mm)),
                     size: (Length::from_mm(w_mm), Length::from_mm(h_mm)),
-                    layer: input.layer.clone().into(),
+                    layer: copper_side,
                     net,
                     drill: p.drill_mm.map(Length::from_mm),
                 }
@@ -3061,15 +3093,13 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
             description_field,
             pads,
             entry.edge_mounted,
+            copper_side,
+            vt,
         )
     };
 
-    // Library silk lives in footprint-local mm just like the pads, so it
-    // gets the same view transform — body outlines and pin-1 dots stay
-    // visually attached to the pads after a flip / rotate. Silk layer is
-    // remapped to the copper side so bottom-placed parts emit B.SilkS.
-    let vt = entry.footprint_view_transform;
-    let copper_side: CopperLayer = input.layer.clone().into();
+    // Library silk: same view transform + bottom X-mirror as pads; silk
+    // layer remaps to B.SilkS on bottom so Gerber/canvas stay honest.
     let silk: Vec<FootprintSilk> = entry
         .silk
         .iter()

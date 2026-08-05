@@ -767,10 +767,14 @@ fn margin_for(opts: &DrcOptions, fp: &Footprint) -> PlacementMargin {
     if fp.key.is_empty() {
         return PlacementMargin::default();
     }
-    opts.placement_margins
+    let m = opts
+        .placement_margins
         .get(&fp.key)
         .copied()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Bottom-side footprints are X-mirrored at palette spawn — keep-out
+    // left/right must follow so asymmetric body_rects stay honest.
+    m.for_mount_side(fp.layer.is_top())
 }
 
 fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) {
@@ -784,6 +788,10 @@ fn check_body_overlap(board: &Board, opts: &DrcOptions, report: &mut DrcReport) 
             continue;
         };
         for &b in fps.iter().skip(i + 1) {
+            // Top vs bottom never body-collide (opposite faces of the PCB).
+            if a.layer != b.layer {
+                continue;
+            }
             let Some(bb) = b.inflated_bbox(margin_for(opts, b)) else {
                 continue;
             };
