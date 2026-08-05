@@ -421,6 +421,34 @@ impl Footprint {
         Some(iter.fold(first, Rect::union))
     }
 
+    /// Pad AABB ∪ library silk outline in world coords. This is the
+    /// physical module body the human sees — pads alone miss a VL53 /
+    /// GY-530 body that can cover a milled slot while connectors sit
+    /// clear. Used by cutout/void place+DRC gates.
+    #[must_use]
+    pub fn body_bounds(&self) -> Option<Rect> {
+        let mut bb = self.bounds();
+        let mut absorb = |p: Point| {
+            let r = Rect::from_center(p, Length::from_mm(0.0), Length::from_mm(0.0));
+            bb = Some(match bb {
+                Some(cur) => cur.union(r),
+                None => r,
+            });
+        };
+        for silk in &self.silk {
+            match silk {
+                FootprintSilk::Line { start, end, .. } => {
+                    absorb(self.local_to_world(*start));
+                    absorb(self.local_to_world(*end));
+                }
+                FootprintSilk::Text { position, .. } => {
+                    absorb(self.local_to_world(*position));
+                }
+            }
+        }
+        bb
+    }
+
     /// Absolute board-coord centre of `pad` after applying the
     /// footprint's position and rotation. The pad's offset is treated
     /// as a vector in footprint-local coords and rotated CCW around
@@ -1609,8 +1637,10 @@ impl Board {
                     }
                 }
             }
-            // Pad AABB covers any cutout vertex or cutout centroid.
-            if let Some(bb) = probe.bounds() {
+            // Body (pads ∪ silk outline) AABB vs cutout — catches a
+            // module whose copper sits clear but plastic/silk sits on
+            // the milled slot (e.g. GY-530 flat over a ToF window).
+            if let Some(bb) = probe.body_bounds() {
                 let mut sx = 0.0_f64;
                 let mut sy = 0.0_f64;
                 let mut n = 0_u32;
@@ -1639,16 +1669,23 @@ impl Board {
                         return Some(format!("cutout '{name}'"));
                     }
                 }
-                // Pad AABB corners inside cutout.
+                // Body AABB corners + center + edge midpoints inside cutout.
+                let minx = bb.min.x.to_mm();
+                let maxx = bb.max.x.to_mm();
+                let miny = bb.min.y.to_mm();
+                let maxy = bb.max.y.to_mm();
+                let midx = (minx + maxx) / 2.0;
+                let midy = (miny + maxy) / 2.0;
                 for (x, y) in [
-                    (bb.min.x.to_mm(), bb.min.y.to_mm()),
-                    (bb.max.x.to_mm(), bb.min.y.to_mm()),
-                    (bb.max.x.to_mm(), bb.max.y.to_mm()),
-                    (bb.min.x.to_mm(), bb.max.y.to_mm()),
-                    (
-                        (bb.min.x.to_mm() + bb.max.x.to_mm()) / 2.0,
-                        (bb.min.y.to_mm() + bb.max.y.to_mm()) / 2.0,
-                    ),
+                    (minx, miny),
+                    (maxx, miny),
+                    (maxx, maxy),
+                    (minx, maxy),
+                    (midx, midy),
+                    (midx, miny),
+                    (midx, maxy),
+                    (minx, midy),
+                    (maxx, midy),
                 ] {
                     let p = Point::new(Length::from_mm(x), Length::from_mm(y));
                     if crate::geometry::point_in_polygon(p, &cut.polygon) {
@@ -1720,14 +1757,20 @@ impl Board {
                 }
             }
             if !margin.elevated {
+                // Prefer pads∪silk body (survives .fragua reload without
+                // library margin); union with inflated pad margin.
+                let body = probe
+                    .body_bounds()
+                    .map(|b| b.union(bbox))
+                    .unwrap_or(bbox);
                 let body_samples = [
-                    Point::new(bbox.min.x, bbox.min.y),
-                    Point::new(bbox.max.x, bbox.min.y),
-                    Point::new(bbox.max.x, bbox.max.y),
-                    Point::new(bbox.min.x, bbox.max.y),
+                    Point::new(body.min.x, body.min.y),
+                    Point::new(body.max.x, body.min.y),
+                    Point::new(body.max.x, body.max.y),
+                    Point::new(body.min.x, body.max.y),
                     Point::new(
-                        Length((bbox.min.x.0 + bbox.max.x.0) / 2),
-                        Length((bbox.min.y.0 + bbox.max.y.0) / 2),
+                        Length((body.min.x.0 + body.max.x.0) / 2),
+                        Length((body.min.y.0 + body.max.y.0) / 2),
                     ),
                 ];
                 for p in body_samples {
@@ -2497,6 +2540,84 @@ mod tests {
         assert!(
             board.first_cutout_hitter(&fp).is_none(),
             "pad clear of slot must pass"
+        );
+    }
+
+    /// Silk body covering a slot must hit even when pads sit clear.
+    #[test]
+    fn cutout_hitter_rejects_silk_body_over_slot() {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(100.0), Length::from_mm(100.0)),
+        ));
+        // Vertical slot at x≈68, y 38..49 (tof_right style).
+        board.cutouts.push(Cutout {
+            id: Id::new(),
+            polygon: vec![
+                Point::new(Length::from_mm(67.76), Length::from_mm(38.38)),
+                Point::new(Length::from_mm(68.96), Length::from_mm(38.38)),
+                Point::new(Length::from_mm(68.96), Length::from_mm(49.38)),
+                Point::new(Length::from_mm(67.76), Length::from_mm(49.38)),
+            ],
+            label: "tof_right".into(),
+        });
+        // Pads clear left of the slot; silk rectangle covers the slot.
+        let fp = Footprint {
+            id: Id::new(),
+            reference: "SB".into(),
+            value: String::new(),
+            library: "demo".into(),
+            position: Point::new(Length::from_mm(63.89), Length::from_mm(38.02)),
+            rotation: 270.0,
+            layer: CopperLayer::Bottom,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: "VIN".into(),
+                offset: Point::new(Length::from_mm(6.35), Length::from_mm(-5.5)),
+                size: (Length::from_mm(2.0), Length::from_mm(2.0)),
+                layer: CopperLayer::Bottom,
+                net: Some("+3V3".into()),
+                drill: Some(Length::from_mm(1.0)),
+            }],
+            key: "gy530".into(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: vec![
+                FootprintSilk::Line {
+                    layer: SilkLayer::Bottom,
+                    start: Point::new(Length::from_mm(7.5), Length::from_mm(-6.5)),
+                    end: Point::new(Length::from_mm(-7.5), Length::from_mm(-6.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Bottom,
+                    start: Point::new(Length::from_mm(-7.5), Length::from_mm(-6.5)),
+                    end: Point::new(Length::from_mm(-7.5), Length::from_mm(5.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Bottom,
+                    start: Point::new(Length::from_mm(-7.5), Length::from_mm(5.5)),
+                    end: Point::new(Length::from_mm(7.5), Length::from_mm(5.5)),
+                    width: Length::from_mm(0.15),
+                },
+                FootprintSilk::Line {
+                    layer: SilkLayer::Bottom,
+                    start: Point::new(Length::from_mm(7.5), Length::from_mm(5.5)),
+                    end: Point::new(Length::from_mm(7.5), Length::from_mm(-6.5)),
+                    width: Length::from_mm(0.15),
+                },
+            ],
+        };
+        assert!(
+            board.first_cutout_hitter(&fp).is_some(),
+            "silk body over milled slot must hit even if pads clear"
+        );
+        assert!(
+            board.first_void_hitter(&fp).is_some(),
+            "void hitter must include silk-over-cutout"
         );
     }
 
