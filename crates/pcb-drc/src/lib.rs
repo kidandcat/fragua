@@ -290,8 +290,8 @@ pub enum ViolationKind {
     /// under the overhang.
     BodyOffBoard,
     /// A pad (or the pad AABB) of a footprint lands on an NPTH mount
-    /// hole (motor screw, stack M3, …). Hard ERROR — copper and iron
-    /// cannot share the same hole.
+    /// hole (motor screw, stack M3, …) or a milled cutout/slot. Hard
+    /// ERROR — copper cannot float over Edge.Cuts voids.
     MountHoleOverlap,
     /// A trace segment crosses a keepout polygon, or a via lands
     /// inside one, on an applicable copper layer. The keepout's
@@ -898,18 +898,18 @@ fn check_body_off_board(board: &Board, outline: Rect, opts: &DrcOptions, report:
 }
 
 fn check_mount_hole_overlap(board: &Board, report: &mut DrcReport) {
-    if board.mount_holes.is_empty() {
+    if board.mount_holes.is_empty() && board.cutouts.is_empty() {
         return;
     }
     for fp in board.footprints_in_order() {
-        let Some(hole) = board.first_mount_hole_hitter(fp) else {
+        let Some(void) = board.first_void_hitter(fp) else {
             continue;
         };
         report.push(Violation {
             kind: ViolationKind::MountHoleOverlap,
             severity: Severity::Error,
             message: format!(
-                "{} pads/body hit {hole} — move the part off the NPTH",
+                "{} pads hit {void} — move the part off the milled void",
                 fp.reference
             ),
             x_mm: fp.position.x.to_mm(),

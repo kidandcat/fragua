@@ -3211,7 +3211,9 @@ fn tool_place_legal(project: &Project, args: &Value) -> Result<Value, ToolError>
         let y = oy + 2.0 + fy * (oh - 4.0).max(0.0);
         if has_poly {
             let snap = project.read();
-            let inside = snap.board().in_outer_outline(Point::new(
+            // Real copper: outer poly minus milled cutouts / slots so we
+            // do not burn tries on NPTH windows (place rejects them too).
+            let inside = snap.board().contains_point(Point::new(
                 Length::from_mm(x),
                 Length::from_mm(y),
             ));

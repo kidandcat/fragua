@@ -443,7 +443,7 @@ fn layout_is_legal(
             return false;
         }
         // NPTH motor / mounting holes — same gate as place/move.
-        if board.first_mount_hole_hitter(fp).is_some() {
+        if board.first_void_hitter(fp).is_some() {
             return false;
         }
         if board.edge_mount_violation(fp).is_some() {
@@ -807,7 +807,7 @@ pub fn place(
                 continue;
             }
             // NPTH mount / motor holes.
-            if board.first_mount_hole_hitter(&probe).is_some() {
+            if board.first_void_hitter(&probe).is_some() {
                 continue;
             }
         }
@@ -1455,10 +1455,10 @@ fn pads_inside_board(
                 Length((b.min.y.0 + b.max.y.0) / 2),
             ),
         ];
-        // Outer path only: pads may sit beside a milled slot without
-        // being "off copper" for placement purposes (router still
-        // stamps cutouts as obstacles for traces).
-        return samples.iter().all(|p| board.in_outer_outline(*p));
+        // Real copper shape: outer path MINUS milled cutouts. Pads must
+        // not sit in a slot (Edge.Cuts void). Router already voids
+        // cutouts for traces; place must match.
+        return samples.iter().all(|p| board.contains_point(*p));
     }
     // Free parts keep the same edge clearance the global stage enforces
     // so the DRC's edge check never flags an auto-placed pad; edge-

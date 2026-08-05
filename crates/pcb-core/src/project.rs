@@ -1076,7 +1076,7 @@ impl Project {
         {
             return Err(format!("{reference} {reason}"));
         }
-        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+        if let Some(hole) = inner.board.first_void_hitter(&probe) {
             return Err(format!(
                 "{reference} edge-place at ({x_mm:.2}, {y_mm:.2}) mm would hit {hole}"
             ));
@@ -1172,7 +1172,7 @@ impl Project {
         if let Some(reason) = inner.board.footprint_hits_keepout(&fp, margin_for(&fp)) {
             return Err(format!("{reference} {reason}"));
         }
-        if let Some(hole) = inner.board.first_mount_hole_hitter(&fp) {
+        if let Some(hole) = inner.board.first_void_hitter(&fp) {
             return Err(format!(
                 "{reference} at ({:.2}, {:.2}) mm rot={:.0}° would hit {} — pick another position",
                 position.x.to_mm(),
@@ -1303,7 +1303,7 @@ impl Project {
                 "{reference} rotated to {rotation_deg:.0}°: {reason}"
             ));
         }
-        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+        if let Some(hole) = inner.board.first_void_hitter(&probe) {
             return Err(format!(
                 "{reference} rotated to {rotation_deg:.0}° would hit {hole}"
             ));
@@ -1388,7 +1388,7 @@ impl Project {
                 position.y.to_mm(),
             ));
         }
-        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+        if let Some(hole) = inner.board.first_void_hitter(&probe) {
             return Err(format!(
                 "moving {reference} to ({:.2}, {:.2}) mm would hit {hole}",
                 position.x.to_mm(),

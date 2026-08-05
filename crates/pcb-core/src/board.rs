@@ -1292,9 +1292,10 @@ impl Board {
     }
 
     /// True if `p` is inside the **outer** polygonal outline (cutouts
-    /// ignored). Used for body keep-out checks: a slot joint's silk
-    /// deliberately overlaps its milled cutout, and a part may sit
-    /// next to a window without being "off-board".
+    /// ignored). Prefer [`Self::contains_point`] for place/DRC copper
+    /// checks — cutouts and slots are real Edge.Cuts voids. This helper
+    /// is only for geometry that intentionally cares about the outer
+    /// path alone (e.g. coarse AABB sampling before a finer gate).
     ///
     /// Allocation-free (see [`Self::contains_point`]).
     #[must_use]
@@ -1569,6 +1570,104 @@ impl Board {
         None
     }
 
+    /// Label of the first milled [`Cutout`] (slot / window) that the
+    /// probe's pads land in or whose polygon intersects the pad AABB.
+    /// Cutouts are real Edge.Cuts — not silk — so place/DRC must keep
+    /// copper and components off them (router already voids them).
+    ///
+    /// Returns `cutout 'tof_right'` style labels. `None` if clear.
+    #[must_use]
+    pub fn first_cutout_hitter(&self, probe: &Footprint) -> Option<String> {
+        if self.cutouts.is_empty() {
+            return None;
+        }
+        for cut in &self.cutouts {
+            if cut.polygon.len() < 3 {
+                continue;
+            }
+            let name = if cut.label.is_empty() {
+                "unlabelled".to_string()
+            } else {
+                cut.label.clone()
+            };
+            // Pad centers inside the milled region.
+            for pad in &probe.pads {
+                let c = probe.pad_world_center(pad);
+                if crate::geometry::point_in_polygon(c, &cut.polygon) {
+                    return Some(format!("cutout '{name}'"));
+                }
+                // Pad corners (handles large pads straddling the slot).
+                let (w, h) = probe.pad_world_size(pad);
+                let hx = w.to_mm() / 2.0;
+                let hy = h.to_mm() / 2.0;
+                let cx = c.x.to_mm();
+                let cy = c.y.to_mm();
+                for (dx, dy) in [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)] {
+                    let p = Point::new(Length::from_mm(cx + dx), Length::from_mm(cy + dy));
+                    if crate::geometry::point_in_polygon(p, &cut.polygon) {
+                        return Some(format!("cutout '{name}'"));
+                    }
+                }
+            }
+            // Pad AABB covers any cutout vertex or cutout centroid.
+            if let Some(bb) = probe.bounds() {
+                let mut sx = 0.0_f64;
+                let mut sy = 0.0_f64;
+                let mut n = 0_u32;
+                for v in &cut.polygon {
+                    let vx = v.x.to_mm();
+                    let vy = v.y.to_mm();
+                    sx += vx;
+                    sy += vy;
+                    n += 1;
+                    if vx >= bb.min.x.to_mm()
+                        && vx <= bb.max.x.to_mm()
+                        && vy >= bb.min.y.to_mm()
+                        && vy <= bb.max.y.to_mm()
+                    {
+                        return Some(format!("cutout '{name}'"));
+                    }
+                }
+                if n > 0 {
+                    let cx = sx / f64::from(n);
+                    let cy = sy / f64::from(n);
+                    if cx >= bb.min.x.to_mm()
+                        && cx <= bb.max.x.to_mm()
+                        && cy >= bb.min.y.to_mm()
+                        && cy <= bb.max.y.to_mm()
+                    {
+                        return Some(format!("cutout '{name}'"));
+                    }
+                }
+                // Pad AABB corners inside cutout.
+                for (x, y) in [
+                    (bb.min.x.to_mm(), bb.min.y.to_mm()),
+                    (bb.max.x.to_mm(), bb.min.y.to_mm()),
+                    (bb.max.x.to_mm(), bb.max.y.to_mm()),
+                    (bb.min.x.to_mm(), bb.max.y.to_mm()),
+                    (
+                        (bb.min.x.to_mm() + bb.max.x.to_mm()) / 2.0,
+                        (bb.min.y.to_mm() + bb.max.y.to_mm()) / 2.0,
+                    ),
+                ] {
+                    let p = Point::new(Length::from_mm(x), Length::from_mm(y));
+                    if crate::geometry::point_in_polygon(p, &cut.polygon) {
+                        return Some(format!("cutout '{name}'"));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Combined mill/NPTH keep-out check: first mount-hole hit, else
+    /// first cutout hit. One call site for place / move / placer / DRC.
+    #[must_use]
+    pub fn first_void_hitter(&self, probe: &Footprint) -> Option<String> {
+        self.first_mount_hole_hitter(probe)
+            .or_else(|| self.first_cutout_hitter(probe))
+    }
+
     /// If `probe`'s inflated body bbox extends past the board outline
     /// on any side, return a human-readable description.
     ///
@@ -1610,10 +1709,11 @@ impl Board {
                     Length((pad_bb.min.y.0 + pad_bb.max.y.0) / 2),
                 ),
             ];
+            // Pads on real copper (outer − cutouts), not just outer path.
             for p in samples {
-                if !self.in_outer_outline(p) {
+                if !self.contains_point(p) {
                     return Some(format!(
-                        "pads at ({:.2}, {:.2}) mm are outside the polygonal board outline",
+                        "pads at ({:.2}, {:.2}) mm are outside copper (outline or milled cutout)",
                         p.x.to_mm(),
                         p.y.to_mm()
                     ));
@@ -1631,9 +1731,11 @@ impl Board {
                     ),
                 ];
                 for p in body_samples {
-                    if !self.in_outer_outline(p) {
+                    // Flat modules must sit on copper: no body over
+                    // empty X-frame quadrants or milled slots.
+                    if !self.contains_point(p) {
                         return Some(format!(
-                            "body at ({:.2}, {:.2}) mm is outside the polygonal board outline (flat module must sit on copper)",
+                            "body at ({:.2}, {:.2}) mm is outside copper (flat module must sit on copper, not over a cutout)",
                             p.x.to_mm(),
                             p.y.to_mm()
                         ));
@@ -2341,7 +2443,63 @@ mod tests {
         assert_eq!(bb.max.y.0, raw.max.y.0);
     }
 
-    /// place/move hard floor: two pad-only footprints closer than
+    /// Pads sitting on a milled cutout/slot must be rejected by place/DRC.
+    #[test]
+    fn cutout_hitter_rejects_pad_over_slot() {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(40.0), Length::from_mm(40.0)),
+        ));
+        // 11×1.2 mm slot at y=20, x=14.5..25.5
+        board.cutouts.push(Cutout {
+            id: Id::new(),
+            polygon: vec![
+                Point::new(Length::from_mm(14.5), Length::from_mm(19.4)),
+                Point::new(Length::from_mm(25.5), Length::from_mm(19.4)),
+                Point::new(Length::from_mm(25.5), Length::from_mm(20.6)),
+                Point::new(Length::from_mm(14.5), Length::from_mm(20.6)),
+            ],
+            label: "tof_front".into(),
+        });
+        let mut fp = Footprint {
+            id: Id::new(),
+            reference: "SB".into(),
+            value: String::new(),
+            library: "demo".into(),
+            position: Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+            rotation: 0.0,
+            layer: CopperLayer::Bottom,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: "VIN".into(),
+                offset: Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+                size: (Length::from_mm(1.6), Length::from_mm(1.6)),
+                layer: CopperLayer::Bottom,
+                net: Some("+3V3".into()),
+                drill: Some(Length::from_mm(0.9)),
+            }],
+            key: "vl53".into(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: Vec::new(),
+        };
+        assert!(
+            board.first_cutout_hitter(&fp).is_some(),
+            "pad on milled slot must hit cutout"
+        );
+        assert!(
+            board.first_void_hitter(&fp).is_some(),
+            "void hitter must include cutouts"
+        );
+        fp.position = Point::new(Length::from_mm(5.0), Length::from_mm(5.0));
+        assert!(
+            board.first_cutout_hitter(&fp).is_none(),
+            "pad clear of slot must pass"
+        );
+    }
+
     #[test]
     fn mount_hole_hitter_rejects_pad_on_npth() {
         let mut board = Board::new();
