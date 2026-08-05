@@ -1495,11 +1495,13 @@ impl Board {
     ) -> Option<String> {
         let outline = self.outline?;
         let bbox = probe.inflated_bbox(margin)?;
-        // Polygonal boards (X-frames, etc.): require the **pad** bbox to
-        // sit on the outer path. Inflated body (silk) may hang into the
-        // empty quadrants at a re-entrant corner or over a milled slot
-        // — that is normal for a vertical-card joint on the core edge.
-        // Body-vs-body still uses silk keep-outs via first_body_overlapper.
+        // Polygonal boards (X-frames, etc.): pads must always sit on the
+        // outer path. For **elevated** parts (headers), the plastic body
+        // may hang into empty quadrants / over a milled slot — normal for
+        // a SuperMini or a vertical-card joint. For **flat** (non-elevated)
+        // modules the inflated body must also be on copper, otherwise a
+        // VL53 can sit with pads on the core and silk "floating in air"
+        // past the X-frame re-entrant edge.
         if self.outline_poly.is_some() {
             let pad_bb = probe.bounds()?;
             let samples = [
@@ -1521,7 +1523,27 @@ impl Board {
                     ));
                 }
             }
-            let _ = bbox; // silence unused when poly path returns early
+            if !margin.elevated {
+                let body_samples = [
+                    Point::new(bbox.min.x, bbox.min.y),
+                    Point::new(bbox.max.x, bbox.min.y),
+                    Point::new(bbox.max.x, bbox.max.y),
+                    Point::new(bbox.min.x, bbox.max.y),
+                    Point::new(
+                        Length((bbox.min.x.0 + bbox.max.x.0) / 2),
+                        Length((bbox.min.y.0 + bbox.max.y.0) / 2),
+                    ),
+                ];
+                for p in body_samples {
+                    if !self.in_outer_outline(p) {
+                        return Some(format!(
+                            "body at ({:.2}, {:.2}) mm is outside the polygonal board outline (flat module must sit on copper)",
+                            p.x.to_mm(),
+                            p.y.to_mm()
+                        ));
+                    }
+                }
+            }
             return None;
         }
         let tol_nm = (EDGE_TOUCH_TOLERANCE_MM * 1_000_000.0) as i64;
