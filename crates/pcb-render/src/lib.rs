@@ -1376,6 +1376,99 @@ fn write_poly_stroke(svg: &mut String, poly: &[pcb_core::Point], color: &str, wi
     );
 }
 
+/// Mark every cell whose centre is **outside** `poly` as void.
+/// Even-odd scanline: O(rows × edges + cells), not O(cells × edges).
+fn scanline_void_outside(
+    void: &mut [bool],
+    cols: usize,
+    rows: usize,
+    x0: f64,
+    y0: f64,
+    cell: f64,
+    poly: &[(f64, f64)],
+) {
+    if poly.len() < 3 {
+        return;
+    }
+    let n = poly.len();
+    for j in 0..rows {
+        let y = y0 + (j as f64 + 0.5) * cell;
+        let mut xs: Vec<f64> = Vec::with_capacity(n);
+        let mut k = n - 1;
+        for i in 0..n {
+            let (x1, y1) = poly[k];
+            let (x2, y2) = poly[i];
+            if (y1 > y) != (y2 > y) {
+                // Intersection of edge with horizontal line at y.
+                let t = (y - y1) / (y2 - y1);
+                xs.push(x1 + t * (x2 - x1));
+            }
+            k = i;
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for col in 0..cols {
+            let x = x0 + (col as f64 + 0.5) * cell;
+            let mut inside = false;
+            let mut t = 0usize;
+            while t + 1 < xs.len() {
+                if x >= xs[t] && x < xs[t + 1] {
+                    inside = true;
+                    break;
+                }
+                t += 2;
+            }
+            if !inside {
+                void[j * cols + col] = true;
+            }
+        }
+    }
+}
+
+/// Mark every cell whose centre is **inside** `poly` as void (cutouts).
+fn scanline_void_inside(
+    void: &mut [bool],
+    cols: usize,
+    rows: usize,
+    x0: f64,
+    y0: f64,
+    cell: f64,
+    poly: &[(f64, f64)],
+) {
+    if poly.len() < 3 {
+        return;
+    }
+    let n = poly.len();
+    for j in 0..rows {
+        let y = y0 + (j as f64 + 0.5) * cell;
+        let mut xs: Vec<f64> = Vec::with_capacity(n);
+        let mut k = n - 1;
+        for i in 0..n {
+            let (x1, y1) = poly[k];
+            let (x2, y2) = poly[i];
+            if (y1 > y) != (y2 > y) {
+                let t = (y - y1) / (y2 - y1);
+                xs.push(x1 + t * (x2 - x1));
+            }
+            k = i;
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut t = 0usize;
+        while t + 1 < xs.len() {
+            let a = xs[t];
+            let b = xs[t + 1];
+            let c0 = (((a - x0) / cell).floor() as i64).max(0) as usize;
+            let c1 = (((b - x0) / cell).ceil() as i64).max(0) as usize;
+            for col in c0..c1.min(cols) {
+                let x = x0 + (col as f64 + 0.5) * cell;
+                if x >= a && x < b {
+                    void[j * cols + col] = true;
+                }
+            }
+            t += 2;
+        }
+    }
+}
+
 fn write_mount_hole(svg: &mut String, h: &pcb_core::MountHole) {
     let cx = h.center.x.to_mm();
     let cy = h.center.y.to_mm();
@@ -1445,18 +1538,32 @@ fn write_pour_polygon(svg: &mut String, board: &Board, pour: &pcb_core::Pour, ou
     // Polygonal boards / boards with milled cutouts: the pour AABB is a
     // lie (X-frames have empty quadrants). Void every cell that is not
     // on copper-bearing board material so pour copper cannot paint over
-    // the open air or a milled slot. Matches `Board::contains_point`.
+    // the open air or a milled slot.
+    //
+    // CRITICAL: do NOT call `Board::contains_point` per cell — even the
+    // allocation-free version is O(verts) per cell, and a 84×84 mm board
+    // at 0.125 mm grid is ~450k cells × 4–5 pours × UI re-render on the
+    // main thread → Fragua freezes at 100 % CPU (sample stacks pointed
+    // here). Scanline-fill the outer poly once, then punch cutouts.
     if board.outline_poly.is_some() || !board.cutouts.is_empty() {
-        for j in 0..rows {
-            for i in 0..cols {
-                let p = pcb_core::Point::new(
-                    pcb_core::Length::from_mm(cell_x(i)),
-                    pcb_core::Length::from_mm(cell_y(j)),
-                );
-                if !board.contains_point(p) {
-                    void[j * cols + i] = true;
-                }
+        let outer_mm: Vec<(f64, f64)> = board
+            .outer_path()
+            .iter()
+            .map(|p| (p.x.to_mm(), p.y.to_mm()))
+            .collect();
+        if outer_mm.len() >= 3 {
+            scanline_void_outside(&mut void, cols, rows, x0, y0, cell, &outer_mm);
+        }
+        for cut in &board.cutouts {
+            if cut.polygon.len() < 3 {
+                continue;
             }
+            let cut_mm: Vec<(f64, f64)> = cut
+                .polygon
+                .iter()
+                .map(|p| (p.x.to_mm(), p.y.to_mm()))
+                .collect();
+            scanline_void_inside(&mut void, cols, rows, x0, y0, cell, &cut_mm);
         }
     }
 

@@ -1246,27 +1246,68 @@ impl Board {
 
     /// True if `p` is on copper-bearing board material: inside the
     /// outer path and outside every cutout.
+    ///
+    /// Hot path for pour rasterisation and the router — **must not
+    /// allocate**. Previously this cloned `outline_poly` + every cutout
+    /// per call, and a single board SVG re-render hit it hundreds of
+    /// thousands of times (main-thread freeze, 100 % CPU).
     #[must_use]
     pub fn contains_point(&self, p: Point) -> bool {
-        let outer = self.outer_path();
-        if outer.len() < 3 {
-            return true; // no outline yet — do not block
+        if let Some(poly) = self.outline_poly.as_ref() {
+            if poly.len() < 3 {
+                return true;
+            }
+            if !crate::geometry::point_in_polygon(p, poly) {
+                return false;
+            }
+            for c in &self.cutouts {
+                if c.polygon.len() >= 3 && crate::geometry::point_in_polygon(p, &c.polygon) {
+                    return false;
+                }
+            }
+            return true;
         }
-        let cutouts: Vec<Vec<Point>> = self.cutouts.iter().map(|c| c.polygon.clone()).collect();
-        crate::geometry::point_in_board_shape(p, &outer, &cutouts)
+        if let Some(r) = self.outline {
+            // Rectangular board: inside AABB, outside rectangular cutouts
+            // only if any (rare without poly).
+            let inside = p.x.0 >= r.min.x.0
+                && p.x.0 <= r.max.x.0
+                && p.y.0 >= r.min.y.0
+                && p.y.0 <= r.max.y.0;
+            if !inside {
+                return false;
+            }
+            for c in &self.cutouts {
+                if c.polygon.len() >= 3 && crate::geometry::point_in_polygon(p, &c.polygon) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        true // no outline yet — do not block
     }
 
     /// True if `p` is inside the **outer** polygonal outline (cutouts
     /// ignored). Used for body keep-out checks: a slot joint's silk
     /// deliberately overlaps its milled cutout, and a part may sit
     /// next to a window without being "off-board".
+    ///
+    /// Allocation-free (see [`Self::contains_point`]).
     #[must_use]
     pub fn in_outer_outline(&self, p: Point) -> bool {
-        let outer = self.outer_path();
-        if outer.len() < 3 {
-            return true;
+        if let Some(poly) = self.outline_poly.as_ref() {
+            if poly.len() < 3 {
+                return true;
+            }
+            return crate::geometry::point_in_polygon(p, poly);
         }
-        crate::geometry::point_in_polygon(p, &outer)
+        if let Some(r) = self.outline {
+            return p.x.0 >= r.min.x.0
+                && p.x.0 <= r.max.x.0
+                && p.y.0 >= r.min.y.0
+                && p.y.0 <= r.max.y.0;
+        }
+        true
     }
 
     pub fn add_footprint(&mut self, footprint: Footprint) -> Id {
