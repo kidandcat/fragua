@@ -1076,6 +1076,11 @@ impl Project {
         {
             return Err(format!("{reference} {reason}"));
         }
+        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+            return Err(format!(
+                "{reference} edge-place at ({x_mm:.2}, {y_mm:.2}) mm would hit {hole}"
+            ));
+        }
         if let Some(reason) = inner.board.edge_mount_violation(&probe) {
             return Err(format!("{reference} is edge-mounted but {reason}"));
         }
@@ -1166,6 +1171,15 @@ impl Project {
         }
         if let Some(reason) = inner.board.footprint_hits_keepout(&fp, margin_for(&fp)) {
             return Err(format!("{reference} {reason}"));
+        }
+        if let Some(hole) = inner.board.first_mount_hole_hitter(&fp) {
+            return Err(format!(
+                "{reference} at ({:.2}, {:.2}) mm rot={:.0}° would hit {} — pick another position",
+                position.x.to_mm(),
+                position.y.to_mm(),
+                fp.rotation,
+                hole,
+            ));
         }
         if let Some(reason) = inner.board.edge_mount_violation(&fp) {
             return Err(format!(
@@ -1289,6 +1303,11 @@ impl Project {
                 "{reference} rotated to {rotation_deg:.0}°: {reason}"
             ));
         }
+        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+            return Err(format!(
+                "{reference} rotated to {rotation_deg:.0}° would hit {hole}"
+            ));
+        }
         if let Some(reason) = inner.board.edge_mount_violation(&probe) {
             return Err(format!(
                 "{reference} is edge-mounted but after rotation {reason}",
@@ -1365,6 +1384,13 @@ impl Project {
         {
             return Err(format!(
                 "moving {reference} to ({:.2}, {:.2}) mm: {reason}",
+                position.x.to_mm(),
+                position.y.to_mm(),
+            ));
+        }
+        if let Some(hole) = inner.board.first_mount_hole_hitter(&probe) {
+            return Err(format!(
+                "moving {reference} to ({:.2}, {:.2}) mm would hit {hole}",
                 position.x.to_mm(),
                 position.y.to_mm(),
             ));

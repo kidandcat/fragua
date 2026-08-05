@@ -442,6 +442,10 @@ fn layout_is_legal(
         if board.footprint_hits_keepout(fp, margin).is_some() {
             return false;
         }
+        // NPTH motor / mounting holes — same gate as place/move.
+        if board.first_mount_hole_hitter(fp).is_some() {
+            return false;
+        }
         if board.edge_mount_violation(fp).is_some() {
             return false;
         }
@@ -800,6 +804,10 @@ pub fn place(
             }
             // Mechanical keepouts (motor bases, etc.) — same gate as place.
             if board.footprint_hits_keepout(&probe, margin).is_some() {
+                continue;
+            }
+            // NPTH mount / motor holes.
+            if board.first_mount_hole_hitter(&probe).is_some() {
                 continue;
             }
         }

@@ -1213,6 +1213,11 @@ fn is_zero_length(v: &Length) -> bool {
 /// default; if one changes, change the other.
 pub const MIN_FOOTPRINT_GAP_MM: f64 = 2.0;
 
+/// Copper / body keep-out around an NPTH mount hole (mm), on top of the
+/// finished hole radius. Stops `place` / auto-place / DRC from parking a
+/// 2-pin connector on a motor screw hole.
+pub const MOUNT_HOLE_CLEARANCE_MM: f64 = 0.5;
+
 /// Tolerance (mm) for "this footprint touches the outline" — bigger
 /// than the trace clearance default so rounding doesn't reject borderline
 /// edge-mounted placements.
@@ -1514,6 +1519,50 @@ impl Board {
             if let Some(b) = fp.inflated_bbox(margin) {
                 if probe_bounds.intersects(&b.expand(half_gap)) {
                     return Some(fp.reference.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Label of the first NPTH [`MountHole`] whose keep-out disc
+    /// (hole radius + [`MOUNT_HOLE_CLEARANCE_MM`]) hits any pad of
+    /// `probe` or the probe's pad AABB. Used by place / move / rotate /
+    /// auto-place so connectors cannot land on motor or mounting holes.
+    ///
+    /// Returns a short human label (`NPTH hole 'RL_e'`) suitable for
+    /// error strings. `None` if the board has no holes or `probe` is clear.
+    #[must_use]
+    pub fn first_mount_hole_hitter(&self, probe: &Footprint) -> Option<String> {
+        if self.mount_holes.is_empty() {
+            return None;
+        }
+        for hole in &self.mount_holes {
+            let hr = hole.diameter.to_mm() / 2.0 + MOUNT_HOLE_CLEARANCE_MM;
+            let hx = hole.center.x.to_mm();
+            let hy = hole.center.y.to_mm();
+            let hole_name = if hole.label.is_empty() {
+                "unlabelled".to_string()
+            } else {
+                hole.label.clone()
+            };
+            // Pad copper vs hole disc (circle–circle with pad half-diagonal).
+            for pad in &probe.pads {
+                let c = probe.pad_world_center(pad);
+                let (w, h) = probe.pad_world_size(pad);
+                let pad_r = (w.to_mm() / 2.0).hypot(h.to_mm() / 2.0);
+                let dx = c.x.to_mm() - hx;
+                let dy = c.y.to_mm() - hy;
+                if dx.hypot(dy) < hr + pad_r {
+                    return Some(format!("NPTH hole '{hole_name}'"));
+                }
+            }
+            // Pad AABB covering the hole (multi-pad footprint parked on it).
+            if let Some(bb) = probe.bounds() {
+                let cx = hx.clamp(bb.min.x.to_mm(), bb.max.x.to_mm());
+                let cy = hy.clamp(bb.min.y.to_mm(), bb.max.y.to_mm());
+                if (hx - cx).hypot(hy - cy) < hr {
+                    return Some(format!("NPTH hole '{hole_name}'"));
                 }
             }
         }
@@ -2293,6 +2342,66 @@ mod tests {
     }
 
     /// place/move hard floor: two pad-only footprints closer than
+    #[test]
+    fn mount_hole_hitter_rejects_pad_on_npth() {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(40.0), Length::from_mm(40.0)),
+        ));
+        board.mount_holes.push(MountHole {
+            id: Id::new(),
+            center: Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+            diameter: Length::from_mm(3.2),
+            label: "motor_shaft".into(),
+        });
+        // Two-pad connector sitting on the hole.
+        let mut fp = Footprint {
+            id: Id::new(),
+            reference: "J1".into(),
+            value: String::new(),
+            library: "demo".into(),
+            position: Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+            rotation: 0.0,
+            layer: CopperLayer::Top,
+            pads: vec![
+                Pad {
+                    number: "1".into(),
+                    name: "V".into(),
+                    offset: Point::new(Length::from_mm(-1.27), Length::from_mm(0.0)),
+                    size: (Length::from_mm(2.0), Length::from_mm(2.0)),
+                    layer: CopperLayer::Top,
+                    net: Some("+5V".into()),
+                    drill: Some(Length::from_mm(1.0)),
+                },
+                Pad {
+                    number: "2".into(),
+                    name: "G".into(),
+                    offset: Point::new(Length::from_mm(1.27), Length::from_mm(0.0)),
+                    size: (Length::from_mm(2.0), Length::from_mm(2.0)),
+                    layer: CopperLayer::Top,
+                    net: Some("GND".into()),
+                    drill: Some(Length::from_mm(1.0)),
+                },
+            ],
+            key: "pwr".into(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: Vec::new(),
+        };
+        assert!(
+            board.first_mount_hole_hitter(&fp).is_some(),
+            "pads on the motor shaft must hit the NPTH"
+        );
+        // Move clear of the hole.
+        fp.position = Point::new(Length::from_mm(5.0), Length::from_mm(5.0));
+        assert!(
+            board.first_mount_hole_hitter(&fp).is_none(),
+            "far-away connector must be clear"
+        );
+    }
+
     /// `MIN_FOOTPRINT_GAP_MM` between pad AABBs must be rejected.
     /// Regression for R1/R2-style 1206 pairs that used to sit at 0.8 mm
     /// pad-edge gap (allowed under the old 0.5 mm floor) and looked

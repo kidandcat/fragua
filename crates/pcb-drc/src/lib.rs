@@ -289,6 +289,10 @@ pub enum ViolationKind {
     /// clearance, and floating on headers does not conjure board area
     /// under the overhang.
     BodyOffBoard,
+    /// A pad (or the pad AABB) of a footprint lands on an NPTH mount
+    /// hole (motor screw, stack M3, …). Hard ERROR — copper and iron
+    /// cannot share the same hole.
+    MountHoleOverlap,
     /// A trace segment crosses a keepout polygon, or a via lands
     /// inside one, on an applicable copper layer. The keepout's
     /// `nets_allowed` list is not honoured in this iteration (see
@@ -384,6 +388,7 @@ pub fn run(board: &Board, opts: &DrcOptions) -> DrcReport {
     if let Some(outline) = board.outline {
         check_body_off_board(board, outline, opts, &mut report);
     }
+    check_mount_hole_overlap(board, &mut report);
     check_keepouts(board, &mut report);
     check_impedance(board, opts, &mut report);
     // The adopted in-memory profile wins; otherwise the board's own
@@ -887,6 +892,28 @@ fn check_body_off_board(board: &Board, outline: Rect, opts: &DrcOptions, report:
             message: format!("{} {reason}", fp.reference),
             x_mm: cx,
             y_mm: cy,
+            involved: vec![fp.reference.clone()],
+        });
+    }
+}
+
+fn check_mount_hole_overlap(board: &Board, report: &mut DrcReport) {
+    if board.mount_holes.is_empty() {
+        return;
+    }
+    for fp in board.footprints_in_order() {
+        let Some(hole) = board.first_mount_hole_hitter(fp) else {
+            continue;
+        };
+        report.push(Violation {
+            kind: ViolationKind::MountHoleOverlap,
+            severity: Severity::Error,
+            message: format!(
+                "{} pads/body hit {hole} — move the part off the NPTH",
+                fp.reference
+            ),
+            x_mm: fp.position.x.to_mm(),
+            y_mm: fp.position.y.to_mm(),
             involved: vec![fp.reference.clone()],
         });
     }
