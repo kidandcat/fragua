@@ -137,6 +137,21 @@ pub fn polygon_bbox(poly: &[Point]) -> Option<Rect> {
     })
 }
 
+/// True if `p` lies on any edge of `poly` (inclusive endpoints).
+#[must_use]
+pub fn point_on_polygon_boundary(p: Point, poly: &[Point]) -> bool {
+    if poly.len() < 2 {
+        return false;
+    }
+    let n = poly.len();
+    for i in 0..n {
+        if point_on_segment(p, poly[i], poly[(i + 1) % n]) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Point-in-polygon (even-odd ray cast). Boundary counts as inside.
 /// Degenerate polygons (< 3 verts) never contain a point.
 #[must_use]
@@ -145,14 +160,10 @@ pub fn point_in_polygon(p: Point, poly: &[Point]) -> bool {
         return false;
     }
     // On-edge check first (exact integer coords).
-    let n = poly.len();
-    for i in 0..n {
-        let a = poly[i];
-        let b = poly[(i + 1) % n];
-        if point_on_segment(p, a, b) {
-            return true;
-        }
+    if point_on_polygon_boundary(p, poly) {
+        return true;
     }
+    let n = poly.len();
     let mut inside = false;
     let mut j = n - 1;
     for i in 0..n {

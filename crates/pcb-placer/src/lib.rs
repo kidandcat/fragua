@@ -1445,20 +1445,19 @@ fn pads_inside_board(
         return false;
     };
     if board.outline_poly.is_some() {
-        let samples = [
-            Point::new(b.min.x, b.min.y),
-            Point::new(b.max.x, b.min.y),
-            Point::new(b.max.x, b.max.y),
-            Point::new(b.min.x, b.max.y),
-            Point::new(
-                Length((b.min.x.0 + b.max.x.0) / 2),
-                Length((b.min.y.0 + b.max.y.0) / 2),
-            ),
-        ];
-        // Real copper shape: outer path MINUS milled cutouts. Pads must
-        // not sit in a slot (Edge.Cuts void). Router already voids
-        // cutouts for traces; place must match.
-        return samples.iter().all(|p| board.contains_point(*p));
+        // Pad centres: may sit on a cutout Edge.Cuts line (castellated /
+        // vertical ToF slot). Deep into a milled void is still illegal.
+        if probe.pads.is_empty() {
+            return false;
+        }
+        return probe.pads.iter().all(|pad| {
+            let c = probe.pad_world_center(pad);
+            board.in_outer_outline(c)
+                && !board.cutouts.iter().any(|cut| {
+                    cut.polygon.len() >= 3
+                        && pcb_core::pad_center_deep_in_cutout(c, &cut.polygon)
+                })
+        });
     }
     // Free parts keep the same edge clearance the global stage enforces
     // so the DRC's edge check never flags an auto-placed pad; edge-

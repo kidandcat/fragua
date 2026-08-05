@@ -424,10 +424,25 @@ impl Footprint {
     /// Pad AABB ∪ library silk outline in world coords. This is the
     /// physical module body the human sees — pads alone miss a VL53 /
     /// GY-530 body that can cover a milled slot while connectors sit
-    /// clear. Used by cutout/void place+DRC gates.
+    /// clear. Used by mount-hole base keep-out.
     #[must_use]
     pub fn body_bounds(&self) -> Option<Rect> {
         let mut bb = self.bounds();
+        if let Some(silk) = self.silk_outline_bounds() {
+            bb = Some(match bb {
+                Some(cur) => cur.union(silk),
+                None => silk,
+            });
+        }
+        bb
+    }
+
+    /// World AABB of silkscreen **outline lines** only (no text, no
+    /// pads). Used by cutout place/DRC so castellated pads may straddle
+    /// a milled slot edge while a plastic module body still may not.
+    #[must_use]
+    pub fn silk_outline_bounds(&self) -> Option<Rect> {
+        let mut bb: Option<Rect> = None;
         let mut absorb = |p: Point| {
             let r = Rect::from_center(p, Length::from_mm(0.0), Length::from_mm(0.0));
             bb = Some(match bb {
@@ -437,9 +452,6 @@ impl Footprint {
         };
         for silk in &self.silk {
             match silk {
-                // Outline lines only — silkscreen text is not physical
-                // body (a "{REF}" label past the pads must not block a
-                // ToF slot or motor base keep-out).
                 FootprintSilk::Line { start, end, .. } => {
                     absorb(self.local_to_world(*start));
                     absorb(self.local_to_world(*end));
@@ -1254,10 +1266,52 @@ pub const MIN_FOOTPRINT_GAP_MM: f64 = 2.0;
 /// 2-pin connector on a motor screw hole.
 pub const MOUNT_HOLE_CLEARANCE_MM: f64 = 0.5;
 
+/// How far a pad **center** may sit past a milled cutout edge before
+/// place/DRC rejects it. Castellated / slot-edge pads put the center on
+/// the Edge.Cuts line (half copper on board, half into the mill); only
+/// a center clearly in the void is illegal.
+pub const CASTELLATED_PAD_INSET_MM: f64 = 0.35;
+
 /// Tolerance (mm) for "this footprint touches the outline" — bigger
 /// than the trace clearance default so rounding doesn't reject borderline
 /// edge-mounted placements.
 const EDGE_TOUCH_TOLERANCE_MM: f64 = 0.5;
+
+/// True when `p` is more than [`CASTELLATED_PAD_INSET_MM`] inside a
+/// cutout polygon (not merely on the boundary or straddling).
+///
+/// Public so placer/DRC share the same castellated-edge rule as place.
+#[must_use]
+pub fn pad_center_deep_in_cutout(p: Point, poly: &[Point]) -> bool {
+    if poly.len() < 3 || !crate::geometry::point_in_polygon(p, poly) {
+        return false;
+    }
+    // On the boundary → allowed (castellated center on Edge.Cuts).
+    if crate::geometry::point_on_polygon_boundary(p, poly) {
+        return false;
+    }
+    // Approximate inward depth: if a probe ring of radius R around p
+    // still has samples outside the poly, we're near the edge.
+    let r = CASTELLATED_PAD_INSET_MM;
+    let cx = p.x.to_mm();
+    let cy = p.y.to_mm();
+    for (dx, dy) in [
+        (r, 0.0),
+        (-r, 0.0),
+        (0.0, r),
+        (0.0, -r),
+        (r * 0.707, r * 0.707),
+        (r * 0.707, -r * 0.707),
+        (-r * 0.707, r * 0.707),
+        (-r * 0.707, -r * 0.707),
+    ] {
+        let q = Point::new(Length::from_mm(cx + dx), Length::from_mm(cy + dy));
+        if !crate::geometry::point_in_polygon(q, poly) {
+            return false; // near boundary — allow
+        }
+    }
+    true
+}
 
 impl Board {
     #[must_use]
@@ -1301,7 +1355,12 @@ impl Board {
                 return false;
             }
             for c in &self.cutouts {
-                if c.polygon.len() >= 3 && crate::geometry::point_in_polygon(p, &c.polygon) {
+                // Interior of a milled void is not copper; the Edge.Cuts
+                // **boundary** is (castellated pad centres sit on it).
+                if c.polygon.len() >= 3
+                    && crate::geometry::point_in_polygon(p, &c.polygon)
+                    && !crate::geometry::point_on_polygon_boundary(p, &c.polygon)
+                {
                     return false;
                 }
             }
@@ -1318,7 +1377,10 @@ impl Board {
                 return false;
             }
             for c in &self.cutouts {
-                if c.polygon.len() >= 3 && crate::geometry::point_in_polygon(p, &c.polygon) {
+                if c.polygon.len() >= 3
+                    && crate::geometry::point_in_polygon(p, &c.polygon)
+                    && !crate::geometry::point_on_polygon_boundary(p, &c.polygon)
+                {
                     return false;
                 }
             }
@@ -1632,10 +1694,17 @@ impl Board {
         None
     }
 
-    /// Label of the first milled [`Cutout`] (slot / window) that the
-    /// probe's pads land in or whose polygon intersects the pad AABB.
-    /// Cutouts are real Edge.Cuts — not silk — so place/DRC must keep
-    /// copper and components off them (router already voids them).
+    /// Label of the first milled [`Cutout`] that illegally overlaps
+    /// `probe`. Rules:
+    ///
+    /// - **Pad centers deep inside** the milled region → reject.
+    ///   Castellated / slot-edge pads may **straddle** the cut (center
+    ///   on the Edge.Cuts line, half copper into the void) — pad
+    ///   corners in the cutout are allowed; only a center clearly
+    ///   inside (`CASTELLATED_PAD_INSET_MM` past the boundary) rejects.
+    /// - **Silk outline body** over the cutout → reject (flat module
+    ///   plastic on a ToF window). Pads alone do not count as body so
+    ///   a pure castellated edge strip is legal flush to the slot.
     ///
     /// Returns `cutout 'tof_right'` style labels. `None` if clear.
     #[must_use]
@@ -1652,29 +1721,15 @@ impl Board {
             } else {
                 cut.label.clone()
             };
-            // Pad centers inside the milled region.
+            // Pad centers: only deep inside the void (not edge-straddle).
             for pad in &probe.pads {
                 let c = probe.pad_world_center(pad);
-                if crate::geometry::point_in_polygon(c, &cut.polygon) {
+                if pad_center_deep_in_cutout(c, &cut.polygon) {
                     return Some(format!("cutout '{name}'"));
                 }
-                // Pad corners (handles large pads straddling the slot).
-                let (w, h) = probe.pad_world_size(pad);
-                let hx = w.to_mm() / 2.0;
-                let hy = h.to_mm() / 2.0;
-                let cx = c.x.to_mm();
-                let cy = c.y.to_mm();
-                for (dx, dy) in [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)] {
-                    let p = Point::new(Length::from_mm(cx + dx), Length::from_mm(cy + dy));
-                    if crate::geometry::point_in_polygon(p, &cut.polygon) {
-                        return Some(format!("cutout '{name}'"));
-                    }
-                }
             }
-            // Body (pads ∪ silk outline) AABB vs cutout — catches a
-            // module whose copper sits clear but plastic/silk sits on
-            // the milled slot (e.g. GY-530 flat over a ToF window).
-            if let Some(bb) = probe.body_bounds() {
+            // Silk body only — castellated pads may cover cutout verts.
+            if let Some(bb) = probe.silk_outline_bounds() {
                 let mut sx = 0.0_f64;
                 let mut sy = 0.0_f64;
                 let mut n = 0_u32;
@@ -1703,7 +1758,6 @@ impl Board {
                         return Some(format!("cutout '{name}'"));
                     }
                 }
-                // Body AABB corners + center + edge midpoints inside cutout.
                 let minx = bb.min.x.to_mm();
                 let maxx = bb.max.x.to_mm();
                 let miny = bb.min.y.to_mm();
@@ -1769,30 +1823,30 @@ impl Board {
         // VL53 can sit with pads on the core and silk "floating in air"
         // past the X-frame re-entrant edge.
         if self.outline_poly.is_some() {
-            let pad_bb = probe.bounds()?;
-            let samples = [
-                Point::new(pad_bb.min.x, pad_bb.min.y),
-                Point::new(pad_bb.max.x, pad_bb.min.y),
-                Point::new(pad_bb.max.x, pad_bb.max.y),
-                Point::new(pad_bb.min.x, pad_bb.max.y),
-                Point::new(
-                    Length((pad_bb.min.x.0 + pad_bb.max.x.0) / 2),
-                    Length((pad_bb.min.y.0 + pad_bb.max.y.0) / 2),
-                ),
-            ];
-            // Pads on real copper (outer − cutouts), not just outer path.
-            for p in samples {
-                if !self.contains_point(p) {
+            // Pad **centres** only: castellated/slot pads straddle the
+            // cut (half into the mill) so pad-AABB corners are not copper.
+            for pad in &probe.pads {
+                let c = probe.pad_world_center(pad);
+                if !self.in_outer_outline(c) {
                     return Some(format!(
-                        "pads at ({:.2}, {:.2}) mm are outside copper (outline or milled cutout)",
-                        p.x.to_mm(),
-                        p.y.to_mm()
+                        "pads at ({:.2}, {:.2}) mm are outside the board outline",
+                        c.x.to_mm(),
+                        c.y.to_mm()
                     ));
+                }
+                for cut in &self.cutouts {
+                    if cut.polygon.len() >= 3 && pad_center_deep_in_cutout(c, &cut.polygon) {
+                        return Some(format!(
+                            "pads at ({:.2}, {:.2}) mm are inside milled cutout (not on the edge)",
+                            c.x.to_mm(),
+                            c.y.to_mm()
+                        ));
+                    }
                 }
             }
             if !margin.elevated {
-                // Prefer pads∪silk body (survives .fragua reload without
-                // library margin); union with inflated pad margin.
+                // Flat modules: silk/body on copper. Vertical slot joints
+                // are elevated and skip this (pads-only on the slot face).
                 let body = probe
                     .body_bounds()
                     .map(|b| b.union(bbox))
@@ -2518,6 +2572,67 @@ mod tests {
         assert_eq!(bb.max.x.0, raw.max.x.0);
         assert_eq!(bb.min.y.0, raw.min.y.0);
         assert_eq!(bb.max.y.0, raw.max.y.0);
+    }
+
+    /// Castellated pad centres on the cutout edge must be allowed.
+    #[test]
+    fn cutout_hitter_allows_castellated_pad_on_edge() {
+        let mut board = Board::new();
+        board.outline = Some(Rect::from_corners(
+            Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+            Point::new(Length::from_mm(40.0), Length::from_mm(40.0)),
+        ));
+        // Slot y=20..21.2
+        board.cutouts.push(Cutout {
+            id: Id::new(),
+            polygon: vec![
+                Point::new(Length::from_mm(10.0), Length::from_mm(20.0)),
+                Point::new(Length::from_mm(30.0), Length::from_mm(20.0)),
+                Point::new(Length::from_mm(30.0), Length::from_mm(21.2)),
+                Point::new(Length::from_mm(10.0), Length::from_mm(21.2)),
+            ],
+            label: "slot".into(),
+        });
+        // Pad centre ON the bottom edge; silk only inboard (−Y).
+        let fp = Footprint {
+            id: Id::new(),
+            reference: "SF".into(),
+            value: String::new(),
+            library: "demo".into(),
+            position: Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+            rotation: 0.0,
+            layer: CopperLayer::Top,
+            pads: vec![Pad {
+                number: "1".into(),
+                name: "VIN".into(),
+                offset: Point::new(Length::from_mm(0.0), Length::from_mm(0.0)),
+                size: (Length::from_mm(1.6), Length::from_mm(1.8)),
+                layer: CopperLayer::Top,
+                net: Some("+3V3".into()),
+                drill: Some(Length::from_mm(1.0)),
+            }],
+            key: "edge".into(),
+            description: String::new(),
+            edge_mounted: false,
+            edge_side: None,
+            silk: vec![FootprintSilk::Line {
+                layer: SilkLayer::Top,
+                start: Point::new(Length::from_mm(-4.0), Length::from_mm(-2.0)),
+                end: Point::new(Length::from_mm(4.0), Length::from_mm(-2.0)),
+                width: Length::from_mm(0.15),
+            }],
+        };
+        assert!(
+            board.first_cutout_hitter(&fp).is_none(),
+            "castellated pad on cutout edge must pass"
+        );
+        assert!(
+            !pad_center_deep_in_cutout(
+                Point::new(Length::from_mm(20.0), Length::from_mm(20.0)),
+                &board.cutouts[0].polygon
+            ),
+            "edge centre is not deep in cutout"
+        );
     }
 
     /// Pads sitting on a milled cutout/slot must be rejected by place/DRC.
