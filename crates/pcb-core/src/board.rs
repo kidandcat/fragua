@@ -1200,19 +1200,18 @@ fn is_zero_length(v: &Length) -> bool {
     v.0 == 0
 }
 
-/// Minimum body-to-body clearance between two footprints (mm).
+/// Minimum pad/body clearance between two footprints (mm).
 ///
 /// Enforced by `place` / `move` / `rotate` via `first_overlapper` and
 /// `first_body_overlapper`. Must match the auto-placer / compact default
-/// `solder_gap_mm` (1.0 mm): the user hand-solders and needs iron-tip
-/// access between parts. Pad-only footprints (no `body_rect`) use the
-/// pad AABB as the body, so two 1206 resistors need ≥ 1 mm between pad
-/// hulls — not the old 0.5 mm which still looked "touching" on screen
-/// and left no soldering room.
+/// `solder_gap_mm` (**2.0 mm**): the user hand-solders PTH headers and
+/// modules with an iron tip — 1.0 mm still looked "touching" and left
+/// no room (e.g. SuperMini pin row vs ESC 1×05). Pad-only footprints
+/// (no `body_rect`) use the pad AABB as the body.
 ///
 /// Keep this in lock-step with `pcb_placer::PlaceOptions::solder_gap_mm`
 /// default; if one changes, change the other.
-pub const MIN_FOOTPRINT_GAP_MM: f64 = 1.0;
+pub const MIN_FOOTPRINT_GAP_MM: f64 = 2.0;
 
 /// Tolerance (mm) for "this footprint touches the outline" — bigger
 /// than the trace clearance default so rounding doesn't reject borderline
@@ -1659,6 +1658,66 @@ impl Board {
         Some(format!(
             "inflated body extends {mm:.2} mm past the {side} board outline"
         ))
+    }
+
+    /// If `probe`'s pads or inflated body intersect any keepout polygon,
+    /// return a short reason. Used by place/move/rotate and the auto-placer
+    /// so mechanical keepouts (motor bases, connectors, stack standoffs)
+    /// actually block component placement — not only copper routing.
+    #[must_use]
+    pub fn footprint_hits_keepout(
+        &self,
+        probe: &Footprint,
+        margin: crate::library::PlacementMargin,
+    ) -> Option<String> {
+        if self.keepouts.is_empty() {
+            return None;
+        }
+        let mut samples: Vec<Point> = Vec::new();
+        if let Some(pad_bb) = probe.bounds() {
+            samples.extend([
+                Point::new(pad_bb.min.x, pad_bb.min.y),
+                Point::new(pad_bb.max.x, pad_bb.min.y),
+                Point::new(pad_bb.max.x, pad_bb.max.y),
+                Point::new(pad_bb.min.x, pad_bb.max.y),
+                Point::new(
+                    Length((pad_bb.min.x.0 + pad_bb.max.x.0) / 2),
+                    Length((pad_bb.min.y.0 + pad_bb.max.y.0) / 2),
+                ),
+            ]);
+        }
+        if let Some(bb) = probe.inflated_bbox(margin) {
+            samples.extend([
+                Point::new(bb.min.x, bb.min.y),
+                Point::new(bb.max.x, bb.min.y),
+                Point::new(bb.max.x, bb.max.y),
+                Point::new(bb.min.x, bb.max.y),
+                Point::new(
+                    Length((bb.min.x.0 + bb.max.x.0) / 2),
+                    Length((bb.min.y.0 + bb.max.y.0) / 2),
+                ),
+            ]);
+        }
+        for kp in &self.keepouts {
+            if kp.polygon.len() < 3 {
+                continue;
+            }
+            for p in &samples {
+                if crate::geometry::point_in_polygon(*p, &kp.polygon) {
+                    let label = if kp.label.is_empty() {
+                        "keepout".to_string()
+                    } else {
+                        format!("keepout '{}'", kp.label)
+                    };
+                    return Some(format!(
+                        "hits {label} at ({:.2}, {:.2}) mm",
+                        p.x.to_mm(),
+                        p.y.to_mm()
+                    ));
+                }
+            }
+        }
+        None
     }
 
     /// If `probe.edge_mounted` is true, return a human-readable reason
