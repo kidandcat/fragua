@@ -2983,11 +2983,13 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
             .filter(|s| !s.is_empty())
             .or_else(|| (!symbol.value.is_empty()).then(|| symbol.value.clone()))
             .unwrap_or_else(|| entry.default_value.clone());
-        let key_field = if symbol.key.is_empty() {
-            input.key.clone()
-        } else {
-            symbol.key.clone()
-        };
+        // Palette KEY is the footprint to spawn — always honour it for
+        // `Footprint.key` / body_keepout lookups. The schematic symbol
+        // may still say an older key (e.g. ST was `slot_joint_5p` and
+        // is now a flat VL53 module); using the symbol key here made
+        // keepout/silk resolution ignore the library entry we just
+        // loaded, so agents saw "slot silk" keepouts on flat parts.
+        let key_field = input.key.clone();
         let description_field = if symbol.description.is_empty() {
             entry.description.clone()
         } else {
