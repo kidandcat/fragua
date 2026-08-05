@@ -2091,10 +2091,29 @@ fn anchor_to_str(a: SilkAnchor) -> &'static str {
 /// Pass `ViewTransform::default()` for callers that have no view
 /// transform context (currently none — the only call site is the
 /// palette spawn).
+/// Convert library silk into footprint silk.
+///
+/// `copper_side` is the copper face the footprint is being placed on.
+/// Library silk is authored relative to the component face (almost
+/// always `SilkLayer::Top` meaning "on the module"). When the footprint
+/// lands on the **bottom** copper, those strokes must go to
+/// `SilkLayer::Bottom` (B.SilkS), otherwise the Gerber and canvas paint
+/// bottom modules' outlines on the top face.
 fn library_silk_to_footprint_with_view(
     s: &LibrarySilk,
     vt: pcb_core::ViewTransform,
+    copper_side: CopperLayer,
 ) -> FootprintSilk {
+    let map_layer = |lib: SilkLayer| -> SilkLayer {
+        if copper_side.is_top() {
+            return lib;
+        }
+        // Flip: library "component-side" silk follows the copper side.
+        match lib {
+            SilkLayer::Top => SilkLayer::Bottom,
+            SilkLayer::Bottom => SilkLayer::Top,
+        }
+    };
     match s {
         LibrarySilk::Line {
             layer,
@@ -2107,7 +2126,7 @@ fn library_silk_to_footprint_with_view(
             let (x1, y1) = vt.apply_point_mm(*x1_mm, *y1_mm);
             let (x2, y2) = vt.apply_point_mm(*x2_mm, *y2_mm);
             FootprintSilk::Line {
-                layer: *layer,
+                layer: map_layer(*layer),
                 start: Point::new(Length::from_mm(x1), Length::from_mm(y1)),
                 end: Point::new(Length::from_mm(x2), Length::from_mm(y2)),
                 width: Length::from_mm(*width_mm),
@@ -2125,7 +2144,7 @@ fn library_silk_to_footprint_with_view(
         } => {
             let (x, y) = vt.apply_point_mm(*x_mm, *y_mm);
             FootprintSilk::Text {
-                layer: *layer,
+                layer: map_layer(*layer),
                 position: Point::new(Length::from_mm(x), Length::from_mm(y)),
                 text: text.clone(),
                 size: Length::from_mm(*size_mm),
@@ -3047,12 +3066,14 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
 
     // Library silk lives in footprint-local mm just like the pads, so it
     // gets the same view transform — body outlines and pin-1 dots stay
-    // visually attached to the pads after a flip / rotate.
+    // visually attached to the pads after a flip / rotate. Silk layer is
+    // remapped to the copper side so bottom-placed parts emit B.SilkS.
     let vt = entry.footprint_view_transform;
+    let copper_side: CopperLayer = input.layer.clone().into();
     let silk: Vec<FootprintSilk> = entry
         .silk
         .iter()
-        .map(|s| library_silk_to_footprint_with_view(s, vt))
+        .map(|s| library_silk_to_footprint_with_view(s, vt, copper_side))
         .collect();
     let footprint = Footprint {
         id: pcb_core::Id::new(),
@@ -3061,7 +3082,7 @@ fn tool_palette_add_from_library(project: &Project, args: &Value) -> Result<Valu
         library: format!("library:{}", input.key),
         position: Point::new(Length::from_mm(-100.0), Length::from_mm(-100.0)),
         rotation: input.rotation.unwrap_or(entry.default_rotation_deg),
-        layer: input.layer.clone().into(),
+        layer: copper_side,
         pads,
         key: key_field,
         description: description_field,
