@@ -437,13 +437,14 @@ impl Footprint {
         };
         for silk in &self.silk {
             match silk {
+                // Outline lines only — silkscreen text is not physical
+                // body (a "{REF}" label past the pads must not block a
+                // ToF slot or motor base keep-out).
                 FootprintSilk::Line { start, end, .. } => {
                     absorb(self.local_to_world(*start));
                     absorb(self.local_to_world(*end));
                 }
-                FootprintSilk::Text { position, .. } => {
-                    absorb(self.local_to_world(*position));
-                }
+                FootprintSilk::Text { .. } => {}
             }
         }
         bb
