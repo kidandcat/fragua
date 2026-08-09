@@ -76,8 +76,12 @@ fn fresh_project(name: &str) -> Project {
 }
 
 /// Spawn a tiny pad-only two-pad library entry, confirm it, and set a
-/// `placement_margin` on its disk-backed entry — same shape the review
-/// pane writes into the library after the user dials it in.
+/// body keep-out via `body-rect`. `body_keepout()` always re-derives from
+/// pads/silk/body_rect (the stored `placement_margin` field alone is
+/// ignored when geometry exists), so tests that care about body size
+/// must go through body-rect — the same path the agent/UI uses.
+///
+/// Pad AABB for this helper is x ∈ [-1.25, 1.25], y ∈ [-0.25, 0.25].
 fn make_part_with_margin(project: &Project, key: &str, margin: PlacementMargin) {
     run_script(
         project,
@@ -86,10 +90,17 @@ fn make_part_with_margin(project: &Project, key: &str, margin: PlacementMargin) 
     project
         .confirm_pending_library_entry(key)
         .expect("confirm library entry");
-    project
-        .library()
-        .set_placement_margin(key, margin)
-        .expect("set margin");
+    let min_x = -1.25 - margin.left_mm;
+    let min_y = -0.25 - margin.bottom_mm;
+    let max_x = 1.25 + margin.right_mm;
+    let max_y = 0.25 + margin.top_mm;
+    run_script(
+        project,
+        &format!("body-rect {key} {min_x} {min_y} {max_x} {max_y}\n"),
+    );
+    if margin.elevated {
+        run_script(project, &format!("elevated {key}\n"));
+    }
 }
 
 /// Drill into a script result to find the per-line outcome list. The
@@ -171,10 +182,10 @@ fn place_two_parts_whose_bodies_overlap_fails() {
         "sym U1 ic key=wide_part\n  pin 1 L\n  pin 2 R\nsym U2 ic key=wide_part\n  pin 1 L\n  pin 2 R\npalette U1 wide_part\npalette U2 wide_part\n",
     );
 
-    // U1 inflated bbox: x ∈ [-4.25, 4.25] + 15 = [10.75, 19.25].
-    // U2 at x = 22 → pads x ∈ [20.75, 23.25] (gap ≥ 0.5 from U1 pads),
-    // inflated to [17.75, 26.25] → overlaps U1's [10.75, 19.25] body.
-    let reply = run_script(&project, "place U1 15 15\nplace U2 22 15\n");
+    // U1 inflated body: x ∈ [-4.25, 4.25] + 15 = [10.75, 19.25].
+    // U2 at x = 23 → pad AABB [21.75, 24.25] (pad-edge gap 2.5 ≥ 2.0 floor),
+    // body [17.75, 27.25] → overlaps U1's body.
+    let reply = run_script(&project, "place U1 15 15\nplace U2 23 15\n");
     let results = extract_results(&reply);
     assert_eq!(results.len(), 2, "two place attempts: {reply:#?}");
     assert_eq!(results[0]["ok"], true, "U1 should place fine: {reply:#?}");
@@ -216,7 +227,8 @@ fn move_into_body_overlap_fails() {
     );
     assert_eq!(project.read().board().footprints.len(), 2);
 
-    // U1 body x ∈ [6.75, 13.25]. Move U2 to x = 16 → body x ∈ [12.75, 19.25] → overlap.
+    // U1 body x ∈ [6.75, 13.25]. Move U2 to x = 16 → body x ∈ [12.75, 19.25]
+    // (overlap) while pad-edge gap stays ≥ 2.0 mm.
     let reply = run_script(&project, "move U2 16 15\n");
     let results = extract_results(&reply);
     assert_eq!(results.len(), 1, "one move attempt: {reply:#?}");
@@ -257,19 +269,8 @@ fn edge_mounted_does_not_exempt_body_off_board() {
     project
         .confirm_pending_library_entry("usb_c")
         .expect("confirm library entry");
-    project
-        .library()
-        .set_placement_margin(
-            "usb_c",
-            PlacementMargin {
-                top_mm: 0.0,
-                right_mm: 3.0,
-                bottom_mm: 0.0,
-                left_mm: 0.0,
-                elevated: false,
-            },
-        )
-        .expect("set margin");
+    // Pad AABB x ∈ [-1.25, 1.25]; body-rect right extends +3 mm past pads.
+    run_script(&project, "body-rect usb_c -1.25 -0.25 4.25 0.25\n");
     run_script(
         &project,
         "sym J9 ic key=usb_c\n  pin 1 L\n  pin 2 R\npalette J9 usb_c\n",
@@ -407,9 +408,9 @@ fn elevated_verb_lets_a_flat_part_sit_under_a_module_body() {
         &project,
         "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\nsym R1 ic key=chip\n  pin 1 L\n  pin 2 R\npalette U1 module\npalette R1 chip\n",
     );
-    // R1 pads are 3 mm from U1's pads (clear of the 1 mm solder floor)
-    // but deep inside U1's 6 mm body halo.
-    let reply = run_script(&project, "place U1 20 15\nplace R1 24 15\n");
+    // R1 pads clear the 2.0 mm hand-solder floor (centres 5 mm apart →
+    // pad-edge gap 2.5 mm) but sit deep inside U1's 6 mm body halo.
+    let reply = run_script(&project, "place U1 20 15\nplace R1 25 15\n");
     let results = extract_results(&reply);
     assert_eq!(results[0]["ok"], true, "U1 should place: {reply:#?}");
     assert_eq!(
@@ -440,7 +441,9 @@ fn two_elevated_modules_still_cannot_overlap() {
         &project,
         "sym U1 ic key=module\n  pin 1 L\n  pin 2 R\nsym U2 ic key=module\n  pin 1 L\n  pin 2 R\npalette U1 module\npalette U2 module\n",
     );
-    let reply = run_script(&project, "place U1 20 15\nplace U2 24 15\n");
+    // Centres 5 mm apart → pad-edge gap 2.5 ≥ 2.0 floor, bodies still
+    // heavily overlap (6 mm halo).
+    let reply = run_script(&project, "place U1 20 15\nplace U2 25 15\n");
     let results = extract_results(&reply);
     assert_eq!(results[0]["ok"], true, "U1 should place: {reply:#?}");
     assert_eq!(
