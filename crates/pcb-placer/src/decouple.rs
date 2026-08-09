@@ -43,9 +43,10 @@ use crate::{margin_for_fp, pads_inside_outline, probe_min_gap, MarginMap, PlaceO
 const RING_STEP_MM: f64 = 0.5;
 
 /// How many radial ranks to try before giving up on this anchor.
-/// 8 × 0.5 mm = 4 mm of outward travel — past that the cap is no longer
-/// "at the pin" and the centroid fallback is no worse.
-const RING_RANKS: usize = 8;
+/// 12 × 0.5 mm = 6 mm of outward travel — needs room under the 2.0 mm
+/// hand-solder floor (caps around a dense package); past that the cap is
+/// no longer "at the pin" and the centroid fallback is no worse.
+const RING_RANKS: usize = 12;
 
 /// Slack (mm) added to the first rank so the nanometre rounding in
 /// `Length` cannot make an exactly-at-clearance candidate read as one
@@ -419,6 +420,12 @@ fn ring_place(
             if probe_min_gap(board, &probe, margins) < hard_clearance {
                 continue;
             }
+            // Same pad-AABB floor place/move/rotate and layout_is_legal use.
+            // Without this, a seat can pass probe_min_gap yet trip
+            // first_overlapper, which then rolls the WHOLE ring back.
+            if board.first_overlapper(&probe, Some(id)).is_some() {
+                continue;
+            }
             if board.edge_mount_violation(&probe).is_some() {
                 continue;
             }
@@ -507,6 +514,9 @@ fn pull_to_centroid(
             continue;
         }
         if probe_min_gap(board, &probe, margins) < hard_clearance {
+            continue;
+        }
+        if board.first_overlapper(&probe, Some(id)).is_some() {
             continue;
         }
         if board.edge_mount_violation(&probe).is_some() {
