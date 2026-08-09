@@ -167,8 +167,9 @@ pub struct PlaceOptions {
     /// placement never leaves two component bodies closer than this — the
     /// user hand-solders and needs iron-tip access between parts, so parts
     /// must NEVER end up nearly touching after auto-place / compact.
-    /// Default 1.0 mm. Set to 0 to degrade to the old behaviour where
-    /// `min_clearance_mm` (0.5 mm) is the only hard floor.
+    /// Default `pcb_core::MIN_FOOTPRINT_GAP_MM` (2.0 mm). Note that
+    /// `Board::first_overlapper` also enforces that same floor for
+    /// place/move/rotate, so zeroing this option cannot pack under it.
     pub solder_gap_mm: f64,
     /// Score weight on the soft-gap penalty term. Penalty per pair is
     /// `(min_gap_mm - actual_gap)^2` (mm²) when below the threshold;

@@ -299,7 +299,8 @@ fn blocked_along_seed_scans_the_rest_of_the_edge() {
     assert!(board.edge_mount_violation(jl).is_none());
     // And the scan honoured the hard clearance against the fixed obstacle.
     assert!(
-        pcb_placer::min_pairwise_gap(&board, &MarginMap::new()) >= 1.0 - 1e-6,
+        pcb_placer::min_pairwise_gap(&board, &MarginMap::new())
+            >= pcb_core::MIN_FOOTPRINT_GAP_MM - 1e-6,
         "the scanned position must still clear OBS"
     );
 }

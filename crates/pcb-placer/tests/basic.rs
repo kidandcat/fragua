@@ -93,15 +93,18 @@ fn placer_reduces_hpwl_on_two_far_apart_resistors() {
 }
 
 /// The solder-access hard floor: two parts on the same net want to pack
-/// as tight as HPWL allows. With the soft gap preference OFF, only the
-/// hard clearance governs their spacing — so the finished layout must
-/// leave >= `solder_gap_mm` between bodies (default 1.0 mm) so the user
-/// can get a soldering iron between them, and `solder_gap=0` must degrade
-/// to the old 0.5 mm `min_clearance` floor (packing tighter).
+/// as tight as HPWL allows. Soft gap preference OFF so only the hard
+/// clearance governs. The finished layout must leave
+/// >= `MIN_FOOTPRINT_GAP_MM` (2.0 mm) between pad AABBs — that floor is
+/// enforced both by `PlaceOptions::solder_gap_mm` and by
+/// `Board::first_overlapper` (place/move/rotate), so even `solder_gap=0`
+/// cannot pack under it.
 #[test]
 fn solder_gap_is_a_hard_floor_by_default() {
-    // Same-net pair at opposite corners of a narrow board → HPWL strongly
-    // rewards bringing them together, exercising the hard floor.
+    // Same-net pair at opposite ends of a narrow board → HPWL strongly
+    // rewards bringing them together. SA-only so the score is pure HPWL
+    // vs the hard clearance.
+    let floor = pcb_core::MIN_FOOTPRINT_GAP_MM;
     let gap_after_place = |solder_gap_mm: f64| -> f64 {
         let mut board = Board::new();
         board.outline = Some(Rect::from_corners(
@@ -124,10 +127,14 @@ fn solder_gap_is_a_hard_floor_by_default() {
         let opts = PlaceOptions {
             seed: 12345,
             max_iterations: 10000,
-            // Turn the soft preference off so ONLY the hard floor governs.
             min_gap_mm: 0.0,
             gap_penalty_factor: 0.0,
             solder_gap_mm,
+            global_stage: false,
+            edge_plan: false,
+            congestion_resolution: 0,
+            congestion_penalty_factor: 0.0,
+            crossing_penalty_factor: 0.0,
             ..PlaceOptions::default()
         };
         place(
@@ -140,28 +147,27 @@ fn solder_gap_is_a_hard_floor_by_default() {
         min_pairwise_gap(&board, &MarginMap::new())
     };
 
-    // Default 1.0 mm floor: never violated, no matter how much HPWL wants
-    // the parts touching.
-    let default_gap = gap_after_place(1.0);
+    let default_gap = gap_after_place(floor);
     assert!(
-        default_gap >= 1.0 - 0.02,
-        "default solder-access floor violated: min pairwise gap {default_gap:.3} mm < 1.0",
+        default_gap >= floor - 0.02,
+        "default solder-access floor violated: min pairwise gap {default_gap:.3} mm < {floor}",
+    );
+    // HPWL actually pulled them in (otherwise the floor check is free).
+    assert!(
+        default_gap < 10.0,
+        "default run should pack under HPWL pressure, got {default_gap:.3} mm",
     );
 
-    // solder_gap=0 degrades to the old behaviour: the 0.5 mm min_clearance
-    // is the only hard floor, so SA packs tighter than the 1.0 mm default.
-    let old_gap = gap_after_place(0.0);
+    // Even with the placer option zeroed, Board::first_overlapper still
+    // enforces MIN_FOOTPRINT_GAP_MM — hand-solder room is non-negotiable.
+    let zeroed_gap = gap_after_place(0.0);
     assert!(
-        old_gap >= 0.5 - 0.02,
-        "min_clearance floor violated: min pairwise gap {old_gap:.3} mm < 0.5",
+        zeroed_gap >= floor - 0.02,
+        "core pad-AABB floor violated with solder_gap=0: {zeroed_gap:.3} mm < {floor}",
     );
     assert!(
-        old_gap < 1.0,
-        "solder_gap=0 should reproduce sub-1mm packing, got {old_gap:.3} mm",
-    );
-    assert!(
-        old_gap < default_gap + 1e-9,
-        "solder_gap=0 ({old_gap:.3}) should pack at least as tight as default ({default_gap:.3})",
+        zeroed_gap < 10.0,
+        "solder_gap=0 run should still pack under HPWL, got {zeroed_gap:.3} mm",
     );
 }
 
@@ -386,11 +392,11 @@ fn two_stage_placer_untangles_scattered_iot_board() {
         report.initial_hpwl_mm,
         report.final_hpwl_mm,
     );
-    // Hard solder floor: no two bodies closer than 1 mm (small epsilon
-    // for the nm→mm rounding).
+    // Hard solder floor: no two bodies closer than MIN_FOOTPRINT_GAP_MM
+    // (small epsilon for the nm→mm rounding).
     let gap = min_pairwise_gap(&board, &MarginMap::new());
     assert!(
-        gap >= 1.0 - 0.02,
+        gap >= pcb_core::MIN_FOOTPRINT_GAP_MM - 0.02,
         "solder floor violated: min gap {gap:.3} mm"
     );
     // Everything inside the outline.
