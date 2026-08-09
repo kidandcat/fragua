@@ -596,11 +596,10 @@ impl Project {
         let id = Id::new();
         {
             let mut inner = self.inner.write().expect("project lock poisoned");
-            inner.board.cutouts.push(crate::board::Cutout {
-                id,
-                polygon,
-                label,
-            });
+            inner
+                .board
+                .cutouts
+                .push(crate::board::Cutout { id, polygon, label });
         }
         self.bus.publish(Event::OutlineChanged);
         Ok(id)

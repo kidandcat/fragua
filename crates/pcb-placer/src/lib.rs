@@ -789,10 +789,7 @@ pub fn place(
         // below skips elevated/non-elevated pairs; copper still must not
         // collide (this was letting auto-place stack passives under a
         // SuperMini header onto its pads).
-        if board
-            .first_overlapper(&probe, Some(probe.id))
-            .is_some()
-        {
+        if board.first_overlapper(&probe, Some(probe.id)).is_some() {
             continue;
         }
         {
@@ -1454,8 +1451,7 @@ fn pads_inside_board(
             let c = probe.pad_world_center(pad);
             board.in_outer_outline(c)
                 && !board.cutouts.iter().any(|cut| {
-                    cut.polygon.len() >= 3
-                        && pcb_core::pad_center_deep_in_cutout(c, &cut.polygon)
+                    cut.polygon.len() >= 3 && pcb_core::pad_center_deep_in_cutout(c, &cut.polygon)
                 })
         });
     }

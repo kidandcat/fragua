@@ -1037,11 +1037,13 @@ fn tool_board_add_cutout(project: &Project, args: &Value) -> Result<Value, ToolE
             }
         ),
     );
-    Ok(text_result(format!("Cutout added ({n} vertices)")).with_data(json!({
-        "id": id.0.to_string(),
-        "n_vertices": n,
-        "label": label,
-    })))
+    Ok(
+        text_result(format!("Cutout added ({n} vertices)")).with_data(json!({
+            "id": id.0.to_string(),
+            "n_vertices": n,
+            "label": label,
+        })),
+    )
 }
 
 fn tool_board_clear_cutouts(project: &Project, _args: &Value) -> Result<Value, ToolError> {
@@ -3222,13 +3224,9 @@ fn tool_place_legal(project: &Project, args: &Value) -> Result<Value, ToolError>
     let mut skipped_outside = 0u32;
     for i in 0..tries {
         // LCG — two samples for (x, y)
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         let fx = ((state >> 33) as f64) / ((1u64 << 31) as f64);
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         let fy = ((state >> 33) as f64) / ((1u64 << 31) as f64);
         // 2 mm inset so pads have room; poly boards still re-check below.
         let x = ox + 2.0 + fx * (ow - 4.0).max(0.0);
@@ -3237,10 +3235,9 @@ fn tool_place_legal(project: &Project, args: &Value) -> Result<Value, ToolError>
             let snap = project.read();
             // Real copper: outer poly minus milled cutouts / slots so we
             // do not burn tries on NPTH windows (place rejects them too).
-            let inside = snap.board().contains_point(Point::new(
-                Length::from_mm(x),
-                Length::from_mm(y),
-            ));
+            let inside = snap
+                .board()
+                .contains_point(Point::new(Length::from_mm(x), Length::from_mm(y)));
             drop(snap);
             if !inside {
                 skipped_outside += 1;
@@ -3350,7 +3347,8 @@ fn tool_place_cutout(project: &Project, args: &Value) -> Result<Value, ToolError
             "placement.place_cutout: {} at cutout {:?} ({x:.2}, {y:.2}) mm rot={}",
             input.reference,
             input.label,
-            rot.map(|r| format!("{r:.0}")).unwrap_or_else(|| "palette".into())
+            rot.map(|r| format!("{r:.0}"))
+                .unwrap_or_else(|| "palette".into())
         ),
     );
     Ok(text_result(format!(
@@ -3477,8 +3475,7 @@ fn tool_placement_batch(project: &Project, args: &Value) -> Result<Value, ToolEr
         // colliding rotated place never leaves the part at rot 0 on the
         // board — that was a real source of "legal" pad placement with a
         // body/silk overlay the agent then had to fix by hand.
-        let placed =
-            project.place_from_palette_at(&item.reference, pos, item.rotation);
+        let placed = project.place_from_palette_at(&item.reference, pos, item.rotation);
         match placed {
             Ok(id) => {
                 ok_count += 1;

@@ -985,7 +985,12 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
         }
         "cutout" => {
             // cutout x1 y1 x2 y2 ... [label=NAME]
-            need_args(line, tokens, 6, "cutout x1 y1 x2 y2 x3 y3 [...] [label=NAME]")?;
+            need_args(
+                line,
+                tokens,
+                6,
+                "cutout x1 y1 x2 y2 x3 y3 [...] [label=NAME]",
+            )?;
             let mut kv_start = tokens.len();
             for (i, t) in tokens.iter().enumerate().skip(1) {
                 if t.contains('=') {
@@ -1429,7 +1434,12 @@ fn compile_command(line: usize, tokens: &[String]) -> Result<Cmd, ParseError> {
             // Sample random board positions until place succeeds (silk/
             // body keep-out + polygonal outline). For agents that must
             // not invent coordinates by hand.
-            need_args(line, tokens, 1, "place-legal REF [seed=N] [tries=N] [rot=DEG]")?;
+            need_args(
+                line,
+                tokens,
+                1,
+                "place-legal REF [seed=N] [tries=N] [rot=DEG]",
+            )?;
             let mut args = json!({ "reference": tokens[1].clone() });
             apply_kv(
                 &mut args,

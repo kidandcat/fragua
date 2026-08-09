@@ -245,8 +245,10 @@ fn write_net_wires(svg: &mut String, schematic: &Schematic) {
     svg.push_str(r##"<g fill="none" stroke-linecap="round" stroke-linejoin="round">"##);
 
     // Precompute side indices per symbol once.
-    let mut side_idx: std::collections::HashMap<pcb_core::Id, std::collections::HashMap<String, usize>> =
-        std::collections::HashMap::new();
+    let mut side_idx: std::collections::HashMap<
+        pcb_core::Id,
+        std::collections::HashMap<String, usize>,
+    > = std::collections::HashMap::new();
     for sym in schematic.symbols_in_order() {
         side_idx.insert(sym.id, pin_side_indices(sym));
     }
@@ -267,7 +269,12 @@ fn write_net_wires(svg: &mut String, schematic: &Schematic) {
             let Some(sym) = schematic.symbols.get(&c.symbol_id) else {
                 continue;
             };
-            let Some(pin) = sym.kind.pins().into_iter().find(|p| p.number == c.pin_number) else {
+            let Some(pin) = sym
+                .kind
+                .pins()
+                .into_iter()
+                .find(|p| p.number == c.pin_number)
+            else {
                 continue;
             };
             let idx = side_idx
@@ -358,15 +365,7 @@ fn wire_color(name: &str) -> &'static str {
     }
 }
 
-fn write_manhattan(
-    svg: &mut String,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    stroke: &str,
-    width: f64,
-) {
+fn write_manhattan(svg: &mut String, x1: f64, y1: f64, x2: f64, y2: f64, stroke: &str, width: f64) {
     if (x1 - x2).abs() < 0.05 {
         let _ = write!(
             svg,

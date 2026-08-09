@@ -293,10 +293,7 @@ fn bottom_layer_spawn_x_mirrors_pad_offsets() {
         .find(|f| f.reference == "U1")
         .expect("U1 in palette");
 
-    assert!(
-        !fp.layer.is_top(),
-        "footprint must be on bottom copper"
-    );
+    assert!(!fp.layer.is_top(), "footprint must be on bottom copper");
     // Pad "1" native (2, 0) → bottom mirror (-2, 0).
     let pad1 = fp.pads.iter().find(|p| p.number == "1").expect("pad 1");
     assert!(

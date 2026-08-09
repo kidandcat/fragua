@@ -1847,10 +1847,7 @@ impl Board {
             if !margin.elevated {
                 // Flat modules: silk/body on copper. Vertical slot joints
                 // are elevated and skip this (pads-only on the slot face).
-                let body = probe
-                    .body_bounds()
-                    .map(|b| b.union(bbox))
-                    .unwrap_or(bbox);
+                let body = probe.body_bounds().map(|b| b.union(bbox)).unwrap_or(bbox);
                 let body_samples = [
                     Point::new(body.min.x, body.min.y),
                     Point::new(body.max.x, body.min.y),
@@ -2906,7 +2903,7 @@ mod tests {
     /// `MIN_FOOTPRINT_GAP_MM` between pad AABBs must be rejected.
     /// Regression for R1/R2-style 1206 pairs that used to sit at 0.8 mm
     /// pad-edge gap (allowed under the old 0.5 mm floor) and looked
-    /// "touching" on the board view.
+    /// "touching" on the board view. Floor is now 2.0 mm (hand-solder).
     #[test]
     fn first_overlapper_enforces_solder_access_gap() {
         let mut board = Board::new();
@@ -2917,18 +2914,24 @@ mod tests {
         let mut b = make_two_pad_fp(Point::new(Length::from_mm(0.0), Length::from_mm(0.0)), 0.0);
         b.reference = "B".into();
         b.id = Id::new();
-        // gap = 0.8 mm (< 1.0) → must reject
+        // gap = 0.8 mm (< 2.0) → must reject
         b.position = Point::new(Length::from_mm(3.3), Length::from_mm(0.0));
         board.add_footprint(a);
         assert!(
             board.first_overlapper(&b, None).is_some(),
-            "0.8 mm pad-edge gap must be rejected (solder floor is 1.0 mm)"
+            "0.8 mm pad-edge gap must be rejected (solder floor is {MIN_FOOTPRINT_GAP_MM} mm)"
         );
-        // gap = 1.2 mm (> 1.0) → must accept
+        // gap = 1.2 mm still under 2.0 → must reject
         b.position = Point::new(Length::from_mm(3.7), Length::from_mm(0.0));
         assert!(
+            board.first_overlapper(&b, None).is_some(),
+            "1.2 mm pad-edge gap must be rejected under the 2.0 mm hand-solder floor"
+        );
+        // gap = 2.2 mm (> 2.0) → must accept
+        b.position = Point::new(Length::from_mm(4.7), Length::from_mm(0.0));
+        assert!(
             board.first_overlapper(&b, None).is_none(),
-            "1.2 mm pad-edge gap must be accepted"
+            "2.2 mm pad-edge gap must be accepted"
         );
     }
 }

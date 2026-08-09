@@ -639,12 +639,13 @@ impl LibraryEntry {
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
         let mut any = false;
-        let expand = |min_x: &mut f64, min_y: &mut f64, max_x: &mut f64, max_y: &mut f64, x: f64, y: f64| {
-            *min_x = min_x.min(x);
-            *min_y = min_y.min(y);
-            *max_x = max_x.max(x);
-            *max_y = max_y.max(y);
-        };
+        let expand =
+            |min_x: &mut f64, min_y: &mut f64, max_x: &mut f64, max_y: &mut f64, x: f64, y: f64| {
+                *min_x = min_x.min(x);
+                *min_y = min_y.min(y);
+                *max_x = max_x.max(x);
+                *max_y = max_y.max(y);
+            };
         if let Some((a, b, c, d)) = self.pads_bbox_mm() {
             any = true;
             min_x = a;
@@ -654,8 +655,22 @@ impl LibraryEntry {
         }
         if let Some(body) = &self.body_rect {
             any = true;
-            expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, body.min_x_mm, body.min_y_mm);
-            expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, body.max_x_mm, body.max_y_mm);
+            expand(
+                &mut min_x,
+                &mut min_y,
+                &mut max_x,
+                &mut max_y,
+                body.min_x_mm,
+                body.min_y_mm,
+            );
+            expand(
+                &mut min_x,
+                &mut min_y,
+                &mut max_x,
+                &mut max_y,
+                body.max_x_mm,
+                body.max_y_mm,
+            );
         }
         for s in &self.silk {
             match s {
@@ -669,10 +684,38 @@ impl LibraryEntry {
                 } => {
                     any = true;
                     let hw = (*width_mm).max(0.0) / 2.0;
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x1_mm - hw, *y1_mm - hw);
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x1_mm + hw, *y1_mm + hw);
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x2_mm - hw, *y2_mm - hw);
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, *x2_mm + hw, *y2_mm + hw);
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        *x1_mm - hw,
+                        *y1_mm - hw,
+                    );
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        *x1_mm + hw,
+                        *y1_mm + hw,
+                    );
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        *x2_mm - hw,
+                        *y2_mm - hw,
+                    );
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        *x2_mm + hw,
+                        *y2_mm + hw,
+                    );
                 }
                 LibrarySilk::Text {
                     x_mm,
@@ -691,8 +734,22 @@ impl LibraryEntry {
                         SilkAnchor::Middle => (*x_mm - w / 2.0, *x_mm + w / 2.0),
                         SilkAnchor::End => (*x_mm - w, *x_mm),
                     };
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, x0, *y_mm - h / 2.0);
-                    expand(&mut min_x, &mut min_y, &mut max_x, &mut max_y, x1, *y_mm + h / 2.0);
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        x0,
+                        *y_mm - h / 2.0,
+                    );
+                    expand(
+                        &mut min_x,
+                        &mut min_y,
+                        &mut max_x,
+                        &mut max_y,
+                        x1,
+                        *y_mm + h / 2.0,
+                    );
                 }
             }
         }
