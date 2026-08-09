@@ -10,15 +10,23 @@ in the open. The bar for contributions is "would I want this in my own copy"
 # Build and run the tests.
 cargo test --workspace
 
-# Run the desktop app.
+# Run the desktop app (the `run` subcommand starts the server + UI).
 npm --prefix frontend install
 npm --prefix frontend run build
+cargo run --release --bin fragua -- run
+# or: cargo run --release --bin fragua -- run /path/to/board.fragua
+
+# Bare `fragua` (no `run`) prints usage + the full script reference and exits.
 cargo run --release --bin fragua
 
-# Run the agent script API on its own (no GUI needed for most flows).
-curl -s http://127.0.0.1:7878/                    # full reference
+# Drive the agent script API (once `fragua run` is up).
+curl -s http://127.0.0.1:7878/                    # usage + full reference
+curl -s http://127.0.0.1:7878/help                # same
 curl -s http://127.0.0.1:7878/health              # ok
+curl -s 'http://127.0.0.1:7878/screenshot?view=board' -o board.png
 ```
+
+Override the listen address with `FRAGUA_API_ADDR` if needed.
 
 ## What's in scope
 
@@ -53,9 +61,11 @@ curl -s http://127.0.0.1:7878/health              # ok
    The warnings list is intentionally short; new warnings should be
    addressed or explicitly silenced with a comment explaining why.
 5. **Keep the script reference accurate.** If you add or change a
-   verb, update the `script_reference()` string in
-   `crates/pcb-script/src/tools.rs` so the agent and the human see
-   the new surface at startup and at `GET /`.
+   verb, update the `SCRIPT_REFERENCE` string in
+   `crates/pcb-script/src/tools.rs` **and** the `VERBS` list in
+   `crates/pcb-script/src/script.rs` so the agent and the human see
+   the new surface at startup, at `GET /`, and in "did you mean"
+   suggestions.
 
 ## Style
 

@@ -134,7 +134,7 @@ PROJECT / READS:\n\
   save PATH                                    — write the project to PATH (atomic .tmp+rename).\n\
                                                  Use this when fragua was launched with no file\n\
                                                  argument (no autosave); afterwards re-launch with\n\
-                                                 `fragua PATH` to keep autosaving.\n\
+                                                 `fragua run PATH` to keep autosaving.\n\
   screenshot PATH [view=board|schematic]       — rasterise the current project to a PNG on disk.\n\
             [width=PX]                           Same content the webview shows (board SVG or\n\
                                                  schematic SVG), rendered headlessly via resvg —\n\
@@ -147,6 +147,20 @@ BOARD:\n\
   outline W H [radius=R]                       — set Edge.Cuts rectangle in mm. Optional uniform\n\
                                                  corner radius (mm) rounds all four corners; default\n\
                                                  0 = sharp. Clamped to min(W, H) / 2.\n\
+  outline-poly x1 y1 x2 y2 x3 y3 [... xn yn]   — set a polygonal Edge.Cuts (≥ 3 vertices, mm).\n\
+                                                 Replaces any previous outline. Use for L-frames,\n\
+                                                 slots, non-rect boards. Placement and DRC treat\n\
+                                                 copper outside the poly as illegal.\n\
+  cutout x1 y1 x2 y2 x3 y3 [...] [label=NAME]  — milled internal cutout (≥ 3 vertices). Acts as a\n\
+                                                 place/DRC void; NPTH holes may sit in/on it.\n\
+                                                 Castellated / slot-edge pads may straddle the cut.\n\
+                                                 Optional label for `place-cutout REF LABEL`.\n\
+  clear-cutouts                                — remove every milled cutout.\n\
+  hole X Y D [label=NAME] [keepout=N]          — NPTH mount hole at (X,Y) mm, diameter D mm.\n\
+                                                 Pads may not land on the hole. Optional keepout\n\
+                                                 (mm) is a larger place/DRC diameter for motor cans\n\
+                                                 / flanges around the hole.\n\
+  clear-holes                                  — remove every board-level NPTH hole.\n\
 \n\
 LIBRARY (build first, reuse forever):\n\
   lib KEY [value=V] [rot=N] [edge=true|false] [desc=\"...\"] [lcsc=Cxxxx] [mpn=...]\n\

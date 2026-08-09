@@ -86,20 +86,21 @@
     <div class="bullet">
       <h3 data-i18n="b2.h3">Real router, not a wrapper</h3>
       <p data-i18n="b2.p">
-        Two-layer A* with rip-up-and-reroute, negotiated congestion bias,
-        and Steiner-style multi-source construction. Per-net trace widths
-        and clearances honoured from <code>NetClass</code> declarations. No
-        FreeRouting, no <code>kicad-cli</code>.
+        Multi-layer Theta* / A* with rip-up-and-reroute, optional negotiated
+        congestion, fine-pitch escape-slot fanout, and an organic post-pass.
+        Experimental topological engine available. Per-net and rule-area
+        widths / clearances from <code>NetClass</code>. No FreeRouting, no
+        <code>kicad-cli</code>.
       </p>
     </div>
 
     <div class="bullet">
       <h3 data-i18n="b3.h3">Real placer too</h3>
       <p data-i18n="b3.p">
-        Simulated annealing on HPWL plus a soft body-to-body gap penalty
-        plus a rasterised pad-bbox congestion proxy. The agent passes the
-        list of refs that may move; everything else stays where the human
-        put it.
+        Two-stage placer: electrostatic global placement, then simulated
+        annealing legalisation (HPWL + body gap + congestion + crossings).
+        Edge planning for connectors, elevated modules on headers. The agent
+        names which refs may move; everything else stays where the human put it.
       </p>
     </div>
 
@@ -185,29 +186,37 @@ pack fab=jlcpcb out=~/Downloads</pre>
 
 <section class="install" id="install">
   <h2 data-i18n="install.h2">Install &amp; run</h2>
-  <p data-i18n="install.p1">Fragua is a Rust workspace + a TypeScript frontend hosted in a Tauri 2 shell. Build it from source for now — pre-built binaries will follow.</p>
+  <p data-i18n="install.p1">Fragua is a Rust workspace + a TypeScript frontend hosted in a Tauri 2 shell. Pre-built binaries are on GitHub Releases; or build from source:</p>
 
-<pre class="snippet">git clone https://github.com/mentasystems/fragua.git
+<pre class="snippet"><span class="c"># One-liner install (macOS arm64/x64, Linux x64).</span>
+curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/install.sh | sh
+
+<span class="c"># From source:</span>
+git clone https://github.com/mentasystems/fragua.git
 cd fragua
+npm --prefix frontend install &amp;&amp; npm --prefix frontend run build
 
-<span class="c"># Build the embedded frontend bundle once.</span>
-npm --prefix frontend install
-npm --prefix frontend run build
+<span class="c"># Launch (the `run` subcommand starts the API + UI).</span>
+cargo run --release --bin fragua -- run
 
-<span class="c"># Run the desktop app.</span>
-cargo run --release --bin fragua
+<span class="c"># …or open an existing project file (autosave bound to it).</span>
+cargo run --release --bin fragua -- run /path/to/board.fragua
 
-<span class="c"># …or open an existing project file.</span>
-cargo run --release --bin fragua /path/to/board.fragua</pre>
+<span class="c"># Bare `fragua` prints usage + the full script reference and exits.</span>
+cargo run --release --bin fragua</pre>
 
   <p data-i18n="install.p2">
     The window opens, and a stateless local HTTP API starts on
-    <code>127.0.0.1:7878</code>. Point any agent that can make HTTP
-    calls at it:
+    <code>127.0.0.1:7878</code> (override with <code>FRAGUA_API_ADDR</code>).
+    Point any agent that can make HTTP calls at it:
   </p>
 
-<pre class="snippet"><span class="c"># Discover the full action surface.</span>
+<pre class="snippet"><span class="c"># Discover the full action surface (also GET /help).</span>
 curl -s http://127.0.0.1:7878/
+
+<span class="c"># Liveness + headless board PNG.</span>
+curl -s http://127.0.0.1:7878/health
+curl -s 'http://127.0.0.1:7878/screenshot?view=board&amp;width=1600' -o board.png
 
 <span class="c"># Run a script.</span>
 curl -s http://127.0.0.1:7878/script \
@@ -220,7 +229,7 @@ curl -s http://127.0.0.1:7878/script \
 <section class="status" id="status">
   <h2 data-i18n="status.h2">Status</h2>
   <p class="status-lead" data-i18n="status.lead">
-    Pre-1.0. Every bullet below works in the current
+    <strong>v1.1.x</strong>. Every bullet below works in the current
     <a href="https://github.com/mentasystems/fragua">master</a>; the
     "what's next" list is what the maintainers are most likely to
     work on, not a commitment.
@@ -230,14 +239,14 @@ curl -s http://127.0.0.1:7878/script \
     <div>
       <h3 data-i18n="status.today">Today</h3>
       <ul>
-        <li data-i18n="today.1">Schematic with symbols, pins (with electrical roles), nets, and net classes.</li>
-        <li data-i18n="today.2">Library of footprints with photos, datasheets, LCSC IDs and MPNs.</li>
-        <li data-i18n="today.3">Auto-placer (SA on HPWL + gap penalty + congestion proxy).</li>
-        <li data-i18n="today.4">Auto-router (RR&amp;R + negotiated congestion + Steiner-style multi-source A*).</li>
-        <li data-i18n="today.5">ERC, DRC, manufacturing-DRC; per-fab rules for JLCPCB / PCBWay / generic.</li>
-        <li data-i18n="today.6">Auto-pour from net classes (GND-on-both-layers in one declaration).</li>
-        <li data-i18n="today.7">Rounded board outlines (renderer + router inset + Gerber arcs).</li>
-        <li data-i18n="today.8">One-shot <code>pack</code> verb producing a ready-to-upload zip.</li>
+        <li data-i18n="today.1">Schematic with symbols, pins (electrical roles), nets, net classes, multi-sheet ports.</li>
+        <li data-i18n="today.2">Library of footprints with photos, datasheets, LCSC IDs, MPNs, edge-mount and elevated bodies.</li>
+        <li data-i18n="today.3">Two-stage auto-placer (ePlace global + SA legalisation, edge-plan, decoupling ring, compact).</li>
+        <li data-i18n="today.4">Auto-router (RR&amp;R + optional negotiation + fine-pitch escape fanout + organic pass; experimental topo engine).</li>
+        <li data-i18n="today.5">ERC (incl. decoupling / I²C heuristics), DRC, manufacturing-DRC; rule areas and fab-rules.</li>
+        <li data-i18n="today.6">Auto-pour from net classes; multi-layer stackup; polygonal outlines, milled cutouts, NPTH holes.</li>
+        <li data-i18n="today.7">One-shot <code>pack</code> (JLCPCB / PCBWay / generic zip) + ODB++ <code>.tgz</code> from the UI.</li>
+        <li data-i18n="today.8">Headless <code>GET /screenshot</code> and <code>screenshot</code> script verb for agent verification.</li>
         <li data-i18n="today.9">Live SVG canvas with pan/zoom and click-to-inspect.</li>
       </ul>
     </div>
@@ -245,11 +254,11 @@ curl -s http://127.0.0.1:7878/script \
       <h3 data-i18n="status.next">What's next</h3>
       <ul>
         <li data-i18n="next.1">An embedded LCSC catalogue subset so the agent doesn't have to look up part numbers by hand.</li>
-        <li data-i18n="next.2">Heuristic ERC: "USB without ESD", "MCU without crystal load caps".</li>
-        <li data-i18n="next.3">3D / mechanical preview (component heights → STEP export).</li>
+        <li data-i18n="next.2">Richer heuristic ERC: "USB without ESD", "MCU without crystal load caps".</li>
+        <li data-i18n="next.3">ODB++ export as a first-class script verb (UI export already works).</li>
         <li data-i18n="next.4">Real-time cost estimation against the chosen fab's pricing tier.</li>
         <li data-i18n="next.5">More fab providers (OSHPark, Aisler, Eurocircuits).</li>
-        <li data-i18n="next.6">Frontend interactivity: click a net to highlight it, jump-to from the DRC violation list.</li>
+        <li data-i18n="next.6">Frontend: click a net to highlight it, jump-to from the DRC violation list.</li>
       </ul>
     </div>
   </div>
@@ -307,9 +316,9 @@ curl -s http://127.0.0.1:7878/script \
     "b1.h3": "Una superficie pequeña para el agente",
     "b1.p": "Un DSL de scripts orientado a líneas sobre una API HTTP local sin estado. El agente envía scripts multilínea; cada verbo es una llamada de herramienta. La referencia completa se imprime al arrancar y en <code>GET /</code> — sin SDK, sin negociación de protocolo, sin estado oculto.",
     "b2.h3": "Un router de verdad, no un envoltorio",
-    "b2.p": "A* de dos capas con rip-up-and-reroute, sesgo de congestión negociado y construcción multi-fuente estilo Steiner. Anchos de pista y separaciones por red respetados desde las declaraciones <code>NetClass</code>. Sin FreeRouting, sin <code>kicad-cli</code>.",
+    "b2.p": "Theta* / A* multicapa con rip-up-and-reroute, congestión negociada opcional, fanout de escape para fine-pitch y un post-paso orgánico. Motor topológico experimental disponible. Anchos y separaciones por red y por rule-area desde <code>NetClass</code>. Sin FreeRouting, sin <code>kicad-cli</code>.",
     "b3.h3": "Un placer de verdad también",
-    "b3.p": "Recocido simulado sobre HPWL más una penalización blanda de separación cuerpo-a-cuerpo más un proxy de congestión por bounding-box de pads rasterizado. El agente pasa la lista de referencias que pueden moverse; todo lo demás se queda donde lo puso el humano.",
+    "b3.p": "Placer en dos etapas: emplazamiento global electrostático y legalización por recocido simulado (HPWL + separación de cuerpos + congestión + cruces). Planificación de borde para conectores, módulos elevated sobre headers. El agente nombra qué refs pueden moverse; el resto se queda donde lo puso el humano.",
     "b4.h3": "Validación en cada paso",
     "b4.p": "El ERC detecta bugs de netlist (varios drivers, raíles de alimentación sin alimentar, condensadores de desacoplo que faltan). El DRC detecta bugs de geometría (separación, anillo anular, pista estrecha). El DRC de fabricación detecta lo que tu fábrica elegida rechazará antes de que lo subas.",
     "b5.h3": "Zip listo para fabricar en un verbo",
@@ -321,29 +330,29 @@ curl -s http://127.0.0.1:7878/script \
     "recipe.lead": "Lo que el agente podría enviar a <code>POST /script</code>. Cada línea es un verbo; cada verbo confirma en el estado del proyecto y emite un evento desde el que la UI se repinta. La pipeline completa — ERC, emplazamiento, enrutado, empaquetado de fabricación — ocurre en el servidor en milisegundos-a-segundos.",
 
     "install.h2": "Instalación y ejecución",
-    "install.p1": "Fragua es un workspace de Rust + un frontend TypeScript alojado en un shell Tauri 2. De momento compílalo desde el código — habrá binarios precompilados más adelante.",
-    "install.p2": "La ventana se abre y arranca una API HTTP local sin estado en <code>127.0.0.1:7878</code>. Apunta hacia ella cualquier agente que pueda hacer llamadas HTTP:",
+    "install.p1": "Fragua es un workspace de Rust + un frontend TypeScript en un shell Tauri 2. Hay binarios precompilados en GitHub Releases; o compílalo desde el código:",
+    "install.p2": "La ventana se abre y arranca una API HTTP local sin estado en <code>127.0.0.1:7878</code> (se puede cambiar con <code>FRAGUA_API_ADDR</code>). Apunta hacia ella cualquier agente que pueda hacer llamadas HTTP:",
     "install.p3": "Las respuestas son <code>text/plain</code>: resultados línea a línea, más un aviso de sesión sin guardar si el proyecto aún no está ligado a un fichero.",
 
     "status.h2": "Estado",
-    "status.lead": "Pre-1.0. Cada punto de abajo funciona en la <a href=\"https://github.com/mentasystems/fragua\">master</a> actual; la lista de «qué viene» es en lo que es más probable que trabajen los mantenedores, no un compromiso.",
+    "status.lead": "<strong>v1.1.x</strong>. Cada punto de abajo funciona en la <a href=\"https://github.com/mentasystems/fragua\">master</a> actual; la lista de «qué viene» es en lo que es más probable que trabajen los mantenedores, no un compromiso.",
     "status.today": "Hoy",
-    "today.1": "Esquemático con símbolos, pines (con roles eléctricos), redes y clases de red.",
-    "today.2": "Librería de footprints con fotos, datasheets, IDs de LCSC y MPNs.",
-    "today.3": "Auto-placer (SA sobre HPWL + penalización de separación + proxy de congestión).",
-    "today.4": "Auto-router (RR&amp;R + congestión negociada + A* multi-fuente estilo Steiner).",
-    "today.5": "ERC, DRC, DRC de fabricación; reglas por fábrica para JLCPCB / PCBWay / genérico.",
-    "today.6": "Auto-pour desde clases de red (GND en ambas capas en una sola declaración).",
-    "today.7": "Contornos de placa redondeados (renderer + inset del router + arcos Gerber).",
-    "today.8": "Verbo <code>pack</code> de un solo paso que produce un zip listo para subir.",
+    "today.1": "Esquemático con símbolos, pines (roles eléctricos), redes, clases de red y puertos multi-hoja.",
+    "today.2": "Librería de footprints con fotos, datasheets, IDs de LCSC, MPNs, edge-mount y cuerpos elevated.",
+    "today.3": "Auto-placer en dos etapas (ePlace global + legalización SA, edge-plan, anillo de desacoplo, compact).",
+    "today.4": "Auto-router (RR&amp;R + negociación opcional + fanout de escape fine-pitch + paso orgánico; motor topo experimental).",
+    "today.5": "ERC (incl. heurísticas de desacoplo / I²C), DRC, DRC de fabricación; rule areas y fab-rules.",
+    "today.6": "Auto-pour desde clases de red; stackup multicapa; contornos poligonales, cutouts fresados, agujeros NPTH.",
+    "today.7": "Verbo <code>pack</code> (zip JLCPCB / PCBWay / genérico) + ODB++ <code>.tgz</code> desde la UI.",
+    "today.8": "<code>GET /screenshot</code> y verbo <code>screenshot</code> headless para verificación del agente.",
     "today.9": "Lienzo SVG en vivo con pan/zoom y clic-para-inspeccionar.",
     "status.next": "Qué viene",
     "next.1": "Un subconjunto embebido del catálogo LCSC para que el agente no tenga que buscar part numbers a mano.",
-    "next.2": "ERC heurístico: «USB sin ESD», «MCU sin condensadores de carga de cristal».",
-    "next.3": "Vista previa 3D / mecánica (alturas de componentes → export STEP).",
+    "next.2": "ERC heurístico más rico: «USB sin ESD», «MCU sin condensadores de carga de cristal».",
+    "next.3": "Export ODB++ como verbo de script de primera clase (la UI ya exporta).",
     "next.4": "Estimación de coste en tiempo real contra el tramo de precios de la fábrica elegida.",
     "next.5": "Más proveedores de fabricación (OSHPark, Aisler, Eurocircuits).",
-    "next.6": "Interactividad en el frontend: clic en una red para resaltarla, salto desde la lista de violaciones de DRC.",
+    "next.6": "Frontend: clic en una red para resaltarla, salto desde la lista de violaciones de DRC.",
 
     "oss.h2": "Código abierto",
     "oss.p1": "Con licencia MIT. Consulta <a href=\"https://github.com/mentasystems/fragua/blob/master/CONTRIBUTING.md\">CONTRIBUTING.md</a> para ver qué entra en el alcance. Issues y PRs bienvenidos — especialmente añadir proveedores de fabricación, piezas de librería y arreglos de bugs de diseños reales.",

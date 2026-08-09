@@ -3,6 +3,7 @@
 [![CI](https://github.com/mentasystems/fragua/actions/workflows/ci.yml/badge.svg)](https://github.com/mentasystems/fragua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d6905b.svg)](LICENSE)
 [![Landing](https://img.shields.io/badge/landing-mentasystems.com%2Ffragua-d6905b)](https://mentasystems.com/fragua)
+[![Release](https://img.shields.io/github/v/release/mentasystems/fragua?color=d6905b)](https://github.com/mentasystems/fragua/releases/latest)
 
 AI-native PCB design tool. The agent does the work, the human watches and steers.
 
@@ -13,59 +14,41 @@ AI-native PCB design tool. The agent does the work, the human watches and steers
 
 ## Status
 
-End-to-end agent loop, schematic → board → fab-ready zip:
+**v1.1.x** — end-to-end agent loop, schematic → board → fab-ready zip (and ODB++ from the UI):
 
-- `pcb-core`: project model (schematic, board, library, pours), nm
-  fixed-point geometry, tokio broadcast event bus, JSON persistence
-  (`.fragua` files; legacy `.json` still loads).
+- `pcb-core`: project model (schematic, board, library, pours, rule areas,
+  stackup, cutouts, NPTH holes), nm fixed-point geometry, tokio broadcast
+  event bus, JSON persistence (`.fragua`; legacy `.json` still loads).
 - `pcb-script`: line-oriented agent DSL — `lib`, `sym`, `net`, `class`,
-  `palette`, `place`, `auto-place`, `edge-mount`, `elevated`, `route`, `compact`,
-  `erc`, `drc`, `auto-pour`, `pack`. The full reference is printed at
-  app launch and served at `GET /`.
-- `pcb-router`: two engines. Default: Theta* any-angle search on a
-  2-layer grid + rip-up-and-reroute + negotiated congestion +
-  Steiner-ish multi-source. Experimental (`route engine=topo`): a
-  TOPOLOGICAL engine — homotopy A* over a Delaunay dual with layers as
-  graph moves (vias appear where the topology needs them), rubber-band
-  geometric realisation, targeted rip-up negotiation, and an exact
-  clearance validator as the only committing authority. Both engines
-  finish with an organic post-pass (rubber-band string-pulling + arc
-  fillets, clearance-checked) — traces flow around parts TopoR-style
-  instead of cornering on grid axes. Honours per-net `NetClass` for
-  trace width / clearance.
-- `pcb-placer`: two stages. Electrostatic global placement (ePlace
-  adapted to PCBs: weighted-average wirelength gradient + spectral
-  Poisson density field, per-part trust region, 90° rotation probing,
-  body-aware edge planning for `edge_mounted` parts — including WHICH
-  side must face the outline via `edge-mount KEY top|right|bottom|left`)
-  followed by simulated-annealing legalisation against the hand-solder
-  gap floor, with a rasterised congestion proxy. Deterministic for a
-  fixed seed, global stage RNG-free.
-- `pcb-drc`: pad/trace clearance, drill, edge clearance, narrow trace,
-  routing efficiency, body-off-board and body-overlap on the
-  margin-inflated bodies (edge-side aware: a declared wire-entry /
-  plug side may overhang the outline, nothing else may; height aware:
-  `elevated KEY` marks a part socketed on pin headers, whose body may
-  shadow flat parts underneath — two elevated bodies still collide, and
-  the body must still fit on the board). Per-net class overrides
-  supported.
-- `pcb-erc`: floating pin/net, duplicate pin, orphan symbol, phantom
-  net; role-based: multiple drivers, unpowered power net, undriven
-  input. Heuristic: missing decoupling cap, missing I²C pull-up.
-- `pcb-fab`: `Provider { Jlcpcb, Pcbway, Generic }` + manufacturing-DRC
-  (min trace, drill, annular ring, board size) + per-provider BOM and
-  CPL formats + `pack(...)` that ships a single ready-to-upload `.zip`.
-- `pcb-gerber`: RS-274X writer (rounded outlines emit arcs), Excellon
-  drill files, BOM + pick-and-place CSV.
-- `pcb-render`: Board → SVG. Substrate (with rounded corners), copper,
-  silkscreen (Hershey strokes; auto-relocation when a label would
-  spill off the outline), DRC marker overlay.
-- `src-tauri` + `frontend`: Tauri 2 shell. Hosts a stateless local HTTP
-  API on `127.0.0.1:7878` (`POST /script`, `POST /save`, `GET /` for
-  the script reference). Frontend pans/zooms an SVG of the live state
-  and surfaces the activity log.
+  `palette`, `place`, `auto-place`, `edge-mount`, `edge-place`, `edge-plan`,
+  `elevated`, `route`, `compact`, `rule-area`, `fab-rules`, `erc`, `drc`,
+  `auto-pour`, `pack`, plus polygonal outlines / milled cutouts / mount holes.
+  Full reference at app launch and `GET /` / `GET /help`.
+- `pcb-router`: two engines. Default: Theta\* any-angle search on a multi-layer
+  grid + rip-up-and-reroute + optional PathFinder negotiation + Steiner-ish
+  multi-source, with fine-pitch escape-slot matching, reachability-proved
+  fanout, and an organic post-pass (string-pull + arc fillets). Experimental
+  (`route engine=topo`): topological homotopy A\* over a Delaunay dual.
+  Honours per-net `NetClass` and design-rule areas for width / clearance.
+- `pcb-placer`: two stages. Electrostatic global placement (ePlace-style) then
+  simulated-annealing legalisation (hand-solder gap floor + congestion proxy +
+  bundle crossings). Edge planning for edge-mounted parts, decoupling-ring
+  seating for passives, elevated-body awareness. Deterministic for a fixed seed.
+- `pcb-drc` / `pcb-erc`: geometric DRC (clearance, drill, edge, body-off-board,
+  elevated overlap, cutout/hole voids, castellated pads) and schematic ERC
+  (floating pins, drivers, power rails) plus heuristics (decoupling caps, I²C
+  pull-ups).
+- `pcb-fab` + `pcb-gerber` + `pcb-odb`: JLCPCB / PCBWay / Generic pack (Gerber +
+  Excellon + BOM/CPL zip) and ODB++ `.tgz` (UI export; industry interchange).
+- `pcb-render`: Board + schematic → SVG/PNG (substrate, copper, silk, DRC
+  markers; poly outlines and cutouts).
+- `pcb-router-tune`: GA / random search over router genes (cell, via cost,
+  clearance, rotations) — CLI + in-app Auto Routing.
+- `src-tauri` + `frontend`: Tauri 2 shell. Local HTTP API on `127.0.0.1:7878`
+  (override with `FRAGUA_API_ADDR`). Frontend pans/zooms the live SVG and
+  surfaces the activity log.
 
-`cargo test --workspace` is green.
+`cargo test --workspace` is green. Stress campaign notes: [`stress/`](stress/).
 
 ## Install
 
@@ -79,25 +62,33 @@ Drops the `fragua` binary in `/usr/local/bin` (or `~/.local/bin` if it
 can't write there). Windows users: grab `fragua-<ver>-windows-x64.zip`
 from the [releases page](https://github.com/mentasystems/fragua/releases/latest).
 
-Then just tell your AI to design the hardware using the `fragua` CLI —
-it launches the window, exposes the HTTP script API on
-`127.0.0.1:7878`, and the agent drives the rest.
+Then tell your AI to design the hardware with the `fragua` CLI — it launches
+the window, exposes the HTTP script API, and the agent drives the rest.
 
 ## Run it
+
+The launch subcommand is **`run`**. Bare `fragua` (or `fragua help`) prints
+the usage + full script reference and exits — so agents can discover the
+surface before starting the server.
 
 ```sh
 # Build the frontend bundle once (release build embeds it).
 npm --prefix frontend install
 npm --prefix frontend run build
 
-# Run the desktop app.
-cargo run --release --bin fragua
+# Launch empty in-memory project.
+cargo run --release --bin fragua -- run
 
-# …or open an existing project:
-cargo run --release --bin fragua /path/to/project.fragua
+# …or open an existing project (autosave bound to that path):
+cargo run --release --bin fragua -- run /path/to/project.fragua
+
+# Installed binary:
+fragua run
+fragua run /path/to/project.fragua
 ```
 
-The window opens and the local HTTP API starts on `127.0.0.1:7878`.
+The window opens and the local HTTP API starts on `127.0.0.1:7878`
+(override: `FRAGUA_API_ADDR`).
 
 ## Drive it from an agent
 
@@ -105,19 +96,34 @@ Stateless HTTP — every request is independent. From any tool that can
 make HTTP calls (Claude Code, GPT, a shell loop):
 
 ```sh
-# Discover the full action surface.
+# Discover the full action surface (usage + script reference).
 curl -s http://127.0.0.1:7878/
+# same: curl -s http://127.0.0.1:7878/help
+
+# Liveness.
+curl -s http://127.0.0.1:7878/health
 
 # Run a multi-line script.
 curl -s http://127.0.0.1:7878/script \
   -H 'content-type: application/json' \
   -d '{"script": "outline 80 30 radius=2\nstatus"}'
 
+# Headless PNG of the live board (or schematic).
+curl -s 'http://127.0.0.1:7878/screenshot?view=board&width=1600' -o board.png
+
 # Persist when launched without a file argument.
 curl -s http://127.0.0.1:7878/save \
   -H 'content-type: application/json' \
   -d '{"path": "/tmp/board.fragua"}'
 ```
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/`, `/help` | Usage + full script reference |
+| `GET` | `/health` | `ok` |
+| `GET` | `/screenshot` | PNG (`view=board\|schematic`, `width=`) |
+| `POST` | `/script` | Multi-line script body `{"script":"..."}` |
+| `POST` | `/save` | Atomic write + bind autosave `{"path":"..."}` |
 
 Replies are `text/plain`: per-line outcomes in the form
 `[L<n> ok|FAIL <tool>] <text>`, plus a warning when the session is
@@ -150,9 +156,10 @@ place R1 35 25
 
 auto-place R1 C1 seed=42
 route
+# optional once clean: compact allow_failed=0 route_seconds=90
 pack fab=jlcpcb out=/tmp
 ```
 
 The final line writes `/tmp/<project>-jlcpcb.zip` ready to upload.
-</content>
-</invoke>
+Recommended pipeline: ERC → power planes / classes → place → auto-place →
+route → (compact) → pack.

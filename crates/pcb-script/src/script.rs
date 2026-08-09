@@ -88,10 +88,14 @@ pub(crate) const VERBS: &[&str] = &[
     "rectify-photo",
     "body-rect",
     "edge-mount",
+    "edge-place",
     "elevated",
     "edge-plan",
     "find-lib",
     "list-lib",
+    "list-pending",
+    "confirm-lib",
+    "discard-pending",
     "delete-lib",
 ];
 
