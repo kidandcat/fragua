@@ -1118,9 +1118,12 @@ fn congestion_overflow(board: &Board, outline: pcb_core::Rect, res: u32) -> f64 
     let cell_w = w / f64::from(res);
     let cell_h = h / f64::from(res);
 
-    // Per-net pad-bbox in mm.
-    let mut net_bbox: HashMap<&str, [f64; 4]> = HashMap::new();
-    for fp in board.footprints.values() {
+    // Per-net pad-bbox in mm. BTreeMap so rasterisation order is stable
+    // across hosts (HashMap order is not); counts are commutative but the
+    // walk must stay deterministic for debug/diff of intermediate state.
+    let mut net_bbox: std::collections::BTreeMap<&str, [f64; 4]> =
+        std::collections::BTreeMap::new();
+    for fp in board.footprints_in_order() {
         for pad in &fp.pads {
             let Some(net) = pad.net.as_deref() else {
                 continue;
