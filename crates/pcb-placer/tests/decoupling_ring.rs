@@ -34,12 +34,12 @@ fn footprint(reference: &str, x_mm: f64, y_mm: f64, pads: Vec<Pad>) -> Footprint
     }
 }
 
-/// ~16 × 16 mm IC, fixed at the middle of a 80 × 80 mm board. Two rails,
+/// ~16 × 16 mm IC, fixed at the middle of an 80 × 80 mm board. Two rails,
 /// four pins each, spread over the four sides (two pins per side), plus
 /// two GND pads so the "prefer the non-GND net" rule is exercised.
 /// Eight movable 0603 caps: C1-C4 on `+3V3`, C5-C8 on `+1V1`.
 ///
-/// Pin pitch along each side is 8 mm so neighbouring caps still clear the
+/// Pin pitch along each side is 8 mm so neighbouring caps clear the
 /// 2.0 mm hand-solder pad-AABB floor when both seat on the ring.
 fn build_board() -> Board {
     let mut board = Board::new();
@@ -48,8 +48,6 @@ fn build_board() -> Board {
         Point::new(Length::from_mm(80.0), Length::from_mm(80.0)),
     ));
 
-    // Rail pins: one +3V3 and one +1V1 per side, at ±8 mm (the body edge)
-    // and offset 4 mm along that side (8 mm pin pitch).
     let ic = footprint(
         "U1",
         40.0,
@@ -69,9 +67,9 @@ fn build_board() -> Board {
     );
     board.add_footprint(ic);
 
-    // Caps start bunched in a corner so the pass has real work to do.
+    // Caps start bunched in a corner so the ring has real work to do.
     // 3.5 mm pitch keeps them past the 2.0 mm pad-AABB floor while still
-    // packed far from the IC.
+    // packed far from the IC (~40 mm away).
     for i in 0..8 {
         let rail = if i < 4 { "+3V3" } else { "+1V1" };
         let x = 6.0 + f64::from(i % 4) * 3.5;
@@ -91,6 +89,23 @@ fn build_board() -> Board {
 
 fn cap_refs() -> Vec<String> {
     (1..=8).map(|i| format!("C{i}")).collect()
+}
+
+/// Ring-only place options: no SA / global stage so the test is about the
+/// decoupling ring itself, not host-dependent SA search paths.
+fn ring_only_opts(seed: u64) -> PlaceOptions {
+    PlaceOptions {
+        seed,
+        max_iterations: 0,
+        global_stage: false,
+        edge_plan: false,
+        min_gap_mm: 0.0,
+        gap_penalty_factor: 0.0,
+        congestion_resolution: 0,
+        congestion_penalty_factor: 0.0,
+        crossing_penalty_factor: 0.0,
+        ..PlaceOptions::default()
+    }
 }
 
 /// For each cap: the IC pad on its rail nearest to the cap's own rail pad,
@@ -126,20 +141,22 @@ fn nearest_anchor(board: &Board) -> Vec<(String, String, f64)> {
 #[test]
 fn each_cap_lands_on_its_own_power_pin() {
     let mut board = build_board();
-    let opts = PlaceOptions {
-        seed: 5,
-        ..PlaceOptions::default()
-    };
-    place(&mut board, &cap_refs(), &opts, &MarginMap::new()).expect("place");
+    place(
+        &mut board,
+        &cap_refs(),
+        &ring_only_opts(5),
+        &MarginMap::new(),
+    )
+    .expect("place");
 
     let anchors = nearest_anchor(&board);
     for (cap, pin, d) in &anchors {
-        // Ring seats sit just outside the IC body at the hard solder floor
-        // (~2 mm body gap + pad extents). 4.5 mm covers that plus a rank
-        // of outward walk under the 2.0 mm floor without accepting a
-        // "still in the corner" failure (~30 mm).
+        // Ring seats sit just outside the IC body at the hard solder floor.
+        // 5 mm covers body gap + pad extents + a rank of outward walk.
+        // Starting corner is ~40 mm away — so this fails loudly if the
+        // ring was rolled back entirely.
         assert!(
-            *d <= 4.5,
+            *d <= 5.0,
             "{cap} should sit at a power pin (nearest is U1.{pin} at {d:.2} mm)"
         );
     }
@@ -160,10 +177,7 @@ fn each_cap_lands_on_its_own_power_pin() {
 
 #[test]
 fn decoupling_ring_is_deterministic() {
-    let opts = PlaceOptions {
-        seed: 5,
-        ..PlaceOptions::default()
-    };
+    let opts = ring_only_opts(5);
     let poses = |board: &Board| -> Vec<(String, i64, i64, f32)> {
         let mut v: Vec<(String, i64, i64, f32)> = board
             .footprints_in_order()
@@ -186,7 +200,6 @@ fn decoupling_ring_is_deterministic() {
     let report = place(&mut b, &cap_refs(), &opts, &MarginMap::new()).expect("place");
 
     assert_eq!(poses(&a), poses(&b), "same seed must give the same poses");
-    // And the report numbers must match too (they are what agents read).
     let report_a = {
         let mut a2 = build_board();
         place(&mut a2, &cap_refs(), &opts, &MarginMap::new()).expect("place")

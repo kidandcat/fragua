@@ -417,12 +417,15 @@ fn ring_place(
             {
                 continue;
             }
-            if probe_min_gap(board, &probe, margins) < hard_clearance {
+            // A few tens of µm above the hard floor so nm rounding in
+            // Length cannot accept a seat that layout_is_legal then
+            // rejects via first_overlapper (which expands pad AABBs by
+            // MIN_FOOTPRINT_GAP_MM/2) — that used to roll the WHOLE
+            // ring back to the SA layout.
+            const SEAT_SLACK_MM: f64 = 0.05;
+            if probe_min_gap(board, &probe, margins) < hard_clearance + SEAT_SLACK_MM {
                 continue;
             }
-            // Same pad-AABB floor place/move/rotate and layout_is_legal use.
-            // Without this, a seat can pass probe_min_gap yet trip
-            // first_overlapper, which then rolls the WHOLE ring back.
             if board.first_overlapper(&probe, Some(id)).is_some() {
                 continue;
             }
