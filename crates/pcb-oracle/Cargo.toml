@@ -1,0 +1,25 @@
+[package]
+name = "pcb-oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless JSON oracle dumps for Rust↔Go algorithmic parity."
+publish = false
+
+[[bin]]
+name = "pcb-oracle"
+path = "src/main.rs"
+
+[dependencies]
+pcb-core = { path = "../pcb-core" }
+pcb-drc = { path = "../pcb-drc" }
+pcb-erc = { path = "../pcb-erc" }
+pcb-gerber = { path = "../pcb-gerber" }
+pcb-router = { path = "../pcb-router" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[lints]
+workspace = true

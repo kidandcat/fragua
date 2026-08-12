@@ -28,14 +28,15 @@ type Options struct {
 // Cell pitch 0.25 mm matches the Rust router sweet spot; via cost prefers
 // single-layer detours on layer 0 before punching vias.
 func DefaultOptions() Options {
+	// Defaults match Rust pcb_router::RouteOptions::default.
 	return Options{
 		CellMM:        0.25,
-		ClearanceMM:   0.20,
+		ClearanceMM:   0.40,
 		TraceWidthMM:  0.15,
 		ViaDrillMM:    0.30,
 		ViaDiameterMM: 0.60,
 		ViaCost:       8.0,
-		MaxSeconds:    60,
+		MaxSeconds:    90,
 	}
 }
 

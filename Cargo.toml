@@ -12,6 +12,7 @@ members = [
     "crates/pcb-odb",
     "crates/pcb-render",
     "crates/pcb-script",
+    "crates/pcb-oracle",
     "src-tauri",
 ]
 
