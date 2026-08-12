@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Fragua</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0f1115; --panel:#171a21; --line:#2a3140; --text:#e8eaed; --muted:#9aa3b2; --accent:#d6905b; }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:grid; grid-template-rows:48px 1fr; }
+    header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+    header strong { color:var(--accent); letter-spacing:.04em; }
+    header .stat { color:var(--muted); font-family: ui-monospace, monospace; }
+    main { display:grid; grid-template-columns: 1fr 320px; min-height:0; }
+    #canvas-wrap { overflow:auto; background:#111; display:flex; align-items:center; justify-content:center; }
+    #canvas-wrap img, #canvas-wrap object { max-width:100%; max-height:100%; }
+    aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+    #log { flex:1; overflow:auto; padding:10px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted); white-space:pre-wrap; }
+    .row { display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); }
+    textarea { flex:1; min-height:72px; background:#0c0e12; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; font:12px ui-monospace,monospace; resize:vertical; }
+    button { background:var(--accent); color:#1a120c; border:0; border-radius:6px; padding:8px 12px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#2a3140; color:var(--text); }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>FRAGUA</strong>
+    <span class="stat" id="status">connecting…</span>
+    <span style="flex:1"></span>
+    <button class="secondary" id="btn-refresh">Refresh</button>
+    <button class="secondary" id="btn-drc">DRC</button>
+    <button class="secondary" id="btn-route">Route</button>
+  </header>
+  <main>
+    <div id="canvas-wrap"><object id="svg" type="image/svg+xml" data="/screenshot" width="100%" height="100%">board</object></div>
+    <aside>
+      <div id="log"></div>
+      <div class="row">
+        <textarea id="script" placeholder="outline 40 30&#10;status">status</textarea>
+        <button id="btn-run">Run</button>
+      </div>
+    </aside>
+  </main>
+  <script>
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const svg = document.getElementById('svg');
+    function log(line) {
+      logEl.textContent += line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    async function refresh() {
+      svg.data = '/screenshot?' + Date.now();
+      try {
+        const r = await fetch('/script', { method:'POST', headers:{'Content-Type':'text/plain'}, body:'status' });
+        const t = await r.text();
+        statusEl.textContent = t.trim().replace(/^ok status:\s*/, '');
+      } catch (e) { statusEl.textContent = String(e); }
+    }
+    async function runScript(body) {
+      const r = await fetch('/script', { method:'POST', headers:{'Content-Type':'text/plain'}, body });
+      const t = await r.text();
+      log(t.trim());
+      await refresh();
+    }
+    document.getElementById('btn-refresh').onclick = refresh;
+    document.getElementById('btn-drc').onclick = () => runScript('drc');
+    document.getElementById('btn-route').onclick = () => runScript('clear-route\nroute max_seconds=30');
+    document.getElementById('btn-run').onclick = () => runScript(document.getElementById('script').value);
+    // SSE
+    try {
+      const es = new EventSource('/events');
+      es.onmessage = (ev) => { log('event ' + ev.data); refresh(); };
+    } catch (_) {}
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

@@ -7,6 +7,23 @@
 
 AI-native PCB design tool. The agent does the work, the human watches and steers.
 
+## Go rewrite (primary going forward)
+
+The product is being rewritten in **Go** (see [`PORT_GO.md`](PORT_GO.md)): single static binary,
+local HTTP API, browser UI — no Tauri/WebKit host. Rust crates remain as a temporary oracle.
+
+```sh
+go test ./...
+go build -o fragua ./cmd/fragua
+./fragua run path/to/board.fragua
+# API http://127.0.0.1:7878  (FRAGUA_API_ADDR, FRAGUA_NO_BROWSER)
+```
+
+Cross-compile: `GOOS=linux GOARCH=amd64 go build -o fragua-linux ./cmd/fragua`.
+
+Packages: `cmd/fragua`, `internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}`.
+
+
 - 🌐 Landing: <https://mentasystems.com/fragua>
 - 🧭 [VISION.md](VISION.md) — what we are building and why
 - 🏗️ [ARCHITECTURE.md](ARCHITECTURE.md) — the stack and crate layout

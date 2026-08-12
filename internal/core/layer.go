@@ -1,0 +1,207 @@
+package core
+
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Layer is a copper layer index into the board stackup.
+// Index 0 = top, last = bottom. JSON accepts "Top"/"Bottom" or {"index":N}.
+type Layer struct {
+	Index uint8 `json:"index"`
+}
+
+// Common layers.
+var (
+	LayerTop    = Layer{Index: 0}
+	LayerBottom = Layer{Index: 1}
+)
+
+// IsTop reports index 0.
+func (l Layer) IsTop() bool { return l.Index == 0 }
+
+// LegacyName returns a short display name.
+func (l Layer) LegacyName() string {
+	switch l.Index {
+	case 0:
+		return "Top"
+	case 1:
+		return "Bottom"
+	default:
+		return fmt.Sprintf("In%d", l.Index-1)
+	}
+}
+
+// MarshalJSON emits "Top"/"Bottom" for outer layers (byte-stable with Rust).
+func (l Layer) MarshalJSON() ([]byte, error) {
+	switch l.Index {
+	case 0:
+		return []byte(`"Top"`), nil
+	case 1:
+		return []byte(`"Bottom"`), nil
+	default:
+		return json.Marshal(struct {
+			Index uint8 `json:"index"`
+		}{Index: l.Index})
+	}
+}
+
+// UnmarshalJSON accepts "Top"/"Bottom"/"F.Cu"/"B.Cu"/"InN", {index:N}, or bare int.
+func (l *Layer) UnmarshalJSON(b []byte) error {
+	// string form
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		switch strings.ToLower(s) {
+		case "top", "f.cu":
+			*l = LayerTop
+			return nil
+		case "bottom", "b.cu":
+			*l = LayerBottom
+			return nil
+		}
+		if strings.HasPrefix(s, "In") || strings.HasPrefix(s, "in") {
+			n, err := strconv.Atoi(s[2:])
+			if err != nil {
+				return fmt.Errorf("unknown layer %q", s)
+			}
+			*l = Layer{Index: uint8(n + 1)}
+			return nil
+		}
+		return fmt.Errorf("unknown layer %q", s)
+	}
+	// bare number
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		if n < 0 || n > 255 {
+			return fmt.Errorf("layer index out of range: %d", n)
+		}
+		*l = Layer{Index: uint8(n)}
+		return nil
+	}
+	// object
+	var obj struct {
+		Index *uint8 `json:"index"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	if obj.Index == nil {
+		return fmt.Errorf("layer missing index")
+	}
+	*l = Layer{Index: *obj.Index}
+	return nil
+}
+
+// SilkLayer is the silkscreen side.
+type SilkLayer string
+
+const (
+	SilkTop    SilkLayer = "Top"
+	SilkBottom SilkLayer = "Bottom"
+)
+
+// SilkAnchor is horizontal text anchor (SVG text-anchor semantics).
+type SilkAnchor string
+
+const (
+	SilkAnchorStart  SilkAnchor = "Start"
+	SilkAnchorMiddle SilkAnchor = "Middle"
+	SilkAnchorEnd    SilkAnchor = "End"
+)
+
+// LayerKind classifies a stackup entry.
+type LayerKind string
+
+const (
+	LayerKindSignal     LayerKind = "signal"
+	LayerKindPower      LayerKind = "power"
+	LayerKindMixed      LayerKind = "mixed"
+	LayerKindDielectric LayerKind = "dielectric"
+)
+
+// LayerSpec is one copper/dielectric entry in the stackup.
+type LayerSpec struct {
+	Name            string    `json:"name,omitempty"`
+	Kind            LayerKind `json:"kind,omitempty"`
+	ThicknessUM     float64   `json:"thickness_um,omitempty"`
+	CopperWeightOz  float64   `json:"copper_weight_oz,omitempty"`
+	DielectricEr    float64   `json:"dielectric_er,omitempty"`
+}
+
+// Dielectric describes a dielectric sheet.
+type Dielectric struct {
+	ThicknessMM float64 `json:"thickness_mm,omitempty"`
+	Er          float64 `json:"er,omitempty"`
+}
+
+// LayerStackup is the board layer stack.
+type LayerStackup struct {
+	Layers      []LayerSpec  `json:"layers,omitempty"`
+	Dielectrics []Dielectric `json:"dielectrics,omitempty"`
+}
+
+// Default2Layer returns a standard 2-layer FR-4 stackup.
+func Default2Layer() LayerStackup {
+	return LayerStackup{
+		Layers: []LayerSpec{
+			{Name: "F.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
+			{Name: "B.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
+		},
+		Dielectrics: []Dielectric{{ThicknessMM: 1.5, Er: 4.5}},
+	}
+}
+
+// CopperCount returns the number of copper layers (defaults to 2).
+func (s LayerStackup) CopperCount() int {
+	n := 0
+	for _, l := range s.Layers {
+		if l.Kind != LayerKindDielectric {
+			n++
+		}
+	}
+	if n == 0 {
+		return 2
+	}
+	return n
+}
+
+// DielectricThicknessMM returns the first dielectric thickness or 1.5.
+func (s LayerStackup) DielectricThicknessMM() float64 {
+	if len(s.Dielectrics) > 0 && s.Dielectrics[0].ThicknessMM > 0 {
+		return s.Dielectrics[0].ThicknessMM
+	}
+	return 1.5
+}
+
+// DielectricEr returns relative permittivity or 4.5.
+func (s LayerStackup) DielectricEr() float64 {
+	if len(s.Dielectrics) > 0 && s.Dielectrics[0].Er > 0 {
+		return s.Dielectrics[0].Er
+	}
+	return 4.5
+}
+
+// CopperThicknessMM returns approx thickness from first copper weight (1 oz ≈ 0.035 mm).
+func (s LayerStackup) CopperThicknessMM() float64 {
+	for _, l := range s.Layers {
+		if l.Kind != LayerKindDielectric {
+			oz := l.CopperWeightOz
+			if oz <= 0 {
+				oz = 1
+			}
+			return oz * 0.035
+		}
+	}
+	return 0.035
+}
+
+// BottomLayer returns the bottom copper layer handle.
+func (s LayerStackup) BottomLayer() Layer {
+	n := s.CopperCount()
+	if n < 2 {
+		return LayerBottom
+	}
+	return Layer{Index: uint8(n - 1)}
+}
