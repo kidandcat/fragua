@@ -251,10 +251,15 @@ func Route(board *core.Board, opts Options) Report {
 		}
 	}
 
-	// 5. Organic string-pull (default on). Safe: only accepts clear shortcuts.
+	// 5. Organic string-pull (default on). Roll back if it would make
+	// copper illegal under DRC min-clearance (0.20 mm), not just the
+	// router's 0.40 mm search clearance.
 	if opts.Organic && !pastDeadline() {
+		before := append([]core.Trace(nil), board.Traces...)
 		organicPass(board, opts)
-		// Refresh lengths from committed copper (string-pull shortens polylines).
+		if !copperClearanceLegal(board, 0.20) {
+			board.Traces = before
+		}
 		refreshReportLengths(board, &rep)
 	}
 
@@ -553,6 +558,81 @@ func hypotMM(a, b core.Point) float64 {
 	dx := float64(a.X-b.X) / 1e6
 	dy := float64(a.Y-b.Y) / 1e6
 	return math.Hypot(dx, dy)
+}
+
+// copperClearanceLegal reports whether every pair of different-net traces
+// on the same layer (and every trace vs foreign pad) keeps minClearanceMM.
+func copperClearanceLegal(board *core.Board, minClearanceMM float64) bool {
+	trs := board.Traces
+	for i := 0; i < len(trs); i++ {
+		for j := i + 1; j < len(trs); j++ {
+			a, b := trs[i], trs[j]
+			if a.Layer.Index != b.Layer.Index || a.Net == b.Net {
+				continue
+			}
+			gap := segSegDistMM(
+				[2]float64{a.Start.X.ToMM(), a.Start.Y.ToMM()},
+				[2]float64{a.End.X.ToMM(), a.End.Y.ToMM()},
+				[2]float64{b.Start.X.ToMM(), b.Start.Y.ToMM()},
+				[2]float64{b.End.X.ToMM(), b.End.Y.ToMM()},
+			) - a.Width.ToMM()/2 - b.Width.ToMM()/2
+			if gap+1e-6 < minClearanceMM {
+				return false
+			}
+		}
+	}
+	for _, tr := range trs {
+		half := tr.Width.ToMM() / 2
+		a := [2]float64{tr.Start.X.ToMM(), tr.Start.Y.ToMM()}
+		b := [2]float64{tr.End.X.ToMM(), tr.End.Y.ToMM()}
+		for _, fp := range footprintsStable(board) {
+			for k := range fp.Pads {
+				pad := &fp.Pads[k]
+				if pad.Net != nil && *pad.Net == tr.Net {
+					continue
+				}
+				if pad.Layer.Index != tr.Layer.Index && (pad.Drill == nil || *pad.Drill == 0) {
+					continue
+				}
+				aabb := core.PadWorldAABB(fp, pad)
+				d := segAABBDistMM(a, b, aabb)
+				if d-half+1e-6 < minClearanceMM {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func segSegDistMM(a0, a1, b0, b1 [2]float64) float64 {
+	if segsIntersect(p2(a0), p2(a1), p2(b0), p2(b1)) {
+		return 0
+	}
+	return math.Min(
+		math.Min(pointSegDist(p2(a0), p2(b0), p2(b1)), pointSegDist(p2(a1), p2(b0), p2(b1))),
+		math.Min(pointSegDist(p2(b0), p2(a0), p2(a1)), pointSegDist(p2(b1), p2(a0), p2(a1))),
+	)
+}
+
+func segAABBDistMM(a, b [2]float64, r core.Rect) float64 {
+	rx0, ry0 := r.Min.X.ToMM(), r.Min.Y.ToMM()
+	rx1, ry1 := r.Max.X.ToMM(), r.Max.Y.ToMM()
+	inside := func(p [2]float64) bool {
+		return p[0] >= rx0 && p[0] <= rx1 && p[1] >= ry0 && p[1] <= ry1
+	}
+	if inside(a) || inside(b) {
+		return 0
+	}
+	corners := [4][2]float64{{rx0, ry0}, {rx1, ry0}, {rx1, ry1}, {rx0, ry1}}
+	best := math.Inf(1)
+	for i := 0; i < 4; i++ {
+		d := segSegDistMM(a, b, corners[i], corners[(i+1)%4])
+		if d < best {
+			best = d
+		}
+	}
+	return best
 }
 
 // --- organic string-pull ---
@@ -1341,6 +1421,34 @@ func (g *grid) paint(cx, cy int, layer uint8, net string, radius int) {
 	}
 }
 
+// searchClearanceOK: no foreign copper within ceil((halfWidth+0.20)/cell)
+// of (cx,cy) — keeps DRC TraceTrace/TracePad at 0.20 mm.
+func (g *grid) searchClearanceOK(cx, cy int, layer uint8, net string) bool {
+	half := g.opts.TraceWidthMM / 2
+	need := half + 0.20
+	r := int(math.Ceil(need / g.cellMM))
+	if r < 1 {
+		r = 1
+	}
+	r2 := r * r
+	for dy := -r; dy <= r; dy++ {
+		for dx := -r; dx <= r; dx++ {
+			if dx*dx+dy*dy > r2 {
+				continue
+			}
+			x, y := cx+dx, cy+dy
+			if x < 0 || y < 0 || x >= g.w || y >= g.h {
+				continue
+			}
+			cur := g.blocked[layer][y*g.w+x]
+			if cur != "" && cur != net {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (g *grid) passable(cx, cy int, layer uint8, net string) bool {
 	if cx < 0 || cy < 0 || cx >= g.w || cy >= g.h {
 		return false
@@ -1437,6 +1545,11 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 					!g.passable(cur.k.x, cur.k.y+d[1], cur.k.l, net) {
 					continue
 				}
+			}
+			// Search-time clearance disk (Rust): refuse a step whose
+			// cell sits inside DRC min-clearance of foreign copper.
+			if !g.searchClearanceOK(nx, ny, cur.k.l, net) {
+				continue
 			}
 			nk := cellKey{nx, ny, cur.k.l}
 			step := 1.0

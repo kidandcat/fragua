@@ -114,9 +114,10 @@ internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}
 ### Route process (2026-08-12)
 
 - Single-pad nets and pour nets are `Outcome::Ok` with 0 copper (Rust `route_one_net`).
-- `tof-card.fragua --route` (30 s): **per_net 15/15 status match**, length 365 vs 364 mm.
-  Post-route DRC: `UnconnectedPad=6` matches (the 1-pad nets). Go still emits extra
-  TraceTrace/TracePad (grid stairs vs Theta* any-angle) — not a status mismatch.
+- `tof-card.fragua --route` (30 s): **per_net 15/15 status match**, length 365 vs 386 mm.
+  Post-route DRC errors **0=0**; `UnconnectedPad=6` matches. Go may add one
+  `RoutingInefficient` warning (grid detours vs Theta*). Search-time clearance disk
+  (half-width + 0.20 mm) keeps TraceTrace/TracePad at zero.
 - Two-resistor synthetic: status + post-DRC kinds **match**; copper hash not identical
   (7.90 mm any-angle vs 8.00 mm Manhattan).
 
