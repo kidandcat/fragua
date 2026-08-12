@@ -53,13 +53,22 @@ func TestRoutesTwoResistors(t *testing.T) {
 	}))
 
 	rep := Route(b, DefaultOptions())
-	if rep.TraceCount < 1 {
-		t.Fatalf("expected traces, report=%+v board traces=%d", rep, len(b.Traces))
+	if rep.Failed != 0 {
+		t.Fatalf("expected no failed nets, report=%s per=%+v", rep.Summary(), rep.PerNet)
+	}
+	if rep.TraceCount < 1 || len(b.Traces) < 1 {
+		t.Fatalf("expected segments>0, report=%+v board traces=%d", rep, len(b.Traces))
 	}
 	var outOK bool
 	for _, n := range rep.PerNet {
 		if n.Net == "OUT" && n.Outcome.Status == "ok" {
 			outOK = true
+			if n.Outcome.LengthMM <= 0 {
+				t.Fatalf("OUT length_mm should be >0: %+v", n.Outcome)
+			}
+			if n.Outcome.LowerBoundMM <= 0 {
+				t.Fatalf("OUT lower_bound_mm should be >0: %+v", n.Outcome)
+			}
 		}
 		if n.Outcome.Status == "failed" && n.Net == "OUT" {
 			t.Fatalf("OUT failed: %+v", n.Outcome)
@@ -68,6 +77,7 @@ func TestRoutesTwoResistors(t *testing.T) {
 	if !outOK {
 		t.Fatalf("OUT not ok: %+v", rep.PerNet)
 	}
+	t.Logf("two-resistor measure: %s traces=%d", rep.Summary(), len(b.Traces))
 }
 
 // Three pads on one net must grow a tree (Steiner/Prim multi-source), not
@@ -197,7 +207,7 @@ func TestMaxSecondsRespected(t *testing.T) {
 
 func TestParseOptions(t *testing.T) {
 	o := DefaultOptions()
-	o = ParseOptions(o, "max_seconds=1.5 cell=0.3 via_cost=10 clearance=0.15")
+	o = ParseOptions(o, "max_seconds=1.5 cell=0.3 via_cost=10 clearance=0.15 organic=false fine_escape=true")
 	if o.MaxSeconds != 1.5 {
 		t.Fatalf("max_seconds: got %v", o.MaxSeconds)
 	}
@@ -210,6 +220,73 @@ func TestParseOptions(t *testing.T) {
 	if o.ClearanceMM != 0.15 {
 		t.Fatalf("clearance: got %v", o.ClearanceMM)
 	}
+	if o.Organic {
+		t.Fatal("organic should be false")
+	}
+	if !o.FineEscape {
+		t.Fatal("fine_escape should be true")
+	}
+}
+
+func TestDefaultOptionsMatchRust(t *testing.T) {
+	o := DefaultOptions()
+	if o.CellMM != 0.25 || o.TraceWidthMM != 0.25 || o.ClearanceMM != 0.40 {
+		t.Fatalf("geometry defaults: %+v", o)
+	}
+	if o.ViaCost != 8 || o.ViaDrillMM != 0.30 || o.ViaDiameterMM != 0.60 {
+		t.Fatalf("via defaults: %+v", o)
+	}
+	if o.MaxSeconds != 90 {
+		t.Fatalf("max_seconds: got %v want 90", o.MaxSeconds)
+	}
+	if !o.Organic || o.FineEscape || o.Negotiate {
+		t.Fatalf("flags: organic=%v fine_escape=%v negotiate=%v", o.Organic, o.FineEscape, o.Negotiate)
+	}
+}
+
+// Organic string-pull should not increase length and must keep OUT connected.
+func TestOrganicShortensOrPreserves(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{
+		pad("1", -1, 0, "VCC"),
+		pad("2", 1, 0, "OUT"),
+	}))
+	b.AddFootprint(footprint("R2", 30, 10, []core.Pad{
+		pad("1", -1, 0, "OUT"),
+		pad("2", 1, 0, "GND"),
+	}))
+
+	opts := DefaultOptions()
+	opts.Organic = false
+	repOff := Route(b, opts)
+	lenOff := repOff.TotalLengthMM
+	segsOff := len(b.Traces)
+
+	b2 := core.NewBoard()
+	b2.Outline = &o
+	b2.AddFootprint(footprint("R1", 10, 10, []core.Pad{
+		pad("1", -1, 0, "VCC"),
+		pad("2", 1, 0, "OUT"),
+	}))
+	b2.AddFootprint(footprint("R2", 30, 10, []core.Pad{
+		pad("1", -1, 0, "OUT"),
+		pad("2", 1, 0, "GND"),
+	}))
+	optsOn := DefaultOptions()
+	repOn := Route(b2, optsOn)
+	if repOn.Failed > 0 {
+		t.Fatalf("organic run failed: %s", repOn.Summary())
+	}
+	if repOn.TotalLengthMM > lenOff*1.01+0.01 {
+		t.Fatalf("organic lengthened path: off=%.3f on=%.3f", lenOff, repOn.TotalLengthMM)
+	}
+	// Usually fewer grid segments after string-pull (or equal on trivial boards).
+	if len(b2.Traces) > segsOff*2 {
+		t.Fatalf("organic exploded segments: off=%d on=%d", segsOff, len(b2.Traces))
+	}
+	_ = repOff
 }
 
 func TestOwnNetPadsNotHardBlocked(t *testing.T) {

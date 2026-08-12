@@ -141,11 +141,13 @@ type Cutout struct {
 	Polygon []Point `json:"polygon"`
 }
 
-// MountHole is an NPTH hole.
+// MountHole is an NPTH hole (JSON matches Rust pcb_core::MountHole).
 type MountHole struct {
-	ID       ID     `json:"id"`
-	Position Point  `json:"position"`
-	Drill    Length `json:"drill"`
+	ID               ID      `json:"id"`
+	Center           Point   `json:"center"`
+	Diameter         Length  `json:"diameter"`
+	Label            string  `json:"label,omitempty"`
+	KeepoutDiameter  *Length `json:"keepout_diameter,omitempty"`
 }
 
 // Board is the physical layout model.
@@ -164,7 +166,9 @@ type Board struct {
 	RuleAreas           []RuleArea      `json:"rule_areas"`
 	FabRules            *FabRules       `json:"fab_rules,omitempty"`
 	Cutouts             []Cutout        `json:"cutouts,omitempty"`
-	Holes               []MountHole     `json:"holes,omitempty"`
+	// MountHoles is the Rust field name; also accept legacy "holes".
+	MountHoles []MountHole `json:"mount_holes,omitempty"`
+	Holes      []MountHole `json:"holes,omitempty"` // legacy alias
 	Stackup             *LayerStackup   `json:"stackup,omitempty"`
 }
 

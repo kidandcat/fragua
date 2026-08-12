@@ -1,4 +1,12 @@
 // Package router implements multi-layer grid autorouting (A* multi-source tree).
+//
+// Process approximates Rust pcb_router Grid engine defaults:
+//  1. Collect multi-pad nets, stable sort (fewest pads first, then name)
+//  2. Stamp foreign pads/traces/vias inflated by clearance (ceil quant guard)
+//  3. Multi-source tree growth (Prim-style from same-net copper)
+//  4. Light RR&R: retry failed nets after successes claim copper
+//  5. Organic string-pull post-pass when Options.Organic (default true)
+//  6. Per-net Ok/Failed with length_mm and lower_bound_mm
 package router
 
 import (
@@ -13,30 +21,35 @@ import (
 )
 
 // Options configures a route run.
+// Defaults match Rust pcb_router::RouteOptions::default.
 type Options struct {
-	CellMM        float64
-	ClearanceMM   float64
-	TraceWidthMM  float64
-	ViaDrillMM    float64
-	ViaDiameterMM float64
-	ViaCost       float64
-	MaxSeconds    float64
-	Negotiate     bool
+	CellMM          float64
+	ClearanceMM     float64
+	TraceWidthMM    float64
+	ViaDrillMM      float64
+	ViaDiameterMM   float64
+	ViaCost         float64
+	MaxSeconds      float64 // >0 wall budget; ≤0 = unlimited (Rust None / 0)
+	Organic         bool
+	OrganicFilletMM float64 // reserved; string-pull only in this pass
+	FineEscape      bool    // opt-in; ignored (not implemented)
+	Negotiate       bool    // opt-in; ignored (not implemented)
 }
 
-// DefaultOptions returns sensible 2-layer defaults.
-// Cell pitch 0.25 mm matches the Rust router sweet spot; via cost prefers
-// single-layer detours on layer 0 before punching vias.
+// DefaultOptions returns Rust-aligned 2-layer Grid defaults.
 func DefaultOptions() Options {
-	// Defaults match Rust pcb_router::RouteOptions::default.
 	return Options{
-		CellMM:        0.25,
-		ClearanceMM:   0.40,
-		TraceWidthMM:  0.15,
-		ViaDrillMM:    0.30,
-		ViaDiameterMM: 0.60,
-		ViaCost:       8.0,
-		MaxSeconds:    90,
+		CellMM:          0.25,
+		ClearanceMM:     0.40,
+		TraceWidthMM:    0.25,
+		ViaDrillMM:      0.30,
+		ViaDiameterMM:   0.60,
+		ViaCost:         8.0,
+		MaxSeconds:      90,
+		Organic:         true,
+		OrganicFilletMM: 3.0,
+		FineEscape:      false,
+		Negotiate:       false,
 	}
 }
 
@@ -48,6 +61,17 @@ func ParseOptions(o Options, args string) Options {
 			continue
 		}
 		k, v := kv[0], kv[1]
+		switch k {
+		case "organic":
+			o.Organic = v == "true" || v == "1"
+			continue
+		case "fine_escape":
+			o.FineEscape = v == "true" || v == "1"
+			continue
+		case "negotiate":
+			o.Negotiate = v == "true" || v == "1"
+			continue
+		}
 		var x float64
 		fmt.Sscanf(v, "%f", &x)
 		switch k {
@@ -61,8 +85,12 @@ func ParseOptions(o Options, args string) Options {
 			o.CellMM = x
 		case "via_cost":
 			o.ViaCost = x
-		case "negotiate":
-			o.Negotiate = v == "true" || v == "1"
+		case "via_drill":
+			o.ViaDrillMM = x
+		case "via_diameter":
+			o.ViaDiameterMM = x
+		case "organic_fillet_mm":
+			o.OrganicFilletMM = x
 		}
 	}
 	return o
@@ -117,19 +145,21 @@ type padLoc struct {
 // (appends to existing copper unless caller cleared first).
 func Route(board *core.Board, opts Options) Report {
 	start := time.Now()
-	maxSec := opts.MaxSeconds
-	if maxSec <= 0 {
-		maxSec = 60
+	// Rust: max_seconds None/0/non-finite → no deadline.
+	var deadline time.Time
+	if opts.MaxSeconds > 0 && !math.IsInf(opts.MaxSeconds, 0) && !math.IsNaN(opts.MaxSeconds) {
+		deadline = start.Add(time.Duration(opts.MaxSeconds * float64(time.Second)))
 	}
-	deadline := start.Add(time.Duration(maxSec * float64(time.Second)))
+	hasDeadline := !deadline.IsZero()
+	pastDeadline := func() bool {
+		return hasDeadline && time.Now().After(deadline)
+	}
 
 	rep := Report{Iterations: 1}
 
+	// 1. Collect multi-pad nets from footprints in stable order.
 	nets := map[string][]padLoc{}
-	for _, fp := range board.Footprints {
-		if fp == nil {
-			continue
-		}
+	for _, fp := range footprintsStable(board) {
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
 			if pad.Net == nil || *pad.Net == "" {
@@ -148,7 +178,7 @@ func Route(board *core.Board, opts Options) Report {
 	for n := range nets {
 		names = append(names, n)
 	}
-	// Fewest pads first (easier nets claim less board early).
+	// Fewest pads first (easier nets claim less board early), then name.
 	sort.Slice(names, func(i, j int) bool {
 		if len(nets[names[i]]) != len(nets[names[j]]) {
 			return len(nets[names[i]]) < len(nets[names[j]])
@@ -156,6 +186,7 @@ func Route(board *core.Board, opts Options) Report {
 		return names[i] < names[j]
 	})
 
+	// 2. Grid with foreign copper inflated by clearance.
 	g := newGrid(board, opts)
 
 	var failedNets []string
@@ -165,28 +196,60 @@ func Route(board *core.Board, opts Options) Report {
 			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{Status: "skipped", Reason: "single pad"}})
 			continue
 		}
-		if time.Now().After(deadline) {
+		if pastDeadline() {
 			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{Status: "failed", Reason: "budget"}})
 			rep.Failed++
 			failedNets = append(failedNets, name)
 			continue
 		}
 
-		out := routeNet(board, g, name, pads, opts, deadline)
+		out := routeNet(board, g, name, pads, opts, deadline, hasDeadline)
 		rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: out})
 		if out.Status == "ok" {
 			rep.TraceCount += out.TraceSegments
 			rep.TotalLengthMM += out.LengthMM
 			rep.TotalLowerBound += out.LowerBoundMM
-			// Count vias just laid for this net (board already mutated).
 		} else {
 			rep.Failed++
 			failedNets = append(failedNets, name)
 		}
 	}
 
-	// Count vias on board that belong to routed nets (laid this run + prior).
-	// Prefer delta from board after route: recount vias with nets we marked ok.
+	// 4. Light RR&R: retry failed nets once success copper is fixed.
+	if len(failedNets) > 0 && !pastDeadline() {
+		rep.Iterations = 2
+		for _, name := range failedNets {
+			if pastDeadline() {
+				break
+			}
+			pads := nets[name]
+			out := routeNet(board, g, name, pads, opts, deadline, hasDeadline)
+			for i := range rep.PerNet {
+				if rep.PerNet[i].Net != name {
+					continue
+				}
+				if out.Status == "ok" {
+					if rep.PerNet[i].Outcome.Status != "ok" {
+						rep.Failed--
+					}
+					rep.TraceCount += out.TraceSegments
+					rep.TotalLengthMM += out.LengthMM
+					rep.TotalLowerBound += out.LowerBoundMM
+				}
+				rep.PerNet[i].Outcome = out
+				break
+			}
+		}
+	}
+
+	// 5. Organic string-pull (default on). Safe: only accepts clear shortcuts.
+	if opts.Organic && !pastDeadline() {
+		organicPass(board, opts)
+		// Refresh lengths from committed copper (string-pull shortens polylines).
+		refreshReportLengths(board, &rep)
+	}
+
+	// Via count for nets that finished ok.
 	okNets := map[string]bool{}
 	for _, n := range rep.PerNet {
 		if n.Outcome.Status == "ok" {
@@ -200,67 +263,78 @@ func Route(board *core.Board, opts Options) Report {
 		}
 	}
 	rep.ViaCount = viaCount
-
-	// Light second pass: retry failed nets once copper from successes is fixed.
-	// Partial copper of failed nets is never committed, so corridors may open.
-	if len(failedNets) > 0 && time.Now().Before(deadline) {
-		rep.Iterations = 2
-		retry := make([]string, 0, len(failedNets))
-		for _, name := range failedNets {
-			if time.Now().After(deadline) {
-				break
-			}
-			pads := nets[name]
-			out := routeNet(board, g, name, pads, opts, deadline)
-			// Replace prior outcome for this net.
-			for i := range rep.PerNet {
-				if rep.PerNet[i].Net == name {
-					if out.Status == "ok" {
-						if rep.PerNet[i].Outcome.Status != "ok" {
-							rep.Failed--
-						}
-						rep.TraceCount += out.TraceSegments
-						rep.TotalLengthMM += out.LengthMM
-						rep.TotalLowerBound += out.LowerBoundMM
-					}
-					rep.PerNet[i].Outcome = out
-					break
-				}
-			}
-			if out.Status != "ok" {
-				retry = append(retry, name)
-			}
+	// TraceCount from board for accuracy after organic re-segmentation.
+	traceCount := 0
+	for _, tr := range board.Traces {
+		if okNets[tr.Net] {
+			traceCount++
 		}
-		_ = retry
-		// Refresh via count after retry.
-		viaCount = 0
-		okNets = map[string]bool{}
-		for _, n := range rep.PerNet {
-			if n.Outcome.Status == "ok" {
-				okNets[n.Net] = true
-			}
-		}
-		for _, v := range board.Vias {
-			if okNets[v.Net] {
-				viaCount++
-			}
-		}
-		rep.ViaCount = viaCount
 	}
+	rep.TraceCount = traceCount
 
 	rep.ElapsedMS = time.Since(start).Milliseconds()
 	return rep
 }
 
-func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time) Outcome {
-	// MST-style lower bound: sum of nearest-neighbour edges in pad order
-	// (pad 0 as seed, then greedy closest remaining).
+func refreshReportLengths(board *core.Board, rep *Report) {
+	byNet := map[string]float64{}
+	for _, tr := range board.Traces {
+		byNet[tr.Net] += hypotMM(tr.Start, tr.End)
+	}
+	rep.TotalLengthMM = 0
+	for i := range rep.PerNet {
+		n := rep.PerNet[i].Net
+		if rep.PerNet[i].Outcome.Status != "ok" {
+			continue
+		}
+		if L, ok := byNet[n]; ok {
+			rep.PerNet[i].Outcome.LengthMM = L
+			rep.PerNet[i].Outcome.TraceSegments = 0
+			for _, tr := range board.Traces {
+				if tr.Net == n {
+					rep.PerNet[i].Outcome.TraceSegments++
+				}
+			}
+			rep.TotalLengthMM += L
+		}
+	}
+}
+
+// footprintsStable returns footprints in deterministic order (FootprintOrder, then ref).
+func footprintsStable(board *core.Board) []*core.Footprint {
+	seen := map[string]bool{}
+	var out []*core.Footprint
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, fp)
+	}
+	// Leftovers not in order (legacy loads).
+	var extra []*core.Footprint
+	for id, fp := range board.Footprints {
+		if fp == nil || seen[id] {
+			continue
+		}
+		extra = append(extra, fp)
+	}
+	sort.Slice(extra, func(i, j int) bool {
+		if extra[i].Reference != extra[j].Reference {
+			return extra[i].Reference < extra[j].Reference
+		}
+		return extra[i].ID.String() < extra[j].ID.String()
+	})
+	return append(out, extra...)
+}
+
+func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	lb := lowerBoundMM(pads)
 
 	// Prim growth: connected set starts with pad 0; multi-source A* from
 	// all same-net tree cells to the nearest unconnected pad.
 	connected := map[int]bool{0: true}
-	// Grid sources for multi-source search (pad + path cells).
 	sources := []cellKey{}
 	if sx, sy, ok := g.worldToCell(pads[0].p.X, pads[0].p.Y); ok {
 		sources = append(sources, cellKey{sx, sy, pads[0].layer})
@@ -269,7 +343,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 		sources = append(sources, cellKey{sx, sy, pads[0].layer})
 	}
 
-	// Buffer board copper until the whole net succeeds.
 	type pendingTrace struct {
 		tr core.Trace
 	}
@@ -278,8 +351,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 	}
 	var pendT []pendingTrace
 	var pendV []pendingVia
-	// Grid paints to apply on success (and already applied for search
-	// continuity within this net — rolled back on failure).
 	type paintRec struct {
 		x, y int
 		l    uint8
@@ -304,7 +375,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 		}
 	}
 	rollback := func() {
-		// Restore in reverse so intermediate overwrites unwind correctly.
 		for i := len(paints) - 1; i >= 0; i-- {
 			p := paints[i]
 			g.blocked[p.l][p.y*g.w+p.x] = p.prev
@@ -319,13 +389,12 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 	reason := "unreachable"
 
 	for len(connected) < len(pads) {
-		if time.Now().After(deadline) {
+		if hasDeadline && time.Now().After(deadline) {
 			failed = true
 			reason = "budget"
 			break
 		}
-		// Pick unconnected pad closest (Manhattan) to any connected pad.
-		// Multi-source A* still branches off the whole tree, not just that pad.
+		// Nearest unconnected pad (Manhattan) to any connected pad.
 		bestJ := -1
 		bestD := math.MaxFloat64
 		for j := range pads {
@@ -348,12 +417,11 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 		}
 
 		goalLayer := pads[bestJ].layer
-		path, ok := g.aStarMulti(sources, pads[bestJ].p, goalLayer, name, deadline)
+		path, ok := g.aStarMulti(sources, pads[bestJ].p, goalLayer, name, deadline, hasDeadline)
 		if !ok {
 			failed = true
 			break
 		}
-		// Already on the tree (goal cell is a multi-source seed) — no copper to lay.
 		if len(path) < 2 {
 			if gx, gy, okc := g.worldToCell(pads[bestJ].p.X, pads[bestJ].p.Y); okc {
 				sources = append(sources, cellKey{gx, gy, goalLayer})
@@ -373,7 +441,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 					Diameter: core.FromMM(opts.ViaDiameterMM),
 					Net:      name,
 				}})
-				// Stamp via barrel as own-net copper on all layers (not hard obstacle).
 				cx, cy, okc := g.worldToCell(a.x, a.y)
 				if okc {
 					for L := uint8(0); L < uint8(g.layers); L++ {
@@ -391,7 +458,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 				Width: w,
 				Net:   name,
 			}})
-			// Stamp segment cells as own-net and add as future sources.
 			c0x, c0y, ok0 := g.worldToCell(a.x, a.y)
 			c1x, c1y, ok1 := g.worldToCell(b.x, b.y)
 			if ok0 || ok1 {
@@ -409,7 +475,6 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 			segs++
 			length += hypotMM(core.NewPoint(a.x, a.y), core.NewPoint(b.x, b.y))
 		}
-		// Goal pad joins the tree.
 		if gx, gy, ok := g.worldToCell(pads[bestJ].p.X, pads[bestJ].p.Y); ok {
 			sources = append(sources, cellKey{gx, gy, goalLayer})
 		}
@@ -421,12 +486,15 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 		return Outcome{Status: "failed", Reason: reason, LowerBoundMM: lb}
 	}
 
-	// Commit buffered copper to the board (grid already painted).
+	// Commit copper and expand grid halos to full clearance so later nets
+	// treat this net as a foreign obstacle (search paint was bare half-width).
 	for _, p := range pendT {
 		board.Traces = append(board.Traces, p.tr)
+		g.blockSegObstacle(p.tr.Start.X, p.tr.Start.Y, p.tr.End.X, p.tr.End.Y, p.tr.Layer.Index, p.tr.Net, p.tr.Width.ToMM()/2)
 	}
 	for _, p := range pendV {
 		board.Vias = append(board.Vias, p.v)
+		g.blockViaObstacle(p.v.Position.X, p.v.Position.Y, p.v.Net, p.v.Diameter.ToMM()/2)
 	}
 	return Outcome{
 		Status: "ok", TraceSegments: segs, LengthMM: length, LowerBoundMM: lb,
@@ -437,7 +505,6 @@ func lowerBoundMM(pads []padLoc) float64 {
 	if len(pads) < 2 {
 		return 0
 	}
-	// Greedy MST-ish: Prim on complete graph with Manhattan distances.
 	in := make([]bool, len(pads))
 	in[0] = true
 	total := 0.0
@@ -479,6 +546,508 @@ func hypotMM(a, b core.Point) float64 {
 	return math.Hypot(dx, dy)
 }
 
+// --- organic string-pull ---
+
+type p2 [2]float64
+
+func ptMM(p core.Point) p2 {
+	return p2{p.X.ToMM(), p.Y.ToMM()}
+}
+
+func dist2(a, b p2) float64 {
+	return math.Hypot(a[0]-b[0], a[1]-b[1])
+}
+
+// organicPass short-cuts polylines when clearance still holds (Rust organic string-pull core).
+func organicPass(board *core.Board, opts Options) {
+	if board.Outline == nil {
+		return
+	}
+	// Stable net list from copper insertion order.
+	var nets []string
+	seen := map[string]bool{}
+	for _, tr := range board.Traces {
+		if !seen[tr.Net] {
+			seen[tr.Net] = true
+			nets = append(nets, tr.Net)
+		}
+	}
+	sort.Strings(nets)
+
+	before := append([]core.Trace(nil), board.Traces...)
+	clr := opts.ClearanceMM
+
+	for _, net := range nets {
+		// Layers that actually have copper for this net.
+		layerSet := map[uint8]bool{}
+		for _, tr := range board.Traces {
+			if tr.Net == net {
+				layerSet[tr.Layer.Index] = true
+			}
+		}
+		var layers []uint8
+		for L := range layerSet {
+			layers = append(layers, L)
+		}
+		sort.Slice(layers, func(i, j int) bool { return layers[i] < layers[j] })
+
+		for _, layer := range layers {
+			obs := collectObstacles(board, net, layer, opts)
+			chains := extractChains(board, net, layer)
+			for _, ch := range chains {
+				if len(ch.pts) < 3 {
+					continue
+				}
+				hw := ch.width.ToMM() / 2
+				pts := make([]p2, len(ch.pts))
+				for i, p := range ch.pts {
+					pts[i] = ptMM(p)
+				}
+				// Pin vertices that land on same-net pads so string-pull
+				// cannot drop a tree spoke (e.g. L-junction at the middle pad).
+				pinned := padPinnedVertices(board, net, pts)
+				pulled := stringPullPinned(pts, pinned, obs, hw, clr)
+				if len(pulled) >= 2 && polylineClear(pulled, obs, hw, clr) {
+					replaceChain(board, net, layer, ch, pulled)
+				}
+			}
+		}
+	}
+
+	// Final legality sweep: roll back whole pass if any chain collides.
+	for _, net := range nets {
+		layerSet := map[uint8]bool{}
+		for _, tr := range board.Traces {
+			if tr.Net == net {
+				layerSet[tr.Layer.Index] = true
+			}
+		}
+		for layer := range layerSet {
+			obs := collectObstacles(board, net, layer, opts)
+			for _, ch := range extractChains(board, net, layer) {
+				pts := make([]p2, len(ch.pts))
+				for i, p := range ch.pts {
+					pts[i] = ptMM(p)
+				}
+				hw := ch.width.ToMM() / 2
+				if !polylineClear(pts, obs, hw, clr) {
+					board.Traces = before
+					return
+				}
+			}
+		}
+	}
+}
+
+type obstacle struct {
+	// kind: rect (pad), capsule (trace), circle (via)
+	kind   int // 0 rect, 1 capsule, 2 circle
+	min    p2
+	max    p2
+	a, b   p2
+	halfW  float64
+	c      p2
+	r      float64
+	clrMM  float64
+}
+
+type obstacleSet struct {
+	items   []obstacle
+	outline core.Rect
+	edgeMM  float64
+}
+
+func collectObstacles(board *core.Board, net string, layer uint8, opts Options) *obstacleSet {
+	os := &obstacleSet{
+		outline: *board.Outline,
+		edgeMM:  0.3,
+	}
+	clr := opts.ClearanceMM
+	for _, fp := range footprintsStable(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net != nil && *pad.Net == net {
+				continue
+			}
+			// SMD only on its layer; through-hole on all.
+			if pad.Drill == nil || *pad.Drill <= 0 {
+				if pad.Layer.Index != layer {
+					continue
+				}
+			}
+			c := core.PadWorldCenter(fp, pad)
+			cm := ptMM(c)
+			hw := pad.Size[0].ToMM() / 2
+			hh := pad.Size[1].ToMM() / 2
+			padClr := clr
+			os.items = append(os.items, obstacle{
+				kind: 0,
+				min:  p2{cm[0] - hw, cm[1] - hh},
+				max:  p2{cm[0] + hw, cm[1] + hh},
+				clrMM: padClr,
+			})
+		}
+	}
+	for _, tr := range board.Traces {
+		if tr.Net == net || tr.Layer.Index != layer {
+			continue
+		}
+		os.items = append(os.items, obstacle{
+			kind:  1,
+			a:     ptMM(tr.Start),
+			b:     ptMM(tr.End),
+			halfW: tr.Width.ToMM() / 2,
+			clrMM: clr,
+		})
+	}
+	for _, v := range board.Vias {
+		if v.Net == net {
+			continue
+		}
+		os.items = append(os.items, obstacle{
+			kind:  2,
+			c:     ptMM(v.Position),
+			r:     v.Diameter.ToMM() / 2,
+			clrMM: clr,
+		})
+	}
+	for _, k := range board.Keepouts {
+		if k.Rect == nil {
+			continue
+		}
+		// Place-only keepouts do not block copper (match grid stamp).
+		if k.NoPlace && !k.NoCopper {
+			continue
+		}
+		os.items = append(os.items, obstacle{
+			kind:  0,
+			min:   ptMM(k.Rect.Min),
+			max:   ptMM(k.Rect.Max),
+			clrMM: 0,
+		})
+	}
+	return os
+}
+
+func pointSegDist(p, a, b p2) float64 {
+	ab0, ab1 := b[0]-a[0], b[1]-a[1]
+	len2 := ab0*ab0 + ab1*ab1
+	if len2 <= 1e-18 {
+		return dist2(p, a)
+	}
+	t := ((p[0]-a[0])*ab0 + (p[1]-a[1])*ab1) / len2
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return dist2(p, p2{a[0] + t*ab0, a[1] + t*ab1})
+}
+
+func segsIntersect(a, b, c, d p2) bool {
+	orient := func(p, q, r p2) float64 {
+		return (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])
+	}
+	o1, o2 := orient(a, b, c), orient(a, b, d)
+	o3, o4 := orient(c, d, a), orient(c, d, b)
+	return ((o1 > 0) != (o2 > 0)) && ((o3 > 0) != (o4 > 0))
+}
+
+func segSegDist(a, b, c, d p2) float64 {
+	if segsIntersect(a, b, c, d) {
+		return 0
+	}
+	return math.Min(
+		math.Min(pointSegDist(a, c, d), pointSegDist(b, c, d)),
+		math.Min(pointSegDist(c, a, b), pointSegDist(d, a, b)),
+	)
+}
+
+func segRectDist(a, b, min, max p2) float64 {
+	inside := func(p p2) bool {
+		return p[0] >= min[0] && p[0] <= max[0] && p[1] >= min[1] && p[1] <= max[1]
+	}
+	if inside(a) || inside(b) {
+		return 0
+	}
+	corners := [4]p2{
+		{min[0], min[1]}, {max[0], min[1]}, {max[0], max[1]}, {min[0], max[1]},
+	}
+	best := math.Inf(1)
+	for i := 0; i < 4; i++ {
+		d := segSegDist(a, b, corners[i], corners[(i+1)%4])
+		if d < best {
+			best = d
+		}
+		if best == 0 {
+			return 0
+		}
+	}
+	return best
+}
+
+func (os *obstacleSet) approachClear(a, b p2, hw, clr float64) bool {
+	// Outline band: centreline must stay inside outline shrunk by hw+edge.
+	edge := hw + os.edgeMM
+	omin := p2{os.outline.Min.X.ToMM() + edge, os.outline.Min.Y.ToMM() + edge}
+	omax := p2{os.outline.Max.X.ToMM() - edge, os.outline.Max.Y.ToMM() - edge}
+	if omax[0] > omin[0] && omax[1] > omin[1] {
+		// Both endpoints and a few samples must stay inside.
+		for _, t := range []float64{0, 0.5, 1} {
+			p := p2{a[0] + t*(b[0]-a[0]), a[1] + t*(b[1]-a[1])}
+			if p[0] < omin[0] || p[0] > omax[0] || p[1] < omin[1] || p[1] > omax[1] {
+				return false
+			}
+		}
+	}
+	const eps = 1e-4
+	for _, ob := range os.items {
+		need := hw + math.Max(clr, ob.clrMM)
+		var d float64
+		switch ob.kind {
+		case 0: // rect pad / keepout
+			d = segRectDist(a, b, ob.min, ob.max)
+		case 1: // foreign trace capsule
+			d = segSegDist(a, b, ob.a, ob.b) - ob.halfW
+			if d < 0 {
+				d = 0
+			}
+		case 2: // via
+			d = pointSegDist(ob.c, a, b) - ob.r
+			if d < 0 {
+				d = 0
+			}
+		}
+		if d+eps < need {
+			return false
+		}
+	}
+	return true
+}
+
+func polylineClear(pts []p2, obs *obstacleSet, hw, clr float64) bool {
+	for i := 0; i+1 < len(pts); i++ {
+		if !obs.approachClear(pts[i], pts[i+1], hw, clr) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringPull(pts []p2, obs *obstacleSet, hw, clr float64) []p2 {
+	return stringPullPinned(pts, nil, obs, hw, clr)
+}
+
+func padPinnedVertices(board *core.Board, net string, pts []p2) []bool {
+	pin := make([]bool, len(pts))
+	if len(pts) == 0 {
+		return pin
+	}
+	const tol = 0.40 // mm — ~one coarse cell; pad centre vs grid vertex
+	for _, fp := range footprintsStable(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net != net {
+				continue
+			}
+			c := ptMM(core.PadWorldCenter(fp, pad))
+			best, bestD := 0, math.Inf(1)
+			for j, p := range pts {
+				d := dist2(c, p)
+				if d < bestD {
+					best, bestD = j, d
+				}
+			}
+			if bestD <= tol {
+				pin[best] = true
+			}
+		}
+	}
+	if len(pin) > 0 {
+		pin[0] = true
+		pin[len(pin)-1] = true
+	}
+	return pin
+}
+
+func stringPullPinned(pts []p2, pinned []bool, obs *obstacleSet, hw, clr float64) []p2 {
+	if len(pts) <= 2 {
+		return append([]p2(nil), pts...)
+	}
+	out := make([]p2, 0, len(pts))
+	i := 0
+	out = append(out, pts[0])
+	for i+1 < len(pts) {
+		j := i + 1
+		// Never jump over a pinned pad vertex.
+		limit := len(pts) - 1
+		if len(pinned) == len(pts) {
+			for k := i + 1; k < len(pts)-1; k++ {
+				if pinned[k] {
+					limit = k
+					break
+				}
+			}
+		}
+		for cand := limit; cand >= i+2; cand-- {
+			if obs.approachClear(pts[i], pts[cand], hw, clr) {
+				j = cand
+				break
+			}
+		}
+		out = append(out, pts[j])
+		i = j
+	}
+	return out
+}
+
+type chain struct {
+	pts   []core.Point
+	width core.Length
+	// original segment indices into board.Traces (for replace)
+	segIDs []core.ID
+}
+
+func ptKey(p core.Point) [2]int64 { return [2]int64{int64(p.X), int64(p.Y)} }
+
+func extractChains(board *core.Board, net string, layer uint8) []chain {
+	type segRef struct {
+		idx int
+		tr  core.Trace
+	}
+	var segs []segRef
+	for i, tr := range board.Traces {
+		if tr.Net == net && tr.Layer.Index == layer {
+			segs = append(segs, segRef{i, tr})
+		}
+	}
+	if len(segs) == 0 {
+		return nil
+	}
+	adj := map[[2]int64][]int{}
+	for i, s := range segs {
+		adj[ptKey(s.tr.Start)] = append(adj[ptKey(s.tr.Start)], i)
+		adj[ptKey(s.tr.End)] = append(adj[ptKey(s.tr.End)], i)
+	}
+	hard := map[[2]int64]bool{}
+	for _, v := range board.Vias {
+		if v.Net == net {
+			hard[ptKey(v.Position)] = true
+		}
+	}
+	for _, fp := range footprintsStable(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net != nil && *pad.Net == net {
+				hard[ptKey(core.PadWorldCenter(fp, pad))] = true
+			}
+		}
+	}
+	isAnchor := func(k [2]int64) bool {
+		if hard[k] {
+			return true
+		}
+		ss := adj[k]
+		if len(ss) != 2 {
+			return true
+		}
+		return segs[ss[0]].tr.Width != segs[ss[1]].tr.Width
+	}
+
+	used := make([]bool, len(segs))
+	var chains []chain
+	var anchors [][2]int64
+	for k := range adj {
+		if isAnchor(k) {
+			anchors = append(anchors, k)
+		}
+	}
+	sort.Slice(anchors, func(i, j int) bool {
+		if anchors[i][0] != anchors[j][0] {
+			return anchors[i][0] < anchors[j][0]
+		}
+		return anchors[i][1] < anchors[j][1]
+	})
+
+	for _, startKey := range anchors {
+		for _, first := range adj[startKey] {
+			if used[first] {
+				continue
+			}
+			pts := []core.Point{}
+			ids := []core.ID{}
+			curKey := startKey
+			curSeg := first
+			// start point
+			t0 := segs[curSeg].tr
+			if ptKey(t0.Start) == startKey {
+				pts = append(pts, t0.Start)
+			} else {
+				pts = append(pts, t0.End)
+			}
+			for {
+				used[curSeg] = true
+				t := segs[curSeg].tr
+				ids = append(ids, t.ID)
+				var nxt [2]int64
+				var nxtPt core.Point
+				if ptKey(t.Start) == curKey {
+					nxt = ptKey(t.End)
+					nxtPt = t.End
+				} else {
+					nxt = ptKey(t.Start)
+					nxtPt = t.Start
+				}
+				pts = append(pts, nxtPt)
+				if isAnchor(nxt) {
+					break
+				}
+				cands := adj[nxt]
+				nextSeg := -1
+				for _, s := range cands {
+					if s != curSeg && !used[s] {
+						nextSeg = s
+						break
+					}
+				}
+				if nextSeg < 0 {
+					break
+				}
+				curKey = nxt
+				curSeg = nextSeg
+			}
+			if len(pts) >= 2 {
+				chains = append(chains, chain{pts: pts, width: segs[first].tr.Width, segIDs: ids})
+			}
+		}
+	}
+	return chains
+}
+
+func replaceChain(board *core.Board, net string, layer uint8, ch chain, pts []p2) {
+	drop := map[core.ID]bool{}
+	for _, id := range ch.segIDs {
+		drop[id] = true
+	}
+	var kept []core.Trace
+	for _, tr := range board.Traces {
+		if !drop[tr.ID] {
+			kept = append(kept, tr)
+		}
+	}
+	for i := 0; i+1 < len(pts); i++ {
+		kept = append(kept, core.Trace{
+			ID:    core.NewID(),
+			Layer: core.Layer{Index: layer},
+			Start: core.NewPoint(core.FromMM(pts[i][0]), core.FromMM(pts[i][1])),
+			End:   core.NewPoint(core.FromMM(pts[i+1][0]), core.FromMM(pts[i+1][1])),
+			Width: ch.width,
+			Net:   net,
+		})
+	}
+	board.Traces = kept
+}
+
 // --- grid A* ---
 
 type gpos struct {
@@ -498,8 +1067,7 @@ type grid struct {
 	w, h             int
 	layers           int
 	// blocked[layer][y*w+x] = net name occupying, "" free, "*" hard obstacle.
-	// Own-net pads/traces store the net name so the same net may re-enter
-	// (critical for multi-pad tree growth and vias).
+	// Own-net pads/traces store the net name so the same net may re-enter.
 	blocked [][]string
 	opts    Options
 	board   *core.Board
@@ -530,7 +1098,6 @@ func newGrid(board *core.Board, opts Options) *grid {
 	}
 	widthMM := float64(maxX-minX) / 1e6
 	heightMM := float64(maxY-minY) / 1e6
-	// Adaptive coarsening so large boards stay searchable.
 	if widthMM/cellMM > maxGridDim {
 		cellMM = widthMM / maxGridDim
 	}
@@ -565,28 +1132,27 @@ func newGrid(board *core.Board, opts Options) *grid {
 		g.blocked[L] = make([]string, gw*gh)
 	}
 
-	// Stamp copper keepouts as hard obstacles on all layers.
+	// Hard keepouts (no-copper).
 	for _, k := range board.Keepouts {
 		if k.Rect == nil {
 			continue
 		}
-		// Place-only keepouts do not block copper.
 		if k.NoPlace && !k.NoCopper {
 			continue
 		}
 		g.stampRectObstacle(*k.Rect)
 	}
 
-	// Stamp pads: own-net cells are labelled with the net (walkable for that
-	// net only). No-net pads are hard obstacles ("*").
+	// Clearance inflation in cells. ceil() is the quantization guard: when
+	// clearance is not an exact multiple of cell pitch, we round up so
+	// nm→cell snap never under-clears (0.40/0.25 → 2-cell halo, Rust default).
 	clearanceCells := int(math.Ceil(opts.ClearanceMM / cellMM))
 	if clearanceCells < 1 {
 		clearanceCells = 1
 	}
-	for _, fp := range board.Footprints {
-		if fp == nil {
-			continue
-		}
+
+	// Pads: own-net walkable; foreign / no-net blocked. Inflated by clearance.
+	for _, fp := range footprintsStable(board) {
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
 			net := ""
@@ -600,8 +1166,6 @@ func newGrid(board *core.Board, opts Options) *grid {
 			}
 			pw := int(pad.Size[0]/cell)/2 + clearanceCells
 			ph := int(pad.Size[1]/cell)/2 + clearanceCells
-			// Through-hole (drill set): copper on all layers.
-			// SMD: pad layer only (default top).
 			layersToStamp := []uint8{pad.Layer.Index}
 			if pad.Drill != nil && *pad.Drill > 0 {
 				layersToStamp = make([]uint8, layers)
@@ -625,7 +1189,6 @@ func newGrid(board *core.Board, opts Options) *grid {
 						}
 						idx := y*g.w + x
 						cur := g.blocked[layer][idx]
-						// Hard obstacles stick; otherwise first copper wins.
 						if cur == "*" {
 							continue
 						}
@@ -634,29 +1197,35 @@ func newGrid(board *core.Board, opts Options) *grid {
 						} else if cur != label && label == "*" {
 							g.blocked[layer][idx] = "*"
 						}
-						// Foreign nets: leave the earlier claim (pad vs pad).
 					}
 				}
 			}
 		}
 	}
-	// Existing board copper (prior routes).
+	// Existing board copper: foreign obstacles use full clearance inflation.
 	for _, tr := range board.Traces {
-		g.blockSeg(tr.Start.X, tr.Start.Y, tr.End.X, tr.End.Y, tr.Layer.Index, tr.Net)
+		g.blockSegObstacle(tr.Start.X, tr.Start.Y, tr.End.X, tr.End.Y, tr.Layer.Index, tr.Net, tr.Width.ToMM()/2)
 	}
 	for _, v := range board.Vias {
-		// Via copper belongs to its net on every layer — not a hard wall.
-		g.blockViaNet(v.Position.X, v.Position.Y, v.Net)
+		g.blockViaObstacle(v.Position.X, v.Position.Y, v.Net, v.Diameter.ToMM()/2)
 	}
 	return g
 }
 
 func (g *grid) copperRadius() int {
-	// Bare copper half-width in cells (clearance enforced via pad halos +
-	// neighbour walkability; keep stamp tight so own-net tree cells stay dense).
+	// Bare copper half-width in cells (own-net tree paint).
 	r := int(math.Ceil((g.opts.TraceWidthMM / 2) / g.cellMM))
 	if r < 0 {
 		r = 0
+	}
+	return r
+}
+
+// obstacleRadius: half-width + clearance, rounded up (quantization guard).
+func (g *grid) obstacleRadius(halfWidthMM float64) int {
+	r := int(math.Ceil((halfWidthMM + g.opts.ClearanceMM) / g.cellMM))
+	if r < 1 {
+		r = 1
 	}
 	return r
 }
@@ -665,7 +1234,6 @@ func (g *grid) stampRectObstacle(r core.Rect) {
 	c0x, c0y, ok0 := g.worldToCell(r.Min.X, r.Min.Y)
 	c1x, c1y, ok1 := g.worldToCell(r.Max.X, r.Max.Y)
 	if !ok0 && !ok1 {
-		// Clamp corners into grid.
 		c0x, c0y = clampCell(core.NewPoint(r.Min.X, r.Min.Y), g)
 		c1x, c1y = clampCell(core.NewPoint(r.Max.X, r.Max.Y), g)
 	} else {
@@ -708,7 +1276,7 @@ func (g *grid) cellToWorld(cx, cy int) (core.Length, core.Length) {
 		g.originY + core.Length(cy)*g.cell + g.cell/2
 }
 
-func (g *grid) blockSeg(x0, y0, x1, y1 core.Length, layer uint8, net string) {
+func (g *grid) blockSegObstacle(x0, y0, x1, y1 core.Length, layer uint8, net string, halfWMM float64) {
 	if int(layer) >= g.layers {
 		layer = 0
 	}
@@ -723,13 +1291,13 @@ func (g *grid) blockSeg(x0, y0, x1, y1 core.Length, layer uint8, net string) {
 	if !ok1 {
 		c1x, c1y = c0x, c0y
 	}
-	r := g.copperRadius()
+	r := g.obstacleRadius(halfWMM)
 	for _, c := range bresenham(c0x, c0y, c1x, c1y) {
 		g.paint(c[0], c[1], layer, net, r)
 	}
 }
 
-func (g *grid) blockViaNet(x, y core.Length, net string) {
+func (g *grid) blockViaObstacle(x, y core.Length, net string, halfWMM float64) {
 	if net == "" {
 		net = "*"
 	}
@@ -737,10 +1305,7 @@ func (g *grid) blockViaNet(x, y core.Length, net string) {
 	if !ok {
 		return
 	}
-	r := g.copperRadius()
-	if r < 1 {
-		r = 1
-	}
+	r := g.obstacleRadius(halfWMM)
 	for L := uint8(0); L < uint8(g.layers); L++ {
 		g.paint(cx, cy, L, net, r)
 	}
@@ -763,7 +1328,6 @@ func (g *grid) paint(cx, cy int, layer uint8, net string, radius int) {
 			} else if net == "*" {
 				g.blocked[layer][idx] = "*"
 			}
-			// Foreign net copper left in place.
 		}
 	}
 }
@@ -776,14 +1340,11 @@ func (g *grid) passable(cx, cy int, layer uint8, net string) bool {
 		return false
 	}
 	cur := g.blocked[layer][cy*g.w+cx]
-	// Free or same-net copper (pads, traces, vias) — never hard obstacles.
 	return cur == "" || cur == net
 }
 
-// aStarMulti is multi-source A*: every source cell starts at g=0 so later
-// spokes branch off the nearest point of the existing same-net tree.
-// Prefers layer 0 (extra cost for non-zero layers); vias cost ViaCost.
-func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net string, deadline time.Time) ([]gpos, bool) {
+// aStarMulti: multi-source A*; prefers layer 0; vias cost ViaCost.
+func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net string, deadline time.Time, hasDeadline bool) ([]gpos, bool) {
 	tx, ty, ok2 := g.worldToCell(to.X, to.Y)
 	if !ok2 {
 		tx, ty = clampCell(to, g)
@@ -800,9 +1361,8 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 	closed := map[cellKey]bool{}
 
 	if len(sources) == 0 {
-		sources = []cellKey{{tx, ty, 0}} // degenerate
+		sources = []cellKey{{tx, ty, 0}}
 	}
-	// Dedup sources.
 	seenSrc := map[cellKey]bool{}
 	for _, s := range sources {
 		if int(s.l) >= g.layers {
@@ -812,8 +1372,6 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			continue
 		}
 		if !g.passable(s.x, s.y, s.l, net) {
-			// Force-allow source even if something odd; own pad should pass.
-			// If truly blocked by foreign, skip.
 			cur := g.blocked[s.l][s.y*g.w+s.x]
 			if cur != "" && cur != net {
 				continue
@@ -829,13 +1387,11 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 	if open.Len() == 0 {
 		return nil, false
 	}
-	// Goal already in the tree — trivial path (single cell).
 	if _, ok := gScore[goal]; ok {
 		wx, wy := g.cellToWorld(goal.x, goal.y)
 		return []gpos{{x: wx, y: wy, layer: goal.l}}, true
 	}
 
-	// 8-connected on a layer (orthogonal + diagonal).
 	dirs := [][2]int{
 		{1, 0}, {-1, 0}, {0, 1}, {0, -1},
 		{1, 1}, {1, -1}, {-1, 1}, {-1, -1},
@@ -846,17 +1402,14 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 		maxExpand = 10000
 	}
 	expanded := 0
-	// Check deadline every N expansions.
 	const deadlineEvery = 256
 
 	for open.Len() > 0 && expanded < maxExpand {
 		expanded++
-		if expanded%deadlineEvery == 0 && time.Now().After(deadline) {
+		if hasDeadline && expanded%deadlineEvery == 0 && time.Now().After(deadline) {
 			return nil, false
 		}
 		cur := heap.Pop(open).(*astNode)
-		// Goal must match layer: SMD pads only exist on their copper layer.
-		// (Through-hole pads are stamped on every layer, so goalLayer still works.)
 		if cur.k.x == goal.x && cur.k.y == goal.y && cur.k.l == goal.l {
 			return g.reconstruct(came, cur.k), true
 		}
@@ -870,7 +1423,6 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			if !g.passable(nx, ny, cur.k.l, net) {
 				continue
 			}
-			// Diagonal: both orthogonal flanks must be free (no corner cut).
 			if d[0] != 0 && d[1] != 0 {
 				if !g.passable(cur.k.x+d[0], cur.k.y, cur.k.l, net) ||
 					!g.passable(cur.k.x, cur.k.y+d[1], cur.k.l, net) {
@@ -882,7 +1434,6 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			if d[0] != 0 && d[1] != 0 {
 				step = 1.414
 			}
-			// Prefer layer 0: small surcharge for travelling on other layers.
 			if cur.k.l != 0 {
 				step += 0.15
 			}
@@ -894,7 +1445,6 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			came[nk] = cur.k
 			heap.Push(open, &astNode{k: nk, g: ng, f: ng + heuristic(nk, goal)})
 		}
-		// Via flips: high cost so layer-0 detours win when free.
 		for L := uint8(0); L < uint8(g.layers); L++ {
 			if L == cur.k.l {
 				continue
@@ -904,7 +1454,6 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			}
 			nk := cellKey{cur.k.x, cur.k.y, L}
 			ng := gScore[cur.k] + g.opts.ViaCost
-			// Prefer landing on layer 0 slightly.
 			if L != 0 {
 				ng += 0.5
 			}
@@ -989,7 +1538,6 @@ func clampCell(p core.Point, g *grid) (int, int) {
 func heuristic(a, b cellKey) float64 {
 	dx := float64(a.x - b.x)
 	dy := float64(a.y - b.y)
-	// Euclidean in-plane + cheap layer term.
 	h := math.Hypot(dx, dy)
 	if a.l != b.l {
 		h += 0.5
