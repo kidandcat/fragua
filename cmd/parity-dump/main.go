@@ -60,6 +60,9 @@ type routeDump struct {
 	TotalLengthMM float64           `json:"total_length_mm"`
 	Iterations    int               `json:"iterations"`
 	PerNet        map[string]string `json:"per_net"`
+	DRCErrors     int               `json:"drc_errors"`
+	DRCWarnings   int               `json:"drc_warnings"`
+	DRCByKind     map[string]int    `json:"drc_by_kind"`
 }
 
 func main() {
@@ -133,6 +136,13 @@ func main() {
 			default:
 				rd.Skipped++
 			}
+		}
+		post := drc.Check(b, sch, drc.DefaultOptions())
+		rd.DRCErrors = post.Errors
+		rd.DRCWarnings = post.Warnings
+		rd.DRCByKind = map[string]int{}
+		for _, v := range post.Violations {
+			rd.DRCByKind[pascalFromSnake(string(v.Kind))]++
 		}
 		d.Route = rd
 		d.CopperHash = hashCopper(b)

@@ -72,6 +72,9 @@ struct RouteDump {
     total_length_mm: f64,
     iterations: u32,
     per_net: BTreeMap<String, String>,
+    drc_errors: usize,
+    drc_warnings: usize,
+    drc_by_kind: BTreeMap<String, usize>,
 }
 
 fn main() {
@@ -191,6 +194,11 @@ fn main() {
             per.insert(name.clone(), status.to_string());
         }
         copper_hash = Some(hash_copper(&b));
+        let post = pcb_drc::run(&b, &DrcOptions::default());
+        let mut drc_by = BTreeMap::new();
+        for v in &post.violations {
+            *drc_by.entry(format!("{:?}", v.kind)).or_default() += 1;
+        }
         route_dump = Some(RouteDump {
             failed,
             ok,
@@ -200,6 +208,9 @@ fn main() {
             total_length_mm: report.total_length_mm,
             iterations: report.iterations as u32,
             per_net: per,
+            drc_errors: post.error_count,
+            drc_warnings: post.warning_count,
+            drc_by_kind: drc_by,
         });
     }
 

@@ -111,6 +111,17 @@ internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}
 | Oracle harness | `pcb-oracle` + `parity-dump` + `algo-parity.sh` |
 | Cut-over | blocked until harness PASS on stress + synthetic suite |
 
+### Route process (2026-08-12)
+
+- Single-pad nets and pour nets are `Outcome::Ok` with 0 copper (Rust `route_one_net`).
+- `tof-card.fragua --route` (30 s): **per_net 15/15 status match**, length 365 vs 364 mm.
+  Post-route DRC: `UnconnectedPad=6` matches (the 1-pad nets). Go still emits extra
+  TraceTrace/TracePad (grid stairs vs Theta* any-angle) — not a status mismatch.
+- Two-resistor synthetic: status + post-DRC kinds **match**; copper hash not identical
+  (7.90 mm any-angle vs 8.00 mm Manhattan).
+
+`./scripts/route-parity.sh [file.fragua]`
+
 ### Skeleton defaults to fix early (known process mismatches)
 
 | Setting | Rust | Go skeleton (fix toward) |

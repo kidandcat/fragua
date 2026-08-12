@@ -39,6 +39,28 @@ func footprint(ref string, x, y float64, pads []core.Pad) *core.Footprint {
 	}
 }
 
+func TestSinglePadAndPourNetsAreOk(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{
+		pad("1", -1, 0, "VCC"),
+		pad("2", 1, 0, "GND"),
+	}))
+	b.Pours = []core.Pour{{Net: "GND", Layer: core.LayerTop}}
+	rep := Route(b, DefaultOptions())
+	by := map[string]string{}
+	for _, n := range rep.PerNet {
+		by[n.Net] = n.Outcome.Status
+	}
+	if by["VCC"] != "ok" || by["GND"] != "ok" {
+		t.Fatalf("single-pad/pour should be ok, got %+v", rep.PerNet)
+	}
+	if len(b.Traces) != 0 {
+		t.Fatalf("pour/single-pad should lay no copper, got %d traces", len(b.Traces))
+	}
+}
+
 func TestRoutesTwoResistors(t *testing.T) {
 	b := core.NewBoard()
 	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))

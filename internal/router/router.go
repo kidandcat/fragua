@@ -189,11 +189,20 @@ func Route(board *core.Board, opts Options) Report {
 	// 2. Grid with foreign copper inflated by clearance.
 	g := newGrid(board, opts)
 
+	// Pour-only nets: the pour is the connection (Rust route_one_net).
+	pourNets := map[string]bool{}
+	for _, p := range board.Pours {
+		pourNets[p.Net] = true
+	}
+
 	var failedNets []string
 	for _, name := range names {
 		pads := nets[name]
-		if len(pads) < 2 {
-			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{Status: "skipped", Reason: "single pad"}})
+		// Rust: 1-pad nets and pour nets are Outcome::Ok with 0 copper.
+		if pourNets[name] || len(pads) < 2 {
+			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{
+				Status: "ok", Reason: "pour_or_single",
+			}})
 			continue
 		}
 		if pastDeadline() {
