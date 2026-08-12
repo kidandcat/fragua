@@ -2687,6 +2687,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcb-oracle"
+version = "1.1.0"
+dependencies = [
+ "hex",
+ "pcb-core",
+ "pcb-drc",
+ "pcb-erc",
+ "pcb-gerber",
+ "pcb-router",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "pcb-placer"
 version = "1.1.0"
 dependencies = [
