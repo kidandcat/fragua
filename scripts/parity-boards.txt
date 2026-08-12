@@ -1,0 +1,12 @@
+# Real boards on this machine for Rust↔Go algorithmic parity.
+# Paths are absolute (local Mac). Lines starting with # are ignored.
+#
+# Columns: just the path. Optional boards that may move can be commented out.
+
+/Users/jairo/pcb/stress/rp2040-minimal.fragua
+/Users/jairo/fecha/firmware/sf7/yellow/fecha-gateway-v2/fecha-gateway-v2.json
+/Users/jairo/fecha/firmware/sf7/yellow/fecha-door-v3/fecha-door-v3.fragua
+/Users/jairo/fecha/firmware/sf7/yellow/fecha-door-v3/fecha-door-v3.json
+/Users/jairo/drone/pcb/x-frame.fragua
+/Users/jairo/drone/pcb/tof-card.fragua
+/Users/jairo/drone/pcb/main.fragua
