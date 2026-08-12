@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"math"
+	"strings"
 )
 
 // Minimum hand-solder gap between footprint pad AABBs (mm).
@@ -36,11 +37,22 @@ type Pad struct {
 	Drill  *Length `json:"drill,omitempty"`
 }
 
-// FootprintSilk is silk geometry owned by a footprint (library-local coords).
-type FootprintSilk struct {
-	Lines []SilkLine `json:"lines,omitempty"`
-	Texts []SilkText `json:"texts,omitempty"`
+// FootprintSilkItem is one library-local silk primitive (Rust tagged enum).
+type FootprintSilkItem struct {
+	Kind     string     `json:"kind"` // "line" | "text"
+	Layer    SilkLayer  `json:"layer"`
+	Start    Point      `json:"start,omitempty"`
+	End      Point      `json:"end,omitempty"`
+	Width    Length     `json:"width,omitempty"`
+	Position Point      `json:"position,omitempty"`
+	Text     string     `json:"text,omitempty"`
+	Size     Length     `json:"size,omitempty"`
+	Rotation float64    `json:"rotation,omitempty"`
+	Anchor   SilkAnchor `json:"anchor,omitempty"`
 }
+
+// FootprintSilk is kept as an alias for older call sites (slice of items).
+type FootprintSilk = FootprintSilkItem
 
 // Footprint is a placed (or palette) component instance.
 type Footprint struct {
@@ -56,7 +68,7 @@ type Footprint struct {
 	Description string         `json:"description"`
 	EdgeMounted bool           `json:"edge_mounted"`
 	EdgeSide    *EdgeSide      `json:"edge_side"`
-	Silk        []FootprintSilk `json:"silk"`
+	Silk        []FootprintSilkItem `json:"silk"`
 }
 
 // Trace is a copper segment.
@@ -81,11 +93,17 @@ type Via struct {
 	ToLayer   *Layer `json:"to_layer,omitempty"`
 }
 
-// ThermalRelief settings for a pour.
+// ThermalRelief matches Rust pcb_core::ThermalRelief ({"kind":"spokes4"| "solid"}).
 type ThermalRelief struct {
-	Enabled      bool    `json:"enabled,omitempty"`
-	GapMM        float64 `json:"gap_mm,omitempty"`
+	Kind         string  `json:"kind"`
 	SpokeWidthMM float64 `json:"spoke_width_mm,omitempty"`
+	GapMM        float64 `json:"gap_mm,omitempty"`
+}
+
+// IsSpokes4 reports the KiCad-default four-spoke relief.
+func (t ThermalRelief) IsSpokes4() bool {
+	k := t.Kind
+	return k == "spokes4" || k == "Spokes4" || k == ""
 }
 
 // StitchPolicy for pour via stitching.
@@ -235,6 +253,42 @@ func PadWorldCenter(fp *Footprint, pad *Pad) Point {
 		X: fp.Position.X + Length(math.Round(rx)),
 		Y: fp.Position.Y + Length(math.Round(ry)),
 	}
+}
+
+// PadWorldSize is the pad width/height after 90° rotation (Rust pad_world_size).
+func PadWorldSize(fp *Footprint, pad *Pad) (w, h Length) {
+	r := math.Mod(fp.Rotation, 360)
+	if r < 0 {
+		r += 360
+	}
+	if (r >= 45 && r < 135) || (r >= 225 && r < 315) {
+		return pad.Size[1], pad.Size[0]
+	}
+	return pad.Size[0], pad.Size[1]
+}
+
+// PadOccupiesLayer: SMD on its copper layer; PTH (drill set) on every layer.
+func PadOccupiesLayer(pad *Pad, target Layer) bool {
+	if pad.Drill != nil {
+		return true
+	}
+	return pad.Layer.Index == target.Index
+}
+
+// LocalToWorld transforms a footprint-local point into board coords.
+func LocalToWorld(fp *Footprint, p Point) Point {
+	theta := fp.Rotation * math.Pi / 180
+	s, c := math.Sin(theta), math.Cos(theta)
+	lx, ly := p.X.ToMM(), p.Y.ToMM()
+	rx := lx*c - ly*s
+	ry := lx*s + ly*c
+	return Point{X: FromMM(fp.Position.X.ToMM() + rx), Y: FromMM(fp.Position.Y.ToMM() + ry)}
+}
+
+// ResolveSilkText replaces {REF}/{VAL} placeholders.
+func ResolveSilkText(fp *Footprint, raw string) string {
+	s := strings.ReplaceAll(raw, "{REF}", fp.Reference)
+	return strings.ReplaceAll(s, "{VAL}", fp.Value)
 }
 
 // PadWorldAABB returns the axis-aligned bounding box of a pad (90° rotations).
