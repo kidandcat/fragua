@@ -999,16 +999,20 @@ func setFabRules(p *core.Project, args string) (string, error) {
 	}
 	p.MutateBoard(func(b *core.Board) { b.FabRules = rules })
 	// also set session profile for pack/drc
+	maxSz := [2]float64{100, 100}
+	if rules.MaxBoardSizeMM != nil {
+		maxSz = *rules.MaxBoardSizeMM
+	}
 	p.SetFabProfile(&core.FabProfileHandle{
 		Name: rules.Preset, MinTraceWidthMM: rules.MinTraceWidthMM,
-		MinClearanceMM: rules.MinClearanceMM, MinDrillMM: rules.MinDrillMM,
+		MinClearanceMM: rules.MinClearanceMM, MinDrillMM: rules.MinViaDrillMM,
 		MinAnnularRingMM: rules.MinAnnularRingMM, MinViaDiameterMM: rules.MinViaDiameterMM,
 		MinEdgeClearanceMM: rules.MinEdgeClearanceMM,
-		MaxBoardSizeMM:     [2]float64{rules.MaxBoardWidthMM, rules.MaxBoardHeightMM},
+		MaxBoardSizeMM:     maxSz,
 	})
 	return fmt.Sprintf(
 		"fab rules `%s`: trace %.3f mm, space %.3f mm, via drill %.3f mm, via dia %.3f mm",
-		rules.Preset, rules.MinTraceWidthMM, rules.MinClearanceMM, rules.MinDrillMM, rules.MinViaDiameterMM,
+		rules.Preset, rules.MinTraceWidthMM, rules.MinClearanceMM, rules.MinViaDrillMM, rules.MinViaDiameterMM,
 	), nil
 }
 

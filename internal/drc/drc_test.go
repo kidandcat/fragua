@@ -221,25 +221,6 @@ func TestTraceTraceClearanceFires(t *testing.T) {
 	}
 }
 
-func TestViaPadClearanceFires(t *testing.T) {
-	b := core.NewBoard()
-	o := outline(40, 20)
-	b.Outline = &o
-	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "A")}))
-	// Via of different net almost on top of the pad.
-	b.Vias = append(b.Vias, core.Via{
-		ID:       core.NewID(),
-		Position: core.NewPoint(core.FromMM(10.4), core.FromMM(10)),
-		Drill:    core.FromMM(0.3),
-		Diameter: core.FromMM(0.6),
-		Net:      "B",
-	})
-	rep := Check(b, nil, DefaultOptions())
-	if countKind(rep, KindViaPadClearance) == 0 {
-		t.Fatalf("expected ViaPadClearance, got %+v", rep.Violations)
-	}
-}
-
 func TestBodyOffBoardWhenPadsPastOutline(t *testing.T) {
 	b := core.NewBoard()
 	o := outline(20, 20)

@@ -43,7 +43,7 @@ for b in "${boards[@]}"; do
     fail=$((fail+1))
     continue
   fi
-  python3 - "$name" "$rj" "$gj" "$OUT/summary.tsv" <<'PY'
+  if python3 - "$name" "$rj" "$gj" "$OUT/summary.tsv" <<'PY'
 import json, sys
 name, rj, gj, sumf = sys.argv[1:5]
 r, g = json.load(open(rj)), json.load(open(gj))
@@ -55,8 +55,16 @@ def geo(x):
     return (x["footprints"], x["traces"], x["vias"], x["pours"], x["nets"], o)
 
 geom_ok = geo(r["geometry"]) == geo(g["geometry"])
-drc_ok = r["drc"]["by_kind"] == g["drc"]["by_kind"] and r["drc"]["errors"] == g["drc"]["errors"] and r["drc"]["warnings"] == g["drc"]["warnings"]
-erc_ok = r["erc"]["by_kind"] == g["erc"]["by_kind"] and r["erc"]["errors"] == g["erc"]["errors"] and r["erc"]["warnings"] == g["erc"]["warnings"]
+drc_ok = (
+    r["drc"]["by_kind"] == g["drc"]["by_kind"]
+    and r["drc"]["errors"] == g["drc"]["errors"]
+    and r["drc"]["warnings"] == g["drc"]["warnings"]
+)
+erc_ok = (
+    r["erc"]["by_kind"] == g["erc"]["by_kind"]
+    and r["erc"]["errors"] == g["erc"]["errors"]
+    and r["erc"]["warnings"] == g["erc"]["warnings"]
+)
 cu_ok = r.get("copper_hash") == g.get("copper_hash")
 status = "PASS" if (geom_ok and drc_ok and erc_ok and cu_ok) else "FAIL"
 line = (
@@ -71,7 +79,11 @@ print(line)
 open(sumf, "a").write(line + "\n")
 sys.exit(0 if status == "PASS" else 1)
 PY
-  if [[ $? -eq 0 ]]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+  then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+  fi
 done
 
 echo

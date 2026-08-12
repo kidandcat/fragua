@@ -294,16 +294,18 @@ func (s *LayerStackup) RemoveNamed(name string) bool {
 func FabRulesPreset(name string) *FabRules {
 	switch strings.ToLower(name) {
 	case "jlcpcb-2l", "jlcpcb_2l", "jlcpcb-2", "jlcpcb", "jlc":
+		sz := [2]float64{100, 100}
 		return &FabRules{
 			Preset: "jlcpcb-2l", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
-			MinDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.20, MaxBoardWidthMM: 100, MaxBoardHeightMM: 100,
+			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
+			MinEdgeClearanceMM: 0.20, MaxBoardSizeMM: &sz,
 		}
 	case "jlcpcb-4l", "jlcpcb_4l", "jlcpcb-4":
+		sz := [2]float64{100, 100}
 		return &FabRules{
 			Preset: "jlcpcb-4l", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
-			MinDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.20, MaxBoardWidthMM: 100, MaxBoardHeightMM: 100,
+			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
+			MinEdgeClearanceMM: 0.20, MaxBoardSizeMM: &sz,
 		}
 	default:
 		return nil

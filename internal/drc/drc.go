@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/mentasystems/fragua/internal/core"
 )
@@ -21,20 +22,24 @@ const (
 type Kind string
 
 const (
-	KindPadPadClearance     Kind = "pad_pad_clearance"
-	KindTraceTraceClearance Kind = "trace_trace_clearance"
-	KindTracePadClearance   Kind = "trace_pad_clearance"
-	KindViaPadClearance     Kind = "via_pad_clearance"
-	KindEdgeClearance       Kind = "edge_clearance"
-	KindUnconnectedPad      Kind = "unconnected_pad"
-	KindNetSplit            Kind = "net_split"
-	KindMinTraceWidth       Kind = "min_trace_width"
-	KindMinDrill            Kind = "min_drill"
-	KindBodyOverlap         Kind = "body_overlap"
-	KindBodyOffBoard        Kind = "body_off_board"
-	KindRoutingInefficient  Kind = "routing_inefficient"
-	KindAnnularRing         Kind = "annular_ring"
+	KindPadPadClearance         Kind = "pad_pad_clearance"
+	KindTraceTraceClearance     Kind = "trace_trace_clearance"
+	KindTracePadClearance       Kind = "trace_pad_clearance"
+	KindEdgeClearance           Kind = "edge_clearance"
+	KindUnconnectedPad          Kind = "unconnected_pad"
+	KindNetSplit                Kind = "net_split"
+	KindNarrowTrace             Kind = "narrow_trace"
+	KindSmallDrill              Kind = "small_drill"
+	KindSmallComponentDangling  Kind = "small_component_dangling"
+	KindBodyOverlap             Kind = "body_overlap"
+	KindBodyOffBoard            Kind = "body_off_board"
+	KindRoutingInefficient      Kind = "routing_inefficient"
+	KindRuleBelowFabLimit       Kind = "rule_below_fab_limit"
+	KindAnnularRing             Kind = "annular_ring" // used only with fab profile annular checks if present
 )
+
+// SMALL_COMPONENT_PAD_LIMIT matches Rust.
+const smallComponentPadLimit = 8
 
 // TouchTolMM is the copper-contact slack (mm). Same spirit as Rust TOUCH_TOL_MM.
 const TouchTolMM = 1e-6
@@ -175,81 +180,108 @@ func collectPads(board *core.Board) []padGeom {
 }
 
 // Check runs geometric DRC on board (schematic optional for net classes).
+// Stage order mirrors pcb_drc::run.
 func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 	var rep Report
 	if board == nil {
 		return rep
 	}
-	minCl := opts.MinClearance
-	edgeCl := opts.EdgeClearance
-	minW := opts.MinTraceWidth
-	minDrill := opts.MinDrill
-	if opts.FabProfile != nil {
-		if c := core.FromMM(opts.FabProfile.MinClearanceMM); c > minCl {
-			minCl = c
-		}
-		if c := core.FromMM(opts.FabProfile.MinEdgeClearanceMM); c > edgeCl {
-			edgeCl = c
-		}
-		if c := core.FromMM(opts.FabProfile.MinTraceWidthMM); c > minW {
-			minW = c
-		}
-		if c := core.FromMM(opts.FabProfile.MinDrillMM); c > minDrill {
-			minDrill = c
+	resolver := buildResolver(board, sch, opts)
+	edgeClMM := opts.EdgeClearance.ToMM()
+	minDrillMM := opts.MinDrill.ToMM()
+	if opts.FabProfile != nil && opts.FabProfile.MinEdgeClearanceMM > 0 {
+		if opts.FabProfile.MinEdgeClearanceMM > edgeClMM {
+			edgeClMM = opts.FabProfile.MinEdgeClearanceMM
 		}
 	}
-	minClMM := minCl.ToMM()
-	edgeClMM := edgeCl.ToMM()
-	minWMM := minW.ToMM()
-	minDrillMM := minDrill.ToMM()
-	minRing := core.FromMM(0.1)
-	if opts.FabProfile != nil {
-		minRing = core.FromMM(opts.FabProfile.MinAnnularRingMM)
+	if board.FabRules != nil && board.FabRules.MinEdgeClearanceMM > 0 {
+		if board.FabRules.MinEdgeClearanceMM > edgeClMM {
+			edgeClMM = board.FabRules.MinEdgeClearanceMM
+		}
 	}
 
 	pads := collectPads(board)
 
-	checkPadPad(pads, minClMM, &rep)
-	checkTraceTrace(board, minClMM, &rep)
-	checkTracePad(board, pads, minClMM, &rep)
-	checkViaPad(board, pads, minClMM, &rep)
+	checkPadPad(pads, resolver, &rep)
+	checkTraceTrace(board, resolver, &rep)
+	checkTracePad(board, pads, resolver, &rep)
+	// Note: Rust has no ViaPadClearance kind — vias participate in connectivity only.
 	if board.Outline != nil {
 		checkEdge(board, pads, *board.Outline, edgeClMM, &rep)
 		checkBodyOffBoard(board, *board.Outline, &rep)
 	}
-	checkMinTraceWidth(board, minWMM, &rep)
-	checkVias(board, minDrillMM, minRing, &rep)
 	checkUnconnectedPads(board, pads, &rep)
+	checkSmallComponentDangling(board, pads, &rep)
 	checkNetContinuity(board, pads, &rep)
+	checkNarrowTraces(board, resolver, &rep)
+	checkSmallDrills(board, minDrillMM, &rep)
+	checkRoutingInefficient(board, opts, &rep)
+	checkRuleAreasVsFab(board, &rep)
 
 	return rep
 }
 
-func checkPadPad(pads []padGeom, minClMM float64, rep *Report) {
+func buildResolver(board *core.Board, sch *core.Schematic, opts Options) *core.RuleResolver {
+	r := &core.RuleResolver{
+		Defaults: core.RuleDefaults{
+			Clearance:  opts.MinClearance,
+			TraceWidth: opts.MinTraceWidth,
+		},
+		Areas: append([]core.RuleArea(nil), board.RuleAreas...),
+	}
+	if sch != nil {
+		r.NetClass = map[string]core.NetClass{}
+		for k, c := range sch.NetClasses {
+			if c != nil {
+				r.NetClass[k] = *c
+			}
+		}
+		r.NetToClass = map[string]string{}
+		for name, net := range sch.Nets {
+			if net == nil {
+				continue
+			}
+			if net.Class != "" {
+				r.NetToClass[name] = net.Class
+			}
+		}
+		for k, v := range sch.NetToClass {
+			r.NetToClass[k] = v
+		}
+	}
+	return r
+}
+
+func clearanceMM(res *core.RuleResolver, netA, netB string, siteX, siteY float64) float64 {
+	p := core.NewPoint(core.FromMM(siteX), core.FromMM(siteY))
+	return res.ClearanceBetween(p, netA, netB).ToMM()
+}
+
+func checkPadPad(pads []padGeom, res *core.RuleResolver, rep *Report) {
 	for i := 0; i < len(pads); i++ {
 		for j := i + 1; j < len(pads); j++ {
 			a, b := pads[i], pads[j]
 			if !a.sharesLayerWith(b) {
 				continue
 			}
-			// Same assigned net: not a clearance violation. Unassigned pads still clear.
 			if a.net != "" && a.net == b.net {
 				continue
 			}
 			gap := aabbGapMM(a.rect, b.rect)
-			if gap+1e-6 < minClMM {
-				cx, cy := rectCenterMM(a.rect)
+			sx, sy := rectRectClosestSite(a.rect, b.rect)
+			clr := clearanceMM(res, a.net, b.net, sx, sy)
+			if gap+1e-6 < clr {
 				rep.add(Violation{
 					Kind: KindPadPadClearance, Severity: SeverityError,
-					Message: fmt.Sprintf("pad %s – pad %s: %.3f mm < %.3f mm", a.label(), b.label(), gap, minClMM),
-					Net:     a.net, XMM: cx, YMM: cy,
+					Message: fmt.Sprintf("pad %s – pad %s: %.3f mm < %.3f mm", a.label(), b.label(), gap, clr),
+					Net:     a.net, XMM: sx, YMM: sy,
 				})
 			}
 		}
 	}
 }
 
-func checkTraceTrace(board *core.Board, minClMM float64, rep *Report) {
+func checkTraceTrace(board *core.Board, res *core.RuleResolver, rep *Report) {
 	trs := board.Traces
 	for i := 0; i < len(trs); i++ {
 		for j := i + 1; j < len(trs); j++ {
@@ -257,27 +289,26 @@ func checkTraceTrace(board *core.Board, minClMM float64, rep *Report) {
 			if a.Layer != b.Layer || a.Net == b.Net {
 				continue
 			}
-			a0 := ptMM(a.Start)
-			a1 := ptMM(a.End)
-			b0 := ptMM(b.Start)
-			b1 := ptMM(b.End)
+			a0, a1 := ptMM(a.Start), ptMM(a.End)
+			b0, b1 := ptMM(b.Start), ptMM(b.End)
 			halfA := a.Width.ToMM() / 2
 			halfB := b.Width.ToMM() / 2
-			gap := segmentSegmentDistance(a0, a1, b0, b1) - halfA - halfB
-			if gap+1e-6 < minClMM {
-				mx := (a0[0] + a1[0] + b0[0] + b1[0]) / 4
-				my := (a0[1] + a1[1] + b0[1] + b1[1]) / 4
+			center := segmentSegmentDistance(a0, a1, b0, b1)
+			gap := center - halfA - halfB
+			sx, sy := segSegClosestSite(a0, a1, b0, b1)
+			clr := clearanceMM(res, a.Net, b.Net, sx, sy)
+			if gap+1e-6 < clr {
 				rep.add(Violation{
 					Kind: KindTraceTraceClearance, Severity: SeverityError,
-					Message: fmt.Sprintf("trace %s – trace %s: %.3f mm < %.3f mm", a.Net, b.Net, gap, minClMM),
-					Net:     a.Net, XMM: mx, YMM: my,
+					Message: fmt.Sprintf("trace %s – trace %s: %.3f mm < %.3f mm", a.Net, b.Net, gap, clr),
+					Net:     a.Net, XMM: sx, YMM: sy,
 				})
 			}
 		}
 	}
 }
 
-func checkTracePad(board *core.Board, pads []padGeom, minClMM float64, rep *Report) {
+func checkTracePad(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {
 	for _, tr := range board.Traces {
 		half := tr.Width.ToMM() / 2
 		a, b := ptMM(tr.Start), ptMM(tr.End)
@@ -289,11 +320,15 @@ func checkTracePad(board *core.Board, pads []padGeom, minClMM float64, rep *Repo
 				continue
 			}
 			gap := segmentAABBDistance(a, b, pad.rect) - half
-			if gap+1e-6 < minClMM {
+			// Resolve clearance at the closest approach site (Rust), not pad centre —
+			// so a segment that dips into a fine-pitch rule area is legal there.
+			sx, sy := segRectClosestSite(a, b, pad.rect)
+			clr := clearanceMM(res, tr.Net, pad.net, sx, sy)
+			if gap+1e-6 < clr {
 				cx, cy := rectCenterMM(pad.rect)
 				rep.add(Violation{
 					Kind: KindTracePadClearance, Severity: SeverityError,
-					Message: fmt.Sprintf("trace %s – pad %s: %.3f mm < %.3f mm", tr.Net, pad.label(), gap, minClMM),
+					Message: fmt.Sprintf("trace %s – pad %s: %.3f mm < %.3f mm", tr.Net, pad.label(), gap, clr),
 					Net:     tr.Net, XMM: cx, YMM: cy,
 				})
 			}
@@ -301,26 +336,62 @@ func checkTracePad(board *core.Board, pads []padGeom, minClMM float64, rep *Repo
 	}
 }
 
-func checkViaPad(board *core.Board, pads []padGeom, minClMM float64, rep *Report) {
-	for _, v := range board.Vias {
-		r := v.Diameter.ToMM() / 2
-		c := ptMM(v.Position)
-		for _, pad := range pads {
-			if pad.net != "" && pad.net == v.Net {
-				continue
-			}
-			// Via is through-all copper; always shares a layer with the pad.
-			gap := pointRectDistance(c, pad.rect) - r
-			if gap+1e-6 < minClMM {
-				cx, cy := rectCenterMM(pad.rect)
-				rep.add(Violation{
-					Kind: KindViaPadClearance, Severity: SeverityError,
-					Message: fmt.Sprintf("via %s – pad %s: %.3f mm < %.3f mm", v.Net, pad.label(), gap, minClMM),
-					Net:     v.Net, XMM: cx, YMM: cy,
-				})
-			}
+func closestPointOnSegment(p, a, b [2]float64) [2]float64 {
+	dx, dy := b[0]-a[0], b[1]-a[1]
+	len2 := dx*dx + dy*dy
+	if len2 < 1e-24 {
+		return a
+	}
+	t := ((p[0]-a[0])*dx + (p[1]-a[1])*dy) / len2
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return [2]float64{a[0] + t*dx, a[1] + t*dy}
+}
+
+func clampPointToRect(p [2]float64, r core.Rect) [2]float64 {
+	x := math.Min(math.Max(p[0], r.Min.X.ToMM()), r.Max.X.ToMM())
+	y := math.Min(math.Max(p[1], r.Min.Y.ToMM()), r.Max.Y.ToMM())
+	return [2]float64{x, y}
+}
+
+func segRectClosestSite(a, b [2]float64, rect core.Rect) (float64, float64) {
+	c := [2]float64{}
+	c[0], c[1] = rectCenterMM(rect)
+	onSeg := closestPointOnSegment(c, a, b)
+	onRect := clampPointToRect(onSeg, rect)
+	onSeg = closestPointOnSegment(onRect, a, b)
+	return (onSeg[0] + onRect[0]) / 2, (onSeg[1] + onRect[1]) / 2
+}
+
+func segSegClosestSite(a0, a1, b0, b1 [2]float64) (float64, float64) {
+	type pair struct{ p, q [2]float64 }
+	cands := []pair{
+		{a0, closestPointOnSegment(a0, b0, b1)},
+		{a1, closestPointOnSegment(a1, b0, b1)},
+		{closestPointOnSegment(b0, a0, a1), b0},
+		{closestPointOnSegment(b1, a0, a1), b1},
+	}
+	best := cands[0]
+	bestD := math.Inf(1)
+	for _, c := range cands {
+		d := (c.p[0]-c.q[0])*(c.p[0]-c.q[0]) + (c.p[1]-c.q[1])*(c.p[1]-c.q[1])
+		if d < bestD {
+			bestD = d
+			best = c
 		}
 	}
+	return (best.p[0] + best.q[0]) / 2, (best.p[1] + best.q[1]) / 2
+}
+
+func rectRectClosestSite(a, b core.Rect) (float64, float64) {
+	acx, acy := rectCenterMM(a)
+	bcx, bcy := rectCenterMM(b)
+	pa := clampPointToRect([2]float64{bcx, bcy}, a)
+	pb := clampPointToRect([2]float64{acx, acy}, b)
+	return (pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2
 }
 
 func checkEdge(board *core.Board, pads []padGeom, outline core.Rect, edgeClMM float64, rep *Report) {
@@ -412,34 +483,214 @@ func rectInsideOutline(r, outline core.Rect) bool {
 		r.Max.X <= outline.Max.X && r.Max.Y <= outline.Max.Y
 }
 
-func checkMinTraceWidth(board *core.Board, minWMM float64, rep *Report) {
+func checkNarrowTraces(board *core.Board, res *core.RuleResolver, rep *Report) {
+	// Rust uses area override or defaults.trace_width only — not net-class
+	// preferred width (class width is a router target, not a DRC floor).
 	for _, tr := range board.Traces {
-		if tr.Width.ToMM()+1e-6 < minWMM {
+		mx := (tr.Start.X.ToMM() + tr.End.X.ToMM()) / 2
+		my := (tr.Start.Y.ToMM() + tr.End.Y.ToMM()) / 2
+		p := core.NewPoint(core.FromMM(mx), core.FromMM(my))
+		minW := res.Defaults.TraceWidth.ToMM()
+		// highest-priority area with TraceWidthMM wins (absolute)
+		bestPrio := -1 << 30
+		bestArea := -1.0
+		for _, a := range res.Areas {
+			if a.TraceWidthMM == nil || !a.Rect.ContainsPoint(p) {
+				continue
+			}
+			area := a.Rect.Width().ToMM() * a.Rect.Height().ToMM()
+			if a.Priority > bestPrio || (a.Priority == bestPrio && (bestArea < 0 || area < bestArea)) {
+				bestPrio = a.Priority
+				bestArea = area
+				minW = *a.TraceWidthMM
+			}
+		}
+		w := tr.Width.ToMM()
+		if w+1e-6 < minW {
 			rep.add(Violation{
-				Kind: KindMinTraceWidth, Severity: SeverityError,
-				Message: fmt.Sprintf("trace net %s width %.3f < %.3f mm", tr.Net, tr.Width.ToMM(), minWMM),
-				Net:     tr.Net, XMM: tr.Start.X.ToMM(), YMM: tr.Start.Y.ToMM(),
+				Kind: KindNarrowTrace, Severity: SeverityWarning,
+				Message: fmt.Sprintf("trace %s is %.3f mm < min %.3f mm", tr.Net, w, minW),
+				Net:     tr.Net, XMM: mx, YMM: my,
 			})
 		}
 	}
 }
 
-func checkVias(board *core.Board, minDrillMM float64, minRing core.Length, rep *Report) {
+func checkSmallDrills(board *core.Board, minDrillMM float64, rep *Report) {
 	for _, v := range board.Vias {
 		if v.Drill.ToMM()+1e-6 < minDrillMM {
 			rep.add(Violation{
-				Kind: KindMinDrill, Severity: SeverityError,
-				Message: fmt.Sprintf("via net %s drill %.3f < %.3f mm", v.Net, v.Drill.ToMM(), minDrillMM),
+				Kind: KindSmallDrill, Severity: SeverityWarning,
+				Message: fmt.Sprintf("via %s drill %.3f mm < min %.3f mm", v.Net, v.Drill.ToMM(), minDrillMM),
 				Net:     v.Net, XMM: v.Position.X.ToMM(), YMM: v.Position.Y.ToMM(),
 			})
 		}
-		ring := (v.Diameter - v.Drill) / 2
-		if ring < minRing {
+	}
+}
+
+func checkSmallComponentDangling(board *core.Board, pads []padGeom, rep *Report) {
+	// Build lookup pad geom by ref.number
+	byKey := map[string]padGeom{}
+	for _, p := range pads {
+		byKey[p.label()] = p
+	}
+	var refs []string
+	fps := map[string]*core.Footprint{}
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		refs = append(refs, fp.Reference)
+		fps[fp.Reference] = fp
+	}
+	// extras
+	for _, fp := range board.Footprints {
+		if fp == nil {
+			continue
+		}
+		if _, ok := fps[fp.Reference]; !ok {
+			refs = append(refs, fp.Reference)
+			fps[fp.Reference] = fp
+		}
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		fp := fps[ref]
+		if len(fp.Pads) >= smallComponentPadLimit {
+			continue
+		}
+		var dangling []string
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			key := ref + "." + pad.Number
+			pg, ok := byKey[key]
+			connected := false
+			if pad.Net != nil && *pad.Net != "" && ok {
+				net := *pad.Net
+				connected = padHasSameNetNeighbour(pads, pg) ||
+					traceTouchesPad(board, pg, net) ||
+					viaTouchesPad(board, pg, net) ||
+					pourCoversPad(board, pg, net)
+			}
+			if !connected {
+				dangling = append(dangling, key)
+			}
+		}
+		if len(dangling) == 0 {
+			continue
+		}
+		rep.add(Violation{
+			Kind: KindSmallComponentDangling, Severity: SeverityWarning,
+			Message: fmt.Sprintf("%s (%d pads) has dangling pad(s): %s", ref, len(fp.Pads), strings.Join(dangling, ", ")),
+			XMM:     fp.Position.X.ToMM(), YMM: fp.Position.Y.ToMM(),
+		})
+	}
+}
+
+func checkRoutingInefficient(board *core.Board, opts Options, rep *Report) {
+	pourNets := map[string]bool{}
+	for _, p := range board.Pours {
+		pourNets[p.Net] = true
+	}
+	netPads := map[string][][2]float64{}
+	for _, fp := range board.Footprints {
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net == "" || pourNets[*pad.Net] {
+				continue
+			}
+			c := core.PadWorldCenter(fp, pad)
+			netPads[*pad.Net] = append(netPads[*pad.Net], [2]float64{c.X.ToMM(), c.Y.ToMM()})
+		}
+	}
+	netLen := map[string]float64{}
+	for _, tr := range board.Traces {
+		dx := tr.End.X.ToMM() - tr.Start.X.ToMM()
+		dy := tr.End.Y.ToMM() - tr.Start.Y.ToMM()
+		netLen[tr.Net] += math.Hypot(dx, dy)
+	}
+	threshold := opts.RoutingInefficientRatio
+	if threshold <= 0 {
+		threshold = 1.5
+	}
+	nets := make([]string, 0, len(netPads))
+	for n := range netPads {
+		nets = append(nets, n)
+	}
+	sort.Strings(nets)
+	for _, net := range nets {
+		pads := netPads[net]
+		if len(pads) < 2 {
+			continue
+		}
+		actual := netLen[net]
+		if actual <= 1e-6 {
+			continue
+		}
+		minX, minY := pads[0][0], pads[0][1]
+		maxX, maxY := minX, minY
+		cx, cy := 0.0, 0.0
+		for _, p := range pads {
+			if p[0] < minX {
+				minX = p[0]
+			}
+			if p[0] > maxX {
+				maxX = p[0]
+			}
+			if p[1] < minY {
+				minY = p[1]
+			}
+			if p[1] > maxY {
+				maxY = p[1]
+			}
+			cx += p[0]
+			cy += p[1]
+		}
+		hpwl := (maxX - minX) + (maxY - minY)
+		if hpwl < 1e-3 {
+			continue
+		}
+		ratio := actual / hpwl
+		if ratio > threshold {
 			rep.add(Violation{
-				Kind: KindAnnularRing, Severity: SeverityError,
-				Message: fmt.Sprintf("via net %s annular %.3f mm", v.Net, ring.ToMM()),
-				Net:     v.Net, XMM: v.Position.X.ToMM(), YMM: v.Position.Y.ToMM(),
+				Kind: KindRoutingInefficient, Severity: SeverityWarning,
+				Message: fmt.Sprintf("net %s routing ratio %.2f > %.2f (actual %.2f / HPWL %.2f)", net, ratio, threshold, actual, hpwl),
+				Net:     net, XMM: cx / float64(len(pads)), YMM: cy / float64(len(pads)),
 			})
+		}
+	}
+}
+
+func checkRuleAreasVsFab(board *core.Board, rep *Report) {
+	fr := board.FabRules
+	if fr == nil {
+		return
+	}
+	for _, area := range board.RuleAreas {
+		cx := (area.Rect.Min.X.ToMM() + area.Rect.Max.X.ToMM()) / 2
+		cy := (area.Rect.Min.Y.ToMM() + area.Rect.Max.Y.ToMM()) / 2
+		warn := func(what string, got, min float64) {
+			rep.add(Violation{
+				Kind: KindRuleBelowFabLimit, Severity: SeverityWarning,
+				Message: fmt.Sprintf("rule area `%s` %s %.3f mm < %s min %.3f mm", area.Name, what, got, fr.Preset, min),
+				XMM:     cx, YMM: cy,
+			})
+		}
+		if area.ClearanceMM != nil && *area.ClearanceMM+1e-9 < fr.MinClearanceMM {
+			warn("clearance", *area.ClearanceMM, fr.MinClearanceMM)
+		}
+		if area.TraceWidthMM != nil && *area.TraceWidthMM+1e-9 < fr.MinTraceWidthMM {
+			warn("trace width", *area.TraceWidthMM, fr.MinTraceWidthMM)
+		}
+		if area.ViaDrillMM != nil && *area.ViaDrillMM+1e-9 < fr.MinViaDrillMM {
+			warn("via drill", *area.ViaDrillMM, fr.MinViaDrillMM)
+		}
+		if area.ViaDiameterMM != nil && *area.ViaDiameterMM+1e-9 < fr.MinViaDiameterMM {
+			warn("via diameter", *area.ViaDiameterMM, fr.MinViaDiameterMM)
 		}
 	}
 }

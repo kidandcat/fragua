@@ -1,8 +1,11 @@
 // Package erc implements electrical rule checking on the schematic.
+// Process order and kinds match crates/pcb-erc (Rust oracle).
 package erc
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -16,22 +19,22 @@ const (
 	SeverityWarning Severity = "warning"
 )
 
-// Kind classifies an ERC violation.
+// Kind classifies an ERC violation (snake_case; parity dump maps to PascalCase).
 type Kind string
 
 const (
-	KindFloatingPin      Kind = "floating_pin"
-	KindFloatingNet      Kind = "floating_net"
-	KindDuplicatePin     Kind = "duplicate_pin"
-	KindEmptyNet         Kind = "empty_net"
-	KindPhantomNet       Kind = "phantom_net"
-	KindOrphanSymbol     Kind = "orphan_symbol"
-	KindMultipleDrivers  Kind = "multiple_drivers"
-	KindUnpoweredPower   Kind = "unpowered_power_net"
-	KindUnconnectedInput Kind = "unconnected_input"
-	KindUndrivenInput    Kind = "undriven_input"
+	KindFloatingPin       Kind = "floating_pin"
+	KindFloatingNet       Kind = "floating_net"
+	KindDuplicatePin      Kind = "duplicate_pin"
+	KindEmptyNet          Kind = "empty_net"
+	KindPhantomNet        Kind = "phantom_net"
+	KindOrphanSymbol      Kind = "orphan_symbol"
+	KindMultipleDrivers   Kind = "multiple_drivers"
+	KindUnpoweredPowerNet Kind = "unpowered_power_net"
+	KindUnconnectedInput  Kind = "unconnected_input"
+	KindUndrivenInput     Kind = "undriven_input"
 	KindMissingDecoupling Kind = "missing_decoupling_cap"
-	KindMissingI2CPullup Kind = "missing_i2c_pullup"
+	KindMissingPullup     Kind = "missing_pullup"
 )
 
 // Violation is one ERC finding.
@@ -41,15 +44,16 @@ type Violation struct {
 	Message  string   `json:"message"`
 	Net      string   `json:"net,omitempty"`
 	Symbol   string   `json:"symbol,omitempty"`
+	Involved []string `json:"involved,omitempty"`
 }
 
 // Options configures ERC.
 type Options struct {
-	Heuristics           bool
-	DecouplingMaxDistMM  float64
+	Heuristics          bool
+	DecouplingMaxDistMM float64
 }
 
-// DefaultOptions enables heuristics.
+// DefaultOptions enables heuristics (Rust default).
 func DefaultOptions() Options {
 	return Options{Heuristics: true, DecouplingMaxDistMM: 5.0}
 }
@@ -76,197 +80,481 @@ func (r *Report) add(v Violation) {
 }
 
 // Check runs ERC over schematic (+ board for phantom nets / heuristics).
+// Order matches pcb_erc::run.
 func Check(sch *core.Schematic, board *core.Board, opts Options) Report {
 	var rep Report
 	if sch == nil {
 		return rep
 	}
+	checkDuplicatePins(sch, &rep)
+	checkFloatingPins(sch, &rep)
+	checkFloatingAndEmptyNets(sch, &rep)
+	checkOrphanSymbols(sch, &rep)
+	checkPhantomNets(board, sch, &rep)
+	checkRoleBasedRules(board, sch, &rep)
+	if opts.Heuristics {
+		checkDecoupling(board, sch, opts.DecouplingMaxDistMM, &rep)
+		checkI2CPullups(sch, &rep)
+	}
+	return rep
+}
 
-	// Build pin → nets index
-	type pinKey struct{ sym, pin string }
-	pinNets := map[pinKey][]string{}
-	symWired := map[string]bool{}
-
-	for name, net := range sch.Nets {
+func checkDuplicatePins(sch *core.Schematic, rep *Report) {
+	type key struct {
+		id  core.ID
+		pin string
+	}
+	homes := map[key][]string{}
+	for netName, net := range sch.Nets {
 		if net == nil {
 			continue
 		}
-		if len(net.Connections) == 0 {
-			rep.add(Violation{Kind: KindEmptyNet, Severity: SeverityWarning, Message: "empty net " + name, Net: name})
+		for _, c := range net.Connections {
+			k := key{c.SymbolID, c.PinNumber}
+			homes[k] = append(homes[k], netName)
+		}
+	}
+	for k, nets := range homes {
+		sort.Strings(nets)
+		// dedup
+		uniq := nets[:0]
+		var prev string
+		for i, n := range nets {
+			if i == 0 || n != prev {
+				uniq = append(uniq, n)
+				prev = n
+			}
+		}
+		if len(uniq) < 2 {
 			continue
 		}
-		if len(net.Connections) < 2 {
-			rep.add(Violation{Kind: KindFloatingNet, Severity: SeverityWarning, Message: "net " + name + " has <2 connections", Net: name})
+		ref := symbolRef(sch, k.id)
+		rep.add(Violation{
+			Kind: KindDuplicatePin, Severity: SeverityError,
+			Message:  fmt.Sprintf("%s.%s in multiple nets: %s", ref, k.pin, strings.Join(uniq, ",")),
+			Symbol:   ref,
+			Involved: append([]string{ref + "." + k.pin}, uniq...),
+		})
+	}
+}
+
+func checkFloatingPins(sch *core.Schematic, rep *Report) {
+	wired := map[string]map[string]bool{} // ref → pin → true
+	for _, net := range sch.Nets {
+		if net == nil {
+			continue
 		}
 		for _, c := range net.Connections {
-			// resolve symbol ref
 			ref := symbolRef(sch, c.SymbolID)
-			k := pinKey{ref, c.PinNumber}
-			pinNets[k] = append(pinNets[k], name)
-			symWired[ref] = true
+			if wired[ref] == nil {
+				wired[ref] = map[string]bool{}
+			}
+			wired[ref][c.PinNumber] = true
 		}
 	}
-
-	// Duplicate pins
-	for k, nets := range pinNets {
-		if len(nets) > 1 {
-			rep.add(Violation{
-				Kind: KindDuplicatePin, Severity: SeverityError,
-				Message: fmt.Sprintf("%s.%s in multiple nets: %s", k.sym, k.pin, strings.Join(nets, ",")),
-				Symbol:  k.sym,
-			})
-		}
-	}
-
-	// Floating pins / orphan symbols
-	for _, sym := range sch.Symbols {
-		if sym == nil {
-			continue
-		}
+	for _, sym := range symbolsInOrder(sch) {
 		pins := sym.Kind.Pins()
-		if len(pins) == 0 {
-			continue
-		}
-		any := false
 		for _, pin := range pins {
-			k := pinKey{sym.Reference, pin.Number}
-			if _, ok := pinNets[k]; !ok {
+			if !wired[sym.Reference][pin.Number] {
 				rep.add(Violation{
 					Kind: KindFloatingPin, Severity: SeverityWarning,
 					Message: fmt.Sprintf("%s.%s floating", sym.Reference, pin.Number),
 					Symbol:  sym.Reference,
+					Involved: []string{sym.Reference + "." + pin.Number},
 				})
-			} else {
-				any = true
 			}
 		}
-		if !any {
-			rep.add(Violation{
-				Kind: KindOrphanSymbol, Severity: SeverityWarning,
-				Message: "orphan symbol " + sym.Reference,
-				Symbol:  sym.Reference,
-			})
-		}
 	}
+}
 
-	// Role-based checks
-	for name, net := range sch.Nets {
-		if net == nil || len(net.Connections) == 0 {
+func checkFloatingAndEmptyNets(sch *core.Schematic, rep *Report) {
+	// stable order
+	names := make([]string, 0, len(sch.Nets))
+	for n := range sch.Nets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		net := sch.Nets[name]
+		if net == nil {
 			continue
 		}
-		var roles []core.PinRole
-		outputs := 0
-		powerOut, powerIn := 0, 0
-		inputs := 0
+		if len(net.Connections) == 0 {
+			rep.add(Violation{
+				Kind: KindEmptyNet, Severity: SeverityWarning,
+				Message: "empty net " + name, Net: name, Involved: []string{name},
+			})
+			continue
+		}
+		if len(net.Connections) < 2 {
+			rep.add(Violation{
+				Kind: KindFloatingNet, Severity: SeverityWarning,
+				Message: "net " + name + " has <2 connections", Net: name, Involved: []string{name},
+			})
+		}
+	}
+}
+
+func checkOrphanSymbols(sch *core.Schematic, rep *Report) {
+	wired := map[string]bool{}
+	for _, net := range sch.Nets {
+		if net == nil {
+			continue
+		}
 		for _, c := range net.Connections {
-			role := pinRole(sch, c.SymbolID, c.PinNumber)
-			roles = append(roles, role)
-			switch role {
-			case core.PinOutput:
-				outputs++
-			case core.PinPowerOut:
-				powerOut++
-			case core.PinPowerIn:
-				powerIn++
-			case core.PinInput:
-				inputs++
+			wired[symbolRef(sch, c.SymbolID)] = true
+		}
+	}
+	for _, sym := range symbolsInOrder(sch) {
+		if len(sym.Kind.Pins()) == 0 {
+			continue
+		}
+		if !wired[sym.Reference] {
+			rep.add(Violation{
+				Kind: KindOrphanSymbol, Severity: SeverityWarning,
+				Message: "orphan symbol " + sym.Reference, Symbol: sym.Reference,
+				Involved: []string{sym.Reference},
+			})
+		}
+	}
+}
+
+func checkPhantomNets(board *core.Board, sch *core.Schematic, rep *Report) {
+	if board == nil {
+		return
+	}
+	known := map[string]bool{}
+	for n := range sch.Nets {
+		known[n] = true
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, fp := range board.Footprints {
+		if fp == nil {
+			continue
+		}
+		for _, pad := range fp.Pads {
+			if pad.Net == nil || *pad.Net == "" {
+				continue
+			}
+			n := *pad.Net
+			if !known[n] && !seen[n] {
+				seen[n] = true
+				names = append(names, n)
 			}
 		}
-		if outputs > 1 {
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		rep.add(Violation{
+			Kind: KindPhantomNet, Severity: SeverityWarning,
+			Message: fmt.Sprintf("pad net %s not in schematic", n), Net: n, Involved: []string{n},
+		})
+	}
+}
+
+func checkRoleBasedRules(board *core.Board, sch *core.Schematic, rep *Report) {
+	poured := map[string]bool{}
+	if board != nil {
+		for _, p := range board.Pours {
+			poured[p.Net] = true
+		}
+	}
+
+	type pinRole struct {
+		label string
+		role  core.PinRole
+	}
+	roles := map[string][]pinRole{}
+	for netName, net := range sch.Nets {
+		if net == nil {
+			continue
+		}
+		for _, c := range net.Connections {
+			sym := symbolByID(sch, c.SymbolID)
+			if sym == nil {
+				continue
+			}
+			role := pinRoleOf(sym, c.PinNumber)
+			roles[netName] = append(roles[netName], pinRole{
+				label: sym.Reference + "." + c.PinNumber,
+				role:  role,
+			})
+		}
+	}
+
+	names := make([]string, 0, len(roles))
+	for n := range roles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	for _, netName := range names {
+		pins := roles[netName]
+		var outputs []string
+		hasPowerOut := poured[netName]
+		hasPowerIn := false
+		hasDriver := poured[netName]
+		for _, p := range pins {
+			switch p.role {
+			case core.PinOutput:
+				outputs = append(outputs, p.label)
+				hasDriver = true
+			case core.PinPowerOut:
+				hasPowerOut = true
+				hasDriver = true
+			case core.PinPowerIn:
+				hasPowerIn = true
+			case core.PinBidir:
+				hasDriver = true
+			}
+		}
+		if len(outputs) >= 2 {
 			rep.add(Violation{
 				Kind: KindMultipleDrivers, Severity: SeverityError,
-				Message: fmt.Sprintf("net %s has %d outputs", name, outputs),
-				Net:     name,
+				Message:  fmt.Sprintf("net %s has %d Output drivers", netName, len(outputs)),
+				Net:      netName,
+				Involved: append([]string{netName}, outputs...),
 			})
 		}
-		if powerIn > 0 && powerOut == 0 && !core.IsPowerNamedNet(name) && !hasPour(board, name) {
+		// Rust: Warning (not Error); pour counts as PowerOut.
+		if hasPowerIn && !hasPowerOut {
 			rep.add(Violation{
-				Kind: KindUnpoweredPower, Severity: SeverityError,
-				Message: "power net " + name + " has PowerIn but no PowerOut",
-				Net:     name,
+				Kind: KindUnpoweredPowerNet, Severity: SeverityWarning,
+				Message:  fmt.Sprintf("net %s has PowerIn pin(s) but no PowerOut source", netName),
+				Net:      netName,
+				Involved: []string{netName},
 			})
 		}
-		if inputs > 0 && outputs == 0 && powerOut == 0 {
-			hasDriver := false
-			for _, r := range roles {
-				if r == core.PinBidir || r == core.PinPowerOut || r == core.PinOutput {
-					hasDriver = true
-				}
-			}
-			if !hasDriver && !core.IsPowerNamedNet(name) {
+		for _, p := range pins {
+			if p.role == core.PinInput && !hasDriver {
 				rep.add(Violation{
-					Kind: KindUndrivenInput, Severity: SeverityWarning,
-					Message: "undriven input net " + name,
-					Net:     name,
+					Kind: KindUnconnectedInput, Severity: SeverityWarning,
+					Message:  fmt.Sprintf("input pin %s on net %s has no driver", p.label, netName),
+					Net:      netName,
+					Symbol:   strings.Split(p.label, ".")[0],
+					Involved: []string{netName, p.label},
 				})
 			}
 		}
-	}
-
-	// Phantom nets on board pads
-	if board != nil {
-		known := map[string]bool{}
-		for n := range sch.Nets {
-			known[n] = true
+		// UndrivenInput: every pin is Input and no driver.
+		inputCount := 0
+		for _, p := range pins {
+			if p.role == core.PinInput {
+				inputCount++
+			}
 		}
-		seen := map[string]bool{}
+		if len(pins) > 0 && inputCount == len(pins) && !hasDriver {
+			inv := []string{netName}
+			for _, p := range pins {
+				inv = append(inv, p.label)
+			}
+			rep.add(Violation{
+				Kind: KindUndrivenInput, Severity: SeverityWarning,
+				Message:  fmt.Sprintf("net %s has only Input pins (%d) and no driver", netName, len(pins)),
+				Net:      netName,
+				Involved: inv,
+			})
+		}
+	}
+}
+
+func checkDecoupling(board *core.Board, sch *core.Schematic, maxDistMM float64, rep *Report) {
+	if board == nil {
+		return
+	}
+	// symbol id → footprint position mm
+	symPos := map[core.ID][2]float64{}
+	for _, sym := range symbolsInOrder(sch) {
 		for _, fp := range board.Footprints {
-			if fp == nil {
-				continue
-			}
-			for _, pad := range fp.Pads {
-				if pad.Net == nil || *pad.Net == "" {
-					continue
-				}
-				n := *pad.Net
-				if !known[n] && !seen[n] {
-					seen[n] = true
-					rep.add(Violation{
-						Kind: KindPhantomNet, Severity: SeverityWarning,
-						Message: fmt.Sprintf("pad net %s not in schematic", n),
-						Net:     n,
-					})
-				}
-			}
-		}
-	}
-
-	if opts.Heuristics {
-		checkI2CPullups(sch, &rep)
-	}
-
-	return rep
-}
-
-func symbolRef(sch *core.Schematic, id core.ID) string {
-	key := id.String()
-	if s := sch.Symbols[key]; s != nil {
-		return s.Reference
-	}
-	for _, s := range sch.Symbols {
-		if s != nil && s.ID == id {
-			return s.Reference
-		}
-	}
-	return id.String()
-}
-
-func pinRole(sch *core.Schematic, id core.ID, pin string) core.PinRole {
-	var sym *core.Symbol
-	key := id.String()
-	if s := sch.Symbols[key]; s != nil {
-		sym = s
-	} else {
-		for _, s := range sch.Symbols {
-			if s != nil && s.ID == id {
-				sym = s
+			if fp != nil && fp.Reference == sym.Reference {
+				symPos[sym.ID] = [2]float64{fp.Position.X.ToMM(), fp.Position.Y.ToMM()}
 				break
 			}
 		}
 	}
-	if sym == nil {
-		return core.PinPassive
+
+	// caps by net name
+	capsByNet := map[string][]struct {
+		ref string
+		x, y float64
+	}{}
+	for _, sym := range symbolsInOrder(sch) {
+		if !strings.EqualFold(sym.Kind.Kind, "capacitor") {
+			continue
+		}
+		pos, ok := symPos[sym.ID]
+		if !ok {
+			continue
+		}
+		for _, net := range sch.Nets {
+			if net == nil {
+				continue
+			}
+			for _, c := range net.Connections {
+				if c.SymbolID == sym.ID {
+					capsByNet[net.Name] = append(capsByNet[net.Name], struct {
+						ref string
+						x, y float64
+					}{sym.Reference, pos[0], pos[1]})
+					break
+				}
+			}
+		}
 	}
+
+	for _, sym := range symbolsInOrder(sch) {
+		if !isGenericIC(sym) {
+			continue
+		}
+		sxsy, ok := symPos[sym.ID]
+		if !ok {
+			continue
+		}
+		sx, sy := sxsy[0], sxsy[1]
+		for _, pin := range sym.Kind.Pins() {
+			if pin.Role != core.PinPowerIn {
+				continue
+			}
+			netName := netForPin(sch, sym.ID, pin.Number)
+			if netName == "" {
+				continue
+			}
+			// pours = decoupling-equivalent
+			if board != nil {
+				hasPour := false
+				for _, p := range board.Pours {
+					if p.Net == netName {
+						hasPour = true
+						break
+					}
+				}
+				if hasPour {
+					continue
+				}
+			}
+			closeCap := false
+			for _, cap := range capsByNet[netName] {
+				dx, dy := cap.x-sx, cap.y-sy
+				if math.Hypot(dx, dy) <= maxDistMM {
+					closeCap = true
+					break
+				}
+			}
+			if !closeCap {
+				label := sym.Reference + "." + pin.Number
+				rep.add(Violation{
+					Kind: KindMissingDecoupling, Severity: SeverityWarning,
+					Message: fmt.Sprintf("no decoupling cap within %.1f mm of %s (net %s)", maxDistMM, label, netName),
+					Net:     netName, Symbol: sym.Reference,
+					Involved: []string{label, netName},
+				})
+			}
+		}
+	}
+}
+
+func checkI2CPullups(sch *core.Schematic, rep *Report) {
+	resistorIDs := map[core.ID]bool{}
+	for _, sym := range symbolsInOrder(sch) {
+		if strings.EqualFold(sym.Kind.Kind, "resistor") {
+			resistorIDs[sym.ID] = true
+		}
+	}
+	names := make([]string, 0, len(sch.Nets))
+	for n := range sch.Nets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		net := sch.Nets[name]
+		if net == nil || !isI2CNet(name) {
+			continue
+		}
+		hasR := false
+		for _, c := range net.Connections {
+			if resistorIDs[c.SymbolID] {
+				hasR = true
+				break
+			}
+		}
+		if !hasR {
+			rep.add(Violation{
+				Kind: KindMissingPullup, Severity: SeverityWarning,
+				Message:  fmt.Sprintf("I²C net %s has no pull-up resistor", name),
+				Net:      name,
+				Involved: []string{name},
+			})
+		}
+	}
+}
+
+// isI2CNet matches Rust check_i2c_pullups::is_i2c.
+func isI2CNet(name string) bool {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	n = strings.TrimPrefix(n, "+")
+	n = strings.TrimPrefix(n, "-")
+	n = strings.TrimPrefix(n, "I2C_")
+	n = strings.TrimPrefix(n, "I2C")
+	if n == "SDA" || n == "SCL" {
+		return true
+	}
+	if strings.HasSuffix(n, "_SDA") || strings.HasSuffix(n, "_SCL") {
+		return true
+	}
+	if strings.HasPrefix(n, "SDA") || strings.HasPrefix(n, "SCL") {
+		return true
+	}
+	return false
+}
+
+func isGenericIC(sym *core.Symbol) bool {
+	k := strings.ToLower(sym.Kind.Kind)
+	return k == "generic_ic" || k == "genericic" || len(sym.Kind.ICPins) > 0 && k != "resistor" && k != "capacitor"
+}
+
+func symbolsInOrder(sch *core.Schematic) []*core.Symbol {
+	var out []*core.Symbol
+	seen := map[string]bool{}
+	for _, id := range sch.SymbolOrder {
+		if s := sch.Symbols[id]; s != nil {
+			out = append(out, s)
+			seen[id] = true
+		}
+	}
+	var rest []string
+	for id, s := range sch.Symbols {
+		if s != nil && !seen[id] {
+			rest = append(rest, id)
+		}
+	}
+	sort.Strings(rest)
+	for _, id := range rest {
+		out = append(out, sch.Symbols[id])
+	}
+	return out
+}
+
+func symbolByID(sch *core.Schematic, id core.ID) *core.Symbol {
+	if s := sch.Symbols[id.String()]; s != nil {
+		return s
+	}
+	for _, s := range sch.Symbols {
+		if s != nil && s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+func symbolRef(sch *core.Schematic, id core.ID) string {
+	if s := symbolByID(sch, id); s != nil {
+		return s.Reference
+	}
+	return id.String()
+}
+
+func pinRoleOf(sym *core.Symbol, pin string) core.PinRole {
 	for _, p := range sym.Kind.Pins() {
 		if p.Number == pin {
 			if p.Role == "" {
@@ -278,49 +566,19 @@ func pinRole(sch *core.Schematic, id core.ID, pin string) core.PinRole {
 	return core.PinPassive
 }
 
-func hasPour(board *core.Board, net string) bool {
-	if board == nil {
-		return false
-	}
-	for _, p := range board.Pours {
-		if p.Net == net {
-			return true
-		}
-	}
-	return false
-}
-
-func checkI2CPullups(sch *core.Schematic, rep *Report) {
-	for name := range sch.Nets {
-		u := strings.ToUpper(name)
-		if !strings.Contains(u, "SDA") && !strings.Contains(u, "SCL") && !strings.Contains(u, "I2C") {
-			continue
-		}
-		// look for resistor on net
-		hasR := false
-		net := sch.Nets[name]
+func netForPin(sch *core.Schematic, id core.ID, pin string) string {
+	for name, net := range sch.Nets {
 		if net == nil {
 			continue
 		}
 		for _, c := range net.Connections {
-			ref := symbolRef(sch, c.SymbolID)
-			if strings.HasPrefix(ref, "R") {
-				hasR = true
-				break
-			}
-			// also check symbol kind
-			for _, s := range sch.Symbols {
-				if s != nil && s.ID == c.SymbolID && strings.EqualFold(s.Kind.Kind, "resistor") {
-					hasR = true
+			if c.SymbolID == id && c.PinNumber == pin {
+				if net.Name != "" {
+					return net.Name
 				}
+				return name
 			}
-		}
-		if !hasR {
-			rep.add(Violation{
-				Kind: KindMissingI2CPullup, Severity: SeverityWarning,
-				Message: "I2C-like net " + name + " may need pull-up",
-				Net:     name,
-			})
 		}
 	}
+	return ""
 }
