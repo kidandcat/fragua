@@ -1,0 +1,84 @@
+{
+  "name": "two-resistors",
+  "board": {
+    "outline": {
+      "min": { "x": 0, "y": 0 },
+      "max": { "x": 50000000, "y": 30000000 }
+    },
+    "footprints": {
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        "reference": "R1",
+        "value": "10k",
+        "library": "demo",
+        "position": { "x": 5000000, "y": 5000000 },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": { "x": -1000000, "y": 0 },
+            "size": [1000000, 1200000],
+            "layer": "Top",
+            "net": "S"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": { "x": 1000000, "y": 0 },
+            "size": [1000000, 1200000],
+            "layer": "Top",
+            "net": "OUT"
+          }
+        ],
+        "key": "r_0603",
+        "edge_mounted": false
+      },
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2": {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2",
+        "reference": "R2",
+        "value": "10k",
+        "library": "demo",
+        "position": { "x": 45000000, "y": 25000000 },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": { "x": -1000000, "y": 0 },
+            "size": [1000000, 1200000],
+            "layer": "Top",
+            "net": "S"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": { "x": 1000000, "y": 0 },
+            "size": [1000000, 1200000],
+            "layer": "Top",
+            "net": "OUT"
+          }
+        ],
+        "key": "r_0603",
+        "edge_mounted": false
+      }
+    },
+    "footprint_order": [
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+      "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
+    ],
+    "traces": [],
+    "vias": [],
+    "pours": []
+  },
+  "schematic": {
+    "symbols": {},
+    "symbol_order": [],
+    "nets": {
+      "S": { "name": "S", "connections": [] },
+      "OUT": { "name": "OUT", "connections": [] }
+    }
+  }
+}

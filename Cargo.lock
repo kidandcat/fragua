@@ -2695,6 +2695,7 @@ dependencies = [
  "pcb-drc",
  "pcb-erc",
  "pcb-gerber",
+ "pcb-placer",
  "pcb-router",
  "serde",
  "serde_json",

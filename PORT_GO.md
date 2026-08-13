@@ -111,15 +111,20 @@ internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}
 | Oracle harness | `pcb-oracle` + `parity-dump` + `algo-parity.sh` |
 | Cut-over | blocked until harness PASS on stress + synthetic suite |
 
-### Route process (2026-08-12)
+### Place process (2026-08-13)
 
-- Single-pad nets and pour nets are `Outcome::Ok` with 0 copper (Rust `route_one_net`).
-- `tof-card.fragua --route` (30 s): **per_net 15/15 status match**, length 365 vs 386 mm.
-  Post-route DRC errors **0=0**; `UnconnectedPad=6` matches. Go may add one
-  `RoutingInefficient` warning (grid detours vs Theta*). Search-time clearance disk
-  (half-width + 0.20 mm) keeps TraceTrace/TracePad at zero.
-- Two-resistor synthetic: status + post-DRC kinds **match**; copper hash not identical
-  (7.90 mm any-angle vs 8.00 mm Manhattan).
+- SA-only dump (`--place`, seed 42, no global / edge / decouple / congestion):
+  `stress/two-resistors.fragua` → **nm-identical positions** and matching HPWL
+  (120.0000 → 6.5791). RNG is xorshift64*; local translate is `old + FromMM(d)`.
+- Full two-stage place (ePlace + decouple ring) is still a process gap.
+- `./scripts/place-parity.sh [file.fragua]`
+
+### Route process (2026-08-13)
+
+- Lazy Theta* parent LOS shortcut is on (any-angle segments, not 4-connect).
+- `tof-card.fragua --route` (30 s): **per_net 15/15**, post-DRC **0E/6W UnconnectedPad**.
+  Traces 280 vs rust 147 (was ~1346 Manhattan); length 352 vs 365 mm.
+- Two-resistor synthetic: status + post-DRC kinds **match**; copper hash not identical.
 
 `./scripts/route-parity.sh [file.fragua]`
 

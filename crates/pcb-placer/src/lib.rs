@@ -240,6 +240,9 @@ pub struct PlaceOptions {
     /// flagging distance of the cut. Compaction sets 0: its trim phase
     /// owns the outline and re-validates with a full DRC pass.
     pub edge_clearance_mm: f64,
+    /// Run the decoupling-ring post-pass after SA. On by default.
+    /// Oracle dumps turn this off to isolate seed-fixed SA positions.
+    pub decouple: bool,
 }
 
 impl Default for PlaceOptions {
@@ -281,6 +284,7 @@ impl Default for PlaceOptions {
             // this size and not larger.
             crossing_penalty_factor: 2.0,
             edge_plan: true,
+            decouple: true,
             global_stage: true,
             global_iterations: 600,
             density_bins: 64,
@@ -927,7 +931,9 @@ pub fn place(
     // every cap on one rail into the middle of the package; this one-shot
     // pass recovers the "one cap per power pin, short loop" layout humans
     // expect without fighting the global stage. See `decouple.rs`.
-    decouple::pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
+    if opts.decouple {
+        decouple::pull_passives_to_anchors(board, &movable_ids, outline, margins, opts);
+    }
     // The ring may spend the soft gap, never the hard constraints: if it
     // somehow lands an illegal pose, the search winner stands.
     if pre_decouple_legal && !layout_is_legal(board, &movable_ids, outline, opts, margins) {

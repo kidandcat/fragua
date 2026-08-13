@@ -1559,12 +1559,25 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			if cur.k.l != 0 {
 				step += 0.15
 			}
+			bestParent := cur.k
 			ng := gScore[cur.k] + step
+			// Lazy Theta*: if the parent has line-of-sight to nk on the
+			// same layer, parent→nk is one any-angle segment.
+			if parent, ok := came[cur.k]; ok && parent.l == nk.l {
+				if g.lineOfSight(parent, nk, net) {
+					eu := hypotCells(parent, nk)
+					cand := gScore[parent] + eu
+					if cand < ng {
+						ng = cand
+						bestParent = parent
+					}
+				}
+			}
 			if old, ok := gScore[nk]; ok && ng >= old {
 				continue
 			}
 			gScore[nk] = ng
-			came[nk] = cur.k
+			came[nk] = bestParent
 			heap.Push(open, &astNode{k: nk, g: ng, f: ng + heuristic(nk, goal)})
 		}
 		for L := uint8(0); L < uint8(g.layers); L++ {
@@ -1657,14 +1670,33 @@ func clampCell(p core.Point, g *grid) (int, int) {
 	return cx, cy
 }
 
-func heuristic(a, b cellKey) float64 {
+func hypotCells(a, b cellKey) float64 {
 	dx := float64(a.x - b.x)
 	dy := float64(a.y - b.y)
-	h := math.Hypot(dx, dy)
+	return math.Hypot(dx, dy)
+}
+
+func heuristic(a, b cellKey) float64 {
+	h := hypotCells(a, b)
 	if a.l != b.l {
 		h += 0.5
 	}
 	return h
+}
+
+func (g *grid) lineOfSight(a, b cellKey, net string) bool {
+	if a.l != b.l {
+		return false
+	}
+	for _, c := range bresenham(a.x, a.y, b.x, b.y) {
+		if !g.passable(c[0], c[1], a.l, net) {
+			return false
+		}
+		if !g.searchClearanceOK(c[0], c[1], a.l, net) {
+			return false
+		}
+	}
+	return true
 }
 
 func abs(x int) int {

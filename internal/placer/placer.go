@@ -1,30 +1,53 @@
 // Package placer implements global electrostatic placement + SA legalisation.
+//
+// SA-only (GlobalStage=false) matches Rust pcb_placer::place with the
+// same seed, movable order, xorshift64* draws, schedule, hard floor,
+// and weighted-HPWL + soft-gap score. GlobalStage=true still runs a
+// cheap force pre-pass then retunes SA to the post-global schedule.
 package placer
 
 import (
 	"fmt"
 	"math"
-	"math/rand"
 	"strings"
 
 	"github.com/mentasystems/fragua/internal/core"
 )
 
-// Options configures a place run.
+// Options configures a place run. Defaults follow Rust PlaceOptions.
 type Options struct {
-	Seed         uint64
-	SolderGapMM  float64
-	Iterations   int
-	MoveStdMM    float64
+	Seed            uint64
+	SolderGapMM     float64
+	Iterations      int
+	MoveStdMM       float64
+	GlobalStage     bool
+	EdgeClearanceMM float64
+	MinGapMM        float64
+	MinClearanceMM  float64
+	GapPenalty      float64
+	InitialTemp     float64
+	FinalTemp       float64
+	MaxStepMM       float64
+	MinStepMM       float64
 }
 
-// DefaultOptions returns SA defaults.
+// DefaultOptions matches Rust PlaceOptions::default (SA-only temps;
+// after a global stage the loop retunes T 5→0.05 / step 8→0.25).
 func DefaultOptions() Options {
 	return Options{
-		Seed:        42,
-		SolderGapMM: core.MinFootprintGapMM,
-		Iterations:  4000,
-		MoveStdMM:   2.0,
+		Seed:            42,
+		SolderGapMM:     core.MinFootprintGapMM,
+		Iterations:      8000,
+		MoveStdMM:       20.0,
+		GlobalStage:     true,
+		EdgeClearanceMM: 0.8,
+		MinGapMM:        2.0,
+		MinClearanceMM:  0.5,
+		GapPenalty:      16.0,
+		InitialTemp:     50.0,
+		FinalTemp:       0.05,
+		MaxStepMM:       20.0,
+		MinStepMM:       0.5,
 	}
 }
 
@@ -44,6 +67,8 @@ func ParseOptions(o Options, args string) Options {
 			o.Iterations = int(x)
 		case "solder_gap":
 			o.SolderGapMM = x
+		case "global_stage":
+			o.GlobalStage = x != 0
 		}
 	}
 	return o
@@ -63,15 +88,18 @@ func (r Report) Summary() string {
 		r.InitialHPWLMM, r.FinalHPWLMM, len(r.Moved), r.Iterations)
 }
 
-// Place runs ePlace-style gradient steps then SA legalisation on refs
-// (nil refs = all non-edge-mounted footprints).
+type pos struct {
+	x, y core.Length
+	rot  float64
+}
+
+// Place runs optional force-directed global placement then SA legalisation
+// on refs (nil refs = all non-edge-mounted footprints, footprint-order).
 func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 	if board.Outline == nil {
 		return Report{}, fmt.Errorf("place: board has no outline")
 	}
-	rng := rand.New(rand.NewSource(int64(opts.Seed))) //nolint:gosec
 
-	// Select movable footprints
 	var fps []*core.Footprint
 	if len(refs) == 0 {
 		for _, id := range board.FootprintOrder {
@@ -98,58 +126,145 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		return Report{}, fmt.Errorf("place: no movable footprints")
 	}
 
-	initHPWL := hpwl(board)
-	bestHPWL := initHPWL
-	// snapshot best positions
-	type pos struct{ x, y core.Length; rot float64 }
-	best := map[string]pos{}
-	for _, fp := range fps {
-		best[fp.Reference] = pos{fp.Position.X, fp.Position.Y, fp.Rotation}
+	initHPWL := rawHPWL(board)
+	if opts.GlobalStage {
+		globalForce(board, fps, opts)
 	}
 
-	// Global stage: pull same-net pads together (simple force)
+	// After a global stage Rust retunes SA into a refinement role.
+	initT, finalT := opts.InitialTemp, opts.FinalTemp
+	maxStep, minStep := opts.MaxStepMM, opts.MinStepMM
+	if opts.GlobalStage {
+		initT, finalT = 5.0, 0.05
+		maxStep, minStep = 8.0, 0.25
+		if opts.MoveStdMM > 0 && opts.MoveStdMM != 20.0 && opts.MoveStdMM != 8.0 {
+			maxStep = opts.MoveStdMM
+		}
+	} else if opts.MoveStdMM > 0 && opts.MoveStdMM != 20.0 {
+		maxStep = opts.MoveStdMM
+	}
+
+	maxIter := opts.Iterations
+	if maxIter <= 0 {
+		maxIter = 8000
+	}
+	prng := newRNG(opts.Seed)
+	cooling := math.Pow(finalT/initT, 1.0/float64(maxIter))
+	curScore := compositeScore(board, fps, opts)
+	bestScore := curScore
+	best := map[string]pos{}
+	start := map[string]pos{}
+	for _, fp := range fps {
+		p := pos{fp.Position.X, fp.Position.Y, fp.Rotation}
+		best[fp.Reference] = p
+		start[fp.Reference] = p
+	}
+
+	o := board.Outline
+	hardClear := math.Max(opts.MinClearanceMM, opts.SolderGapMM)
+	for iter := 0; iter < maxIter; iter++ {
+		temp := initT * math.Pow(cooling, float64(iter))
+		progress := float64(iter) / float64(maxIter)
+		step := maxStep*(1.0-progress) + minStep*progress
+		fp := fps[int(prng.nextU64()%uint64(len(fps)))]
+		old := pos{fp.Position.X, fp.Position.Y, fp.Rotation}
+		beforeGap := minGapAgainstOthers(board, fp)
+
+		roll := prng.nextU32() % 16
+		switch roll {
+		case 0:
+			fp.Rotation = math.Mod(fp.Rotation+90, 360)
+		case 1:
+			ow, oh := o.Width().ToMM(), o.Height().ToMM()
+			const margin = 2.0
+			spanX := math.Max(0, ow-2*margin)
+			spanY := math.Max(0, oh-2*margin)
+			nx := o.Min.X.ToMM() + margin + prng.nextF64()*spanX
+			ny := o.Min.Y.ToMM() + margin + prng.nextF64()*spanY
+			fp.Position = core.NewPoint(core.FromMM(nx), core.FromMM(ny))
+		default:
+			dx := (prng.nextF64() - 0.5) * 2.0 * step
+			dy := (prng.nextF64() - 0.5) * 2.0 * step
+			// Rust: new_pos = old + Length::from_mm(d) — not FromMM(old_mm+d).
+			fp.Position = core.NewPoint(old.x+core.FromMM(dx), old.y+core.FromMM(dy))
+		}
+
+		if !padsInside(fp, o, opts.EdgeClearanceMM) || firstOverlapper(board, fp) {
+			fp.Position = core.NewPoint(old.x, old.y)
+			fp.Rotation = old.rot
+			continue
+		}
+		afterGap := minGapAgainstOthers(board, fp)
+		if afterGap < hardClear && afterGap <= beforeGap {
+			fp.Position = core.NewPoint(old.x, old.y)
+			fp.Rotation = old.rot
+			continue
+		}
+
+		newScore := compositeScore(board, fps, opts)
+		dE := newScore - curScore
+		accept := dE <= 0
+		if !accept && temp > 0 {
+			accept = prng.nextF64() < math.Exp(-dE/temp)
+		}
+		if accept {
+			curScore = newScore
+			if curScore < bestScore {
+				bestScore = curScore
+				for _, f := range fps {
+					best[f.Reference] = pos{f.Position.X, f.Position.Y, f.Rotation}
+				}
+			}
+		} else {
+			fp.Position = core.NewPoint(old.x, old.y)
+			fp.Rotation = old.rot
+		}
+	}
+
+	var moved []string
+	for _, fp := range fps {
+		b := best[fp.Reference]
+		s := start[fp.Reference]
+		dx := math.Abs((b.x - s.x).ToMM())
+		dy := math.Abs((b.y - s.y).ToMM())
+		if dx >= 0.05 || dy >= 0.05 || b.rot != s.rot {
+			moved = append(moved, fp.Reference)
+		}
+		fp.Position = core.NewPoint(b.x, b.y)
+		fp.Rotation = b.rot
+	}
+
+	return Report{
+		InitialHPWLMM: initHPWL,
+		FinalHPWLMM:   rawHPWL(board),
+		Moved:         moved,
+		Iterations:    maxIter,
+	}, nil
+}
+
+func globalForce(board *core.Board, fps []*core.Footprint, opts Options) {
+	type posSnap struct{ x, y core.Length; rot float64 }
+	bestHPWL := rawHPWL(board)
+	best := map[string]posSnap{}
+	for _, fp := range fps {
+		best[fp.Reference] = posSnap{fp.Position.X, fp.Position.Y, fp.Rotation}
+	}
 	for iter := 0; iter < 80; iter++ {
+		netPads := map[string][][2]float64{}
+		for _, fp := range board.Footprints {
+			if fp == nil {
+				continue
+			}
+			for i := range fp.Pads {
+				pad := &fp.Pads[i]
+				if pad.Net == nil || *pad.Net == "" {
+					continue
+				}
+				c := core.PadWorldCenter(fp, pad)
+				netPads[*pad.Net] = append(netPads[*pad.Net], [2]float64{c.X.ToMM(), c.Y.ToMM()})
+			}
+		}
 		forces := map[string][2]float64{}
-		// net centers
-		netPads := map[string][][3]float64{} // ref, x,y
-		for _, fp := range board.Footprints {
-			if fp == nil {
-				continue
-			}
-			for i := range fp.Pads {
-				pad := &fp.Pads[i]
-				if pad.Net == nil || *pad.Net == "" {
-					continue
-				}
-				c := core.PadWorldCenter(fp, pad)
-				netPads[*pad.Net] = append(netPads[*pad.Net], [3]float64{
-					0, c.X.ToMM(), c.Y.ToMM(),
-				})
-				_ = fp.Reference
-			}
-		}
-		// rebuild with ref
-		netPads = map[string][][3]float64{}
-		refOf := map[*core.Footprint]string{}
-		for _, fp := range fps {
-			refOf[fp] = fp.Reference
-		}
-		for _, fp := range board.Footprints {
-			if fp == nil {
-				continue
-			}
-			for i := range fp.Pads {
-				pad := &fp.Pads[i]
-				if pad.Net == nil || *pad.Net == "" {
-					continue
-				}
-				c := core.PadWorldCenter(fp, pad)
-				netPads[*pad.Net] = append(netPads[*pad.Net], [3]float64{
-					hashRef(fp.Reference), c.X.ToMM(), c.Y.ToMM(),
-				})
-			}
-		}
-		// For each movable fp, attract toward netmates
 		for _, fp := range fps {
 			fx, fy := 0.0, 0.0
 			n := 0
@@ -164,8 +279,8 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 				}
 				cx, cy := 0.0, 0.0
 				for _, m := range mates {
-					cx += m[1]
-					cy += m[2]
+					cx += m[0]
+					cy += m[1]
 				}
 				cx /= float64(len(mates))
 				cy /= float64(len(mates))
@@ -186,7 +301,6 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 			nx, ny = clampToOutline(nx, ny, board.Outline, 1.0)
 			fp.Position = core.NewPoint(core.FromMM(nx), core.FromMM(ny))
 		}
-		// weak repulsion
 		for i := 0; i < len(fps); i++ {
 			for j := i + 1; j < len(fps); j++ {
 				a, b := fps[i], fps[j]
@@ -210,81 +324,19 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 				}
 			}
 		}
-		h := hpwl(board)
+		h := rawHPWL(board)
 		if h < bestHPWL {
 			bestHPWL = h
 			for _, fp := range fps {
-				best[fp.Reference] = pos{fp.Position.X, fp.Position.Y, fp.Rotation}
+				best[fp.Reference] = posSnap{fp.Position.X, fp.Position.Y, fp.Rotation}
 			}
 		}
 	}
-
-	// SA legalisation
-	T := 5.0
-	curHPWL := hpwl(board)
-	for iter := 0; iter < opts.Iterations; iter++ {
-		fp := fps[rng.Intn(len(fps))]
-		old := pos{fp.Position.X, fp.Position.Y, fp.Rotation}
-		// propose move or 90° rotate
-		if rng.Float64() < 0.15 {
-			fp.Rotation = math.Mod(fp.Rotation+90, 360)
-		} else {
-			nx := old.x.ToMM() + rng.NormFloat64()*opts.MoveStdMM
-			ny := old.y.ToMM() + rng.NormFloat64()*opts.MoveStdMM
-			nx, ny = clampToOutline(nx, ny, board.Outline, 1.0)
-			fp.Position = core.NewPoint(core.FromMM(nx), core.FromMM(ny))
-		}
-		// hard gap constraint
-		if !legalGaps(board, opts.SolderGapMM) {
-			fp.Position = core.NewPoint(old.x, old.y)
-			fp.Rotation = old.rot
-			continue
-		}
-		newHPWL := hpwl(board)
-		dE := newHPWL - curHPWL
-		if dE < 0 || rng.Float64() < math.Exp(-dE/T) {
-			curHPWL = newHPWL
-			if curHPWL < bestHPWL {
-				bestHPWL = curHPWL
-				for _, f := range fps {
-					best[f.Reference] = pos{f.Position.X, f.Position.Y, f.Rotation}
-				}
-			}
-		} else {
-			fp.Position = core.NewPoint(old.x, old.y)
-			fp.Rotation = old.rot
-		}
-		T *= 0.999
-		if T < 0.01 {
-			T = 0.01
-		}
-	}
-
-	// restore best-seen
-	var moved []string
 	for _, fp := range fps {
 		b := best[fp.Reference]
-		if fp.Position.X != b.x || fp.Position.Y != b.y || fp.Rotation != b.rot {
-			moved = append(moved, fp.Reference)
-		}
 		fp.Position = core.NewPoint(b.x, b.y)
 		fp.Rotation = b.rot
 	}
-
-	return Report{
-		InitialHPWLMM: initHPWL,
-		FinalHPWLMM:   hpwl(board),
-		Moved:         moved,
-		Iterations:    opts.Iterations,
-	}, nil
-}
-
-func hashRef(s string) float64 {
-	h := 0.0
-	for _, c := range s {
-		h = h*33 + float64(c)
-	}
-	return h
 }
 
 func clampToOutline(x, y float64, o *core.Rect, marginMM float64) (float64, float64) {
@@ -310,75 +362,301 @@ func clampToOutline(x, y float64, o *core.Rect, marginMM float64) (float64, floa
 	return x, y
 }
 
-func hpwl(board *core.Board) float64 {
-	// weighted HPWL: half-perimeter of pad bbox per net, ×4 for 2-pin nets (Rust-ish)
-	nets := map[string][]core.Point{}
-	for _, fp := range board.Footprints {
-		if fp == nil {
+func footprintBounds(fp *core.Footprint) (core.Rect, bool) {
+	if fp == nil || len(fp.Pads) == 0 {
+		return core.Rect{}, false
+	}
+	r := core.PadWorldAABB(fp, &fp.Pads[0])
+	for i := 1; i < len(fp.Pads); i++ {
+		r = r.Union(core.PadWorldAABB(fp, &fp.Pads[i]))
+	}
+	return r, true
+}
+
+func padsInside(fp *core.Footprint, o *core.Rect, edgeMM float64) bool {
+	b, ok := footprintBounds(fp)
+	if !ok || o == nil {
+		return false
+	}
+	e := core.FromMM(edgeMM)
+	if fp.EdgeMounted {
+		e = 0
+	}
+	return b.Min.X >= o.Min.X+e && b.Min.Y >= o.Min.Y+e &&
+		b.Max.X <= o.Max.X-e && b.Max.Y <= o.Max.Y-e
+}
+
+// firstOverlapper: pad-bbox union expanded by MIN_FOOTPRINT_GAP/2 intersects another.
+func firstOverlapper(board *core.Board, probe *core.Footprint) bool {
+	pb, ok := footprintBounds(probe)
+	if !ok {
+		return false
+	}
+	half := core.FromMM(core.MinFootprintGapMM / 2)
+	pb = pb.Expand(half)
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil || fp == probe || fp.ID == probe.ID {
 			continue
+		}
+		ob, ok := footprintBounds(fp)
+		if !ok {
+			continue
+		}
+		if pb.Intersects(ob.Expand(half)) {
+			return true
+		}
+	}
+	// FootprintOrder may miss map-only entries.
+	if len(board.FootprintOrder) == 0 {
+		for _, fp := range board.Footprints {
+			if fp == nil || fp == probe || fp.ID == probe.ID {
+				continue
+			}
+			ob, ok := footprintBounds(fp)
+			if !ok {
+				continue
+			}
+			if pb.Intersects(ob.Expand(half)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func aabbGapMM(a, b core.Rect) float64 {
+	var dx, dy float64
+	if a.Max.X < b.Min.X {
+		dx = (b.Min.X - a.Max.X).ToMM()
+	} else if b.Max.X < a.Min.X {
+		dx = (a.Min.X - b.Max.X).ToMM()
+	} else {
+		overlap := minLen(a.Max.X, b.Max.X) - maxLen(a.Min.X, b.Min.X)
+		dx = -overlap.ToMM()
+	}
+	if a.Max.Y < b.Min.Y {
+		dy = (b.Min.Y - a.Max.Y).ToMM()
+	} else if b.Max.Y < a.Min.Y {
+		dy = (a.Min.Y - b.Max.Y).ToMM()
+	} else {
+		overlap := minLen(a.Max.Y, b.Max.Y) - maxLen(a.Min.Y, b.Min.Y)
+		dy = -overlap.ToMM()
+	}
+	if dx >= 0 && dy >= 0 {
+		return math.Min(dx, dy)
+	}
+	if dx >= 0 {
+		return dx
+	}
+	if dy >= 0 {
+		return dy
+	}
+	if dx < dy {
+		return dx
+	}
+	return dy
+}
+
+func minLen(a, b core.Length) core.Length {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxLen(a, b core.Length) core.Length {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minGapAgainstOthers(board *core.Board, probe *core.Footprint) float64 {
+	pb, ok := footprintBounds(probe)
+	if !ok {
+		return math.Inf(1)
+	}
+	m := math.Inf(1)
+	visit := func(fp *core.Footprint) {
+		if fp == nil || fp == probe || fp.ID == probe.ID {
+			return
+		}
+		ob, ok := footprintBounds(fp)
+		if !ok {
+			return
+		}
+		g := aabbGapMM(pb, ob)
+		if g < m {
+			m = g
+		}
+	}
+	if len(board.FootprintOrder) > 0 {
+		for _, id := range board.FootprintOrder {
+			visit(board.Footprints[id])
+		}
+	} else {
+		for _, fp := range board.Footprints {
+			visit(fp)
+		}
+	}
+	return m
+}
+
+func pairGapPenalty(a, b *core.Footprint, minGap float64) float64 {
+	ab, okA := footprintBounds(a)
+	bb, okB := footprintBounds(b)
+	if !okA || !okB {
+		return 0
+	}
+	gap := aabbGapMM(ab, bb)
+	if gap >= minGap {
+		return 0
+	}
+	s := minGap - math.Max(gap, 0)
+	return s * s
+}
+
+func totalGapPenalty(board *core.Board, minGap float64) float64 {
+	var fps []*core.Footprint
+	if len(board.FootprintOrder) > 0 {
+		for _, id := range board.FootprintOrder {
+			if fp := board.Footprints[id]; fp != nil {
+				fps = append(fps, fp)
+			}
+		}
+	} else {
+		for _, fp := range board.Footprints {
+			if fp != nil {
+				fps = append(fps, fp)
+			}
+		}
+	}
+	sum := 0.0
+	for i := 0; i < len(fps); i++ {
+		for j := i + 1; j < len(fps); j++ {
+			sum += pairGapPenalty(fps[i], fps[j], minGap)
+		}
+	}
+	return sum
+}
+
+func netWeight(nPads int) float64 {
+	d := nPads - 1
+	if d < 1 {
+		d = 1
+	}
+	return 4.0 / float64(d)
+}
+
+// rawHPWL is unweighted half-perimeter wirelength (report metric).
+func rawHPWL(board *core.Board) float64 {
+	type bb struct{ minX, minY, maxX, maxY float64; n int }
+	nets := map[string]*bb{}
+	walk := func(fp *core.Footprint) {
+		if fp == nil {
+			return
 		}
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
 			if pad.Net == nil || *pad.Net == "" {
 				continue
 			}
-			nets[*pad.Net] = append(nets[*pad.Net], core.PadWorldCenter(fp, pad))
+			c := core.PadWorldCenter(fp, pad)
+			x, y := c.X.ToMM(), c.Y.ToMM()
+			e := nets[*pad.Net]
+			if e == nil {
+				e = &bb{minX: x, minY: y, maxX: x, maxY: y, n: 1}
+				nets[*pad.Net] = e
+				continue
+			}
+			if x < e.minX {
+				e.minX = x
+			}
+			if y < e.minY {
+				e.minY = y
+			}
+			if x > e.maxX {
+				e.maxX = x
+			}
+			if y > e.maxY {
+				e.maxY = y
+			}
+			e.n++
+		}
+	}
+	if len(board.FootprintOrder) > 0 {
+		for _, id := range board.FootprintOrder {
+			walk(board.Footprints[id])
+		}
+	} else {
+		for _, fp := range board.Footprints {
+			walk(fp)
 		}
 	}
 	total := 0.0
-	for _, pts := range nets {
-		if len(pts) < 2 {
-			continue
+	for _, e := range nets {
+		if e.n >= 2 && e.maxX >= e.minX && e.maxY >= e.minY {
+			total += (e.maxX - e.minX) + (e.maxY - e.minY)
 		}
-		minX, maxX := pts[0].X, pts[0].X
-		minY, maxY := pts[0].Y, pts[0].Y
-		for _, p := range pts[1:] {
-			if p.X < minX {
-				minX = p.X
-			}
-			if p.X > maxX {
-				maxX = p.X
-			}
-			if p.Y < minY {
-				minY = p.Y
-			}
-			if p.Y > maxY {
-				maxY = p.Y
-			}
-		}
-		hp := (maxX-minX).ToMM() + (maxY-minY).ToMM()
-		w := 1.0
-		if len(pts) == 2 {
-			w = 4.0
-		}
-		total += w * hp
 	}
 	return total
 }
 
-func legalGaps(board *core.Board, gapMM float64) bool {
-	var fps []*core.Footprint
-	for _, fp := range board.Footprints {
-		if fp != nil {
-			fps = append(fps, fp)
+// weightedHPWL is the SA objective wirelength term (4/(n-1) per net).
+func weightedHPWL(board *core.Board) float64 {
+	type bb struct{ minX, minY, maxX, maxY float64; n int }
+	nets := map[string]*bb{}
+	walk := func(fp *core.Footprint) {
+		if fp == nil {
+			return
 		}
-	}
-	gap := core.FromMM(gapMM)
-	for i := 0; i < len(fps); i++ {
-		for j := i + 1; j < len(fps); j++ {
-			a, b := fps[i], fps[j]
-			// pad AABB expansion
-			for pi := range a.Pads {
-				aa := core.PadWorldAABB(a, &a.Pads[pi]).Expand(gap / 2)
-				for pj := range b.Pads {
-					bb := core.PadWorldAABB(b, &b.Pads[pj]).Expand(gap / 2)
-					if aa.Intersects(bb) {
-						// same net pads may be closer? keep hard floor for all
-						return false
-					}
-				}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net == "" {
+				continue
 			}
+			c := core.PadWorldCenter(fp, pad)
+			x, y := c.X.ToMM(), c.Y.ToMM()
+			e := nets[*pad.Net]
+			if e == nil {
+				e = &bb{minX: x, minY: y, maxX: x, maxY: y, n: 1}
+				nets[*pad.Net] = e
+				continue
+			}
+			if x < e.minX {
+				e.minX = x
+			}
+			if y < e.minY {
+				e.minY = y
+			}
+			if x > e.maxX {
+				e.maxX = x
+			}
+			if y > e.maxY {
+				e.maxY = y
+			}
+			e.n++
 		}
 	}
-	return true
+	if len(board.FootprintOrder) > 0 {
+		for _, id := range board.FootprintOrder {
+			walk(board.Footprints[id])
+		}
+	} else {
+		for _, fp := range board.Footprints {
+			walk(fp)
+		}
+	}
+	total := 0.0
+	for _, e := range nets {
+		if e.n >= 2 {
+			total += ((e.maxX - e.minX) + (e.maxY - e.minY)) * netWeight(e.n)
+		}
+	}
+	return total
+}
+
+func compositeScore(board *core.Board, _ []*core.Footprint, opts Options) float64 {
+	return weightedHPWL(board) + opts.GapPenalty*totalGapPenalty(board, opts.MinGapMM)
 }

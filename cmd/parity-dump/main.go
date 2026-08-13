@@ -13,6 +13,7 @@ import (
 	"github.com/mentasystems/fragua/internal/core"
 	"github.com/mentasystems/fragua/internal/drc"
 	"github.com/mentasystems/fragua/internal/erc"
+	"github.com/mentasystems/fragua/internal/placer"
 	"github.com/mentasystems/fragua/internal/router"
 )
 
@@ -23,6 +24,7 @@ type dump struct {
 	DRC        checkReport  `json:"drc"`
 	ERC        checkReport  `json:"erc"`
 	Route      *routeDump   `json:"route,omitempty"`
+	Place      *placeDump   `json:"place,omitempty"`
 	CopperHash string       `json:"copper_hash,omitempty"`
 }
 
@@ -65,18 +67,27 @@ type routeDump struct {
 	DRCByKind     map[string]int    `json:"drc_by_kind"`
 }
 
+type placeDump struct {
+	InitialHPWLMM float64             `json:"initial_hpwl_mm"`
+	FinalHPWLMM   float64             `json:"final_hpwl_mm"`
+	Positions     map[string][3]float64 `json:"positions"`
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: parity-dump <project.fragua> [--route] [--out file.json]")
+		fmt.Fprintln(os.Stderr, "usage: parity-dump <project.fragua> [--route] [--place] [--out file.json]")
 		os.Exit(2)
 	}
 	path := os.Args[1]
 	doRoute := false
+	doPlace := false
 	out := ""
 	for i := 2; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--route":
 			doRoute = true
+		case "--place":
+			doPlace = true
 		case "--out":
 			i++
 			if i < len(os.Args) {
@@ -112,6 +123,47 @@ func main() {
 	}
 	if b.Outline != nil {
 		d.Geometry.OutlineMM = &[2]float64{b.Outline.Width().ToMM(), b.Outline.Height().ToMM()}
+	}
+
+	if doPlace {
+		var refs []string
+		for _, id := range b.FootprintOrder {
+			fp := b.Footprints[id]
+			if fp != nil && !fp.EdgeMounted {
+				refs = append(refs, fp.Reference)
+			}
+		}
+		opts := placer.DefaultOptions()
+		opts.Seed = 42
+		opts.GlobalStage = false
+		opts.Iterations = 8000
+		rep, err := placer.Place(b, refs, opts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		pd := &placeDump{
+			InitialHPWLMM: rep.InitialHPWLMM,
+			FinalHPWLMM:   rep.FinalHPWLMM,
+			Positions:     map[string][3]float64{},
+		}
+		order := b.FootprintOrder
+		if len(order) == 0 {
+			for id := range b.Footprints {
+				order = append(order, id)
+			}
+			sort.Strings(order)
+		}
+		for _, id := range order {
+			fp := b.Footprints[id]
+			if fp == nil {
+				continue
+			}
+			pd.Positions[fp.Reference] = [3]float64{
+				fp.Position.X.ToMM(), fp.Position.Y.ToMM(), fp.Rotation,
+			}
+		}
+		d.Place = pd
 	}
 
 	if doRoute {

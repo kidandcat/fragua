@@ -16,6 +16,7 @@ pcb-drc = { path = "../pcb-drc" }
 pcb-erc = { path = "../pcb-erc" }
 pcb-gerber = { path = "../pcb-gerber" }
 pcb-router = { path = "../pcb-router" }
+pcb-placer = { path = "../pcb-placer" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

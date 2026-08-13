@@ -27,6 +27,8 @@ struct OracleDump {
     #[serde(skip_serializing_if = "Option::is_none")]
     route: Option<RouteDump>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    place: Option<PlaceDump>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copper_hash: Option<String>,
 }
 
@@ -77,19 +79,28 @@ struct RouteDump {
     drc_by_kind: BTreeMap<String, usize>,
 }
 
+#[derive(Serialize)]
+struct PlaceDump {
+    initial_hpwl_mm: f64,
+    final_hpwl_mm: f64,
+    positions: BTreeMap<String, [f64; 3]>, // x_mm, y_mm, rot
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: pcb-oracle <project.fragua> [--route] [--out file.json]");
+        eprintln!("usage: pcb-oracle <project.fragua> [--route] [--place] [--out file.json]");
         std::process::exit(2);
     }
     let mut do_route = false;
+    let mut do_place = false;
     let mut out: Option<PathBuf> = None;
     let mut path = PathBuf::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--route" => do_route = true,
+            "--place" => do_place = true,
             "--out" => {
                 i += 1;
                 out = args.get(i).map(PathBuf::from);
@@ -166,7 +177,49 @@ fn main() {
     });
 
     let mut route_dump = None;
+    let mut place_dump = None;
     let mut copper_hash = Some(hash_copper(board));
+
+    if do_place {
+        let mut b = board.clone();
+        let refs: Vec<String> = b
+            .footprints_in_order()
+            .filter(|fp| !fp.edge_mounted)
+            .map(|fp| fp.reference.clone())
+            .collect();
+        let mut opts = pcb_placer::PlaceOptions {
+            seed: 42,
+            global_stage: false,
+            edge_plan: false,
+            decouple: false,
+            congestion_resolution: 0,
+            congestion_penalty_factor: 0.0,
+            crossing_penalty_factor: 0.0,
+            ..pcb_placer::PlaceOptions::default()
+        };
+        opts.max_iterations = 8000;
+        let report = pcb_placer::place(&mut b, &refs, &opts, &Default::default())
+            .unwrap_or_else(|e| {
+                eprintln!("place failed: {e}");
+                std::process::exit(1);
+            });
+        let mut positions = BTreeMap::new();
+        for fp in b.footprints_in_order() {
+            positions.insert(
+                fp.reference.clone(),
+                [
+                    fp.position.x.to_mm(),
+                    fp.position.y.to_mm(),
+                    f64::from(fp.rotation),
+                ],
+            );
+        }
+        place_dump = Some(PlaceDump {
+            initial_hpwl_mm: report.initial_hpwl_mm,
+            final_hpwl_mm: report.final_hpwl_mm,
+            positions,
+        });
+    }
 
     if do_route {
         // Clear and re-route for process parity of the route verb.
@@ -238,6 +291,7 @@ fn main() {
             findings: erc_findings,
         },
         route: route_dump,
+        place: place_dump,
         copper_hash,
     };
 

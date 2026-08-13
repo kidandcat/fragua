@@ -1,6 +1,7 @@
 package router
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -100,6 +101,40 @@ func TestRoutesTwoResistors(t *testing.T) {
 		t.Fatalf("OUT not ok: %+v", rep.PerNet)
 	}
 	t.Logf("two-resistor measure: %s traces=%d", rep.Summary(), len(b.Traces))
+}
+
+func TestThetaStarEmitsDiagonal(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{
+		pad("1", 0, 0, "DIAG"),
+	}))
+	b.AddFootprint(footprint("R2", 30, 20, []core.Pad{
+		pad("1", 0, 0, "DIAG"),
+	}))
+	rep := Route(b, DefaultOptions())
+	ok := false
+	for _, n := range rep.PerNet {
+		if n.Net == "DIAG" && n.Outcome.Status == "ok" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("DIAG should route, got %+v", rep.PerNet)
+	}
+	hasDiag := false
+	for _, tr := range b.Traces {
+		dx := math.Abs(tr.Start.X.ToMM() - tr.End.X.ToMM())
+		dy := math.Abs(tr.Start.Y.ToMM() - tr.End.Y.ToMM())
+		if dx > 1e-6 && dy > 1e-6 {
+			hasDiag = true
+			break
+		}
+	}
+	if !hasDiag {
+		t.Fatalf("expected at least one any-angle segment, traces=%d", len(b.Traces))
+	}
 }
 
 // Three pads on one net must grow a tree (Steiner/Prim multi-source), not
