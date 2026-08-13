@@ -37,6 +37,9 @@ func main() {
 
 	// A: keep product placement, Go route only.
 	runKeepPlace(p, outDir)
+	if os.Getenv("FECHA_ONLY_A") != "" {
+		return
+	}
 
 	// Reload for a clean B: pin modules, auto-place passives, route.
 	p2, err := core.LoadFromPath(src)
@@ -50,13 +53,16 @@ func runKeepPlace(p *core.Project, outDir string) {
 	fmt.Println("== A: keep place, Go route ==")
 	p.MutateBoard(func(b *core.Board) { b.ClearRoute() })
 	opts := router.DefaultOptions()
-	opts.MaxSeconds = 90
+	opts.MaxSeconds = 180
 	t0 := time.Now()
 	var rep router.Report
 	p.MutateBoard(func(b *core.Board) { rep = router.Route(b, opts) })
 	fmt.Printf("route %s in %s\n", rep.Summary(), time.Since(t0).Round(time.Millisecond))
 
 	saveVariant(p, outDir, "A-keep-place", &rep)
+	if os.Getenv("FECHA_ONLY_A") != "" {
+		return
+	}
 }
 
 func runRePlace(p *core.Project, outDir string) {
@@ -145,21 +151,21 @@ func metrics(p *core.Project, label string) map[string]any {
 		ow, oh = b.Outline.Width().ToMM(), b.Outline.Height().ToMM()
 	}
 	return map[string]any{
-		"label":          label,
-		"outline_mm":     [2]float64{ow, oh},
-		"footprints":     len(b.Footprints),
-		"traces":         len(b.Traces),
-		"vias":           len(b.Vias),
-		"pours":          len(b.Pours),
-		"drc_errors":     d.Errors,
-		"drc_warnings":   d.Warnings,
-		"drc_by_kind":    byD,
-		"erc_errors":     e.Errors,
-		"erc_warnings":   e.Warnings,
-		"erc_by_kind":    byE,
-		"positions":      pos,
-		"drc_summary":    d.Summary(),
-		"erc_summary":    e.Summary(),
+		"label":        label,
+		"outline_mm":   [2]float64{ow, oh},
+		"footprints":   len(b.Footprints),
+		"traces":       len(b.Traces),
+		"vias":         len(b.Vias),
+		"pours":        len(b.Pours),
+		"drc_errors":   d.Errors,
+		"drc_warnings": d.Warnings,
+		"drc_by_kind":  byD,
+		"erc_errors":   e.Errors,
+		"erc_warnings": e.Warnings,
+		"erc_by_kind":  byE,
+		"positions":    pos,
+		"drc_summary":  d.Summary(),
+		"erc_summary":  e.Summary(),
 	}
 }
 

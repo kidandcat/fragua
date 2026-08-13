@@ -35,7 +35,7 @@ func BoardSVG(board *core.Board) string {
 
 	if o := board.Outline; o != nil {
 		rad := board.OutlineCornerRadius.ToMM()
-		fmt.Fprintf(&b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="%.3f" ry="%.3f" fill="#5a3a1f" fill-opacity="0.55"/>`,
+		fmt.Fprintf(&b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="%.3f" ry="%.3f" fill="#5a3a1f" fill-opacity="0.72"/>`,
 			o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM(), rad, rad)
 		for _, pour := range board.Pours {
 			writePour(&b, board, pour, *o)
@@ -141,7 +141,7 @@ func writePour(b *strings.Builder, board *core.Board, pour core.Pour, outline co
 	h := outline.Height().ToMM() - 2*inset
 	fill := padFill(pour.Layer)
 	// evenodd: board rect minus clearance holes around foreign pads
-	fmt.Fprintf(b, `<path fill="%s" fill-opacity="0.38" fill-rule="evenodd" d="M%.3f,%.3f h%.3f v%.3f h%.3f z`,
+	fmt.Fprintf(b, `<path fill="%s" fill-opacity="0.16" fill-rule="evenodd" d="M%.3f,%.3f h%.3f v%.3f h%.3f z`,
 		fill, x, y, w, h, -w)
 	halo := 0.55
 	for _, fp := range board.Footprints {

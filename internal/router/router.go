@@ -234,31 +234,49 @@ func Route(board *core.Board, opts Options) Report {
 		}
 	}
 
-	// 4. Light RR&R: retry failed nets once success copper is fixed.
+	// 4. RR&R: snapshot, rip one blocking signal net, retry the failed
+	// net then the victim. Restore the snapshot if either side fails.
 	if len(failedNets) > 0 && !pastDeadline() {
 		rep.Iterations = 2
+		still := []string{}
 		for _, name := range failedNets {
 			if pastDeadline() {
-				break
+				still = append(still, name)
+				continue
 			}
-			pads := nets[name]
-			out := routeNet(board, g, name, pads, opts, deadline, hasDeadline)
+			victim := pickRipVictim(board, nets[name], name)
+			snapT := append([]core.Trace(nil), board.Traces...)
+			snapV := append([]core.Via(nil), board.Vias...)
+			if victim != "" {
+				ripNetCopper(board, victim)
+				g = newGrid(board, opts)
+			}
+			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
+			ok := out.Status == "ok"
+			if ok && victim != "" {
+				vout := routeNet(board, g, victim, nets[victim], opts, deadline, hasDeadline)
+				ok = vout.Status == "ok"
+			}
+			if !ok {
+				board.Traces = snapT
+				board.Vias = snapV
+				g = newGrid(board, opts)
+				still = append(still, name)
+			} else {
+				rep.Failed--
+				rep.TraceCount += out.TraceSegments
+				rep.TotalLengthMM += out.LengthMM
+			}
 			for i := range rep.PerNet {
-				if rep.PerNet[i].Net != name {
-					continue
-				}
-				if out.Status == "ok" {
-					if rep.PerNet[i].Outcome.Status != "ok" {
-						rep.Failed--
+				if rep.PerNet[i].Net == name {
+					rep.PerNet[i].Outcome = out
+					if !ok {
+						rep.PerNet[i].Outcome.Status = "failed"
 					}
-					rep.TraceCount += out.TraceSegments
-					rep.TotalLengthMM += out.LengthMM
-					rep.TotalLowerBound += out.LowerBoundMM
 				}
-				rep.PerNet[i].Outcome = out
-				break
 			}
 		}
+		failedNets = still
 	}
 
 	// 5. Organic string-pull (default on). Roll back if it would make
@@ -330,6 +348,73 @@ func refreshReportLengths(board *core.Board, rep *Report) {
 }
 
 // footprintsStable returns footprints in deterministic order (FootprintOrder, then ref).
+func ripNetCopper(board *core.Board, net string) (tr []core.Trace, vias []core.Via) {
+	keptT := board.Traces[:0]
+	for _, t := range board.Traces {
+		if t.Net == net {
+			tr = append(tr, t)
+			continue
+		}
+		keptT = append(keptT, t)
+	}
+	board.Traces = keptT
+	keptV := board.Vias[:0]
+	for _, v := range board.Vias {
+		if v.Net == net {
+			vias = append(vias, v)
+			continue
+		}
+		keptV = append(keptV, v)
+	}
+	board.Vias = keptV
+	return tr, vias
+}
+
+func pickRipVictim(board *core.Board, pads []padLoc, failed string) string {
+	if len(pads) == 0 {
+		return ""
+	}
+	minX, minY := pads[0].p.X.ToMM(), pads[0].p.Y.ToMM()
+	maxX, maxY := minX, minY
+	for _, p := range pads[1:] {
+		x, y := p.p.X.ToMM(), p.p.Y.ToMM()
+		if x < minX {
+			minX = x
+		}
+		if y < minY {
+			minY = y
+		}
+		if x > maxX {
+			maxX = x
+		}
+		if y > maxY {
+			maxY = y
+		}
+	}
+	minX -= 4
+	minY -= 4
+	maxX += 4
+	maxY += 4
+	hits := map[string]int{}
+	for _, t := range board.Traces {
+		if t.Net == failed || netOrderKey(t.Net) < 3 {
+			continue
+		}
+		x := (t.Start.X.ToMM() + t.End.X.ToMM()) / 2
+		y := (t.Start.Y.ToMM() + t.End.Y.ToMM()) / 2
+		if x >= minX && x <= maxX && y >= minY && y <= maxY {
+			hits[t.Net]++
+		}
+	}
+	best, n := "", 0
+	for net, c := range hits {
+		if c > n || (c == n && net < best) {
+			best, n = net, c
+		}
+	}
+	return best
+}
+
 func netOrderKey(name string) int {
 	u := strings.ToUpper(name)
 	switch {
@@ -426,20 +511,159 @@ func existingNetSources(board *core.Board, g *grid, net string) []cellKey {
 
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	out := routeNetFrom(board, g, name, pads, 0, opts, deadline, hasDeadline)
-	if out.Status == "ok" || len(pads) < 3 {
+	if out.Status == "ok" {
 		return out
 	}
-	// Unlucky seed (an edge pad that cannot escape) — try every other pad.
-	for seed := 1; seed < len(pads); seed++ {
-		if hasDeadline && time.Now().After(deadline) {
-			break
+	if len(pads) >= 3 && len(pads) <= 4 {
+		for seed := 1; seed < len(pads); seed++ {
+			if hasDeadline && time.Now().After(deadline) {
+				break
+			}
+			out = routeNetFrom(board, g, name, pads, seed, opts, deadline, hasDeadline)
+			if out.Status == "ok" {
+				return out
+			}
 		}
-		out = routeNetFrom(board, g, name, pads, seed, opts, deadline, hasDeadline)
-		if out.Status == "ok" {
-			return out
+	}
+	if len(pads) <= 3 && (!hasDeadline || time.Now().Before(deadline)) {
+		if j := routeViaJumper(board, g, name, pads, opts); j.Status == "ok" {
+			return j
 		}
 	}
 	return out
+}
+
+// routeViaJumper drops a via beside each pad and routes the other
+// layer — the usual header-to-header escape when the top is packed.
+func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts Options) Outcome {
+	if len(pads) < 2 {
+		return Outcome{Status: "failed", Reason: "jumper"}
+	}
+	need := opts.TraceWidthMM/2 + 0.20
+	type site struct {
+		pad padLoc
+		via core.Point
+	}
+	var sites []site
+	dirs := [][2]float64{{0, -0.6}, {0, 0.6}, {-0.6, 0}, {0.6, 0}, {0.6, -0.6}, {-0.6, -0.6}}
+	for _, p := range pads {
+		var chosen *core.Point
+		px, py := p.p.X.ToMM(), p.p.Y.ToMM()
+		for _, d := range dirs {
+			x, y := px+d[0], py+d[1]
+			if board.Outline != nil && !outlineContains(board.Outline, x, y, 0.35) {
+				continue
+			}
+			if g.nearForeignPad(x, y, p.layer, name, need) {
+				continue
+			}
+			other := uint8(1)
+			if p.layer == 1 {
+				other = 0
+			}
+			if g.nearForeignPad(x, y, other, name, need) {
+				continue
+			}
+			pt := core.NewPoint(core.FromMM(x), core.FromMM(y))
+			chosen = &pt
+			break
+		}
+		if chosen == nil {
+			return Outcome{Status: "failed", Reason: "jumper-site"}
+		}
+		sites = append(sites, site{pad: p, via: *chosen})
+	}
+	w := core.FromMM(opts.TraceWidthMM)
+	// Stubs + vias first so A* can use them as sources.
+	var stubs []core.Trace
+	var vias []core.Via
+	var sources []cellKey
+	for _, s := range sites {
+		vias = append(vias, core.Via{
+			ID: core.NewID(), Net: name, Position: s.via,
+			Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
+		})
+		stubs = append(stubs, core.Trace{
+			ID: core.NewID(), Layer: core.Layer{Index: s.pad.layer}, Net: name, Width: w,
+			Start: s.pad.p, End: s.via,
+		})
+		if cx, cy, ok := g.worldToCell(s.via.X, s.via.Y); ok {
+			for L := uint8(0); L < uint8(g.layers); L++ {
+				sources = append(sources, cellKey{cx, cy, L})
+			}
+		}
+	}
+	// Connect via sites on the opposite layer (Prim).
+	connected := map[int]bool{0: true}
+	var hops []core.Trace
+	for len(connected) < len(sites) {
+		bestJ, bestD := -1, math.MaxFloat64
+		for j := range sites {
+			if connected[j] {
+				continue
+			}
+			for i := range sites {
+				if !connected[i] {
+					continue
+				}
+				d := manhattanMM(sites[i].via, sites[j].via)
+				if d < bestD {
+					bestD, bestJ = d, j
+				}
+			}
+		}
+		if bestJ < 0 {
+			return Outcome{Status: "failed", Reason: "jumper"}
+		}
+		other := uint8(1)
+		if sites[bestJ].pad.layer == 1 {
+			other = 0
+		}
+		path, ok := g.aStarMulti(sources, sites[bestJ].via, other, name, time.Time{}, false)
+		if !ok {
+			// try the pad's own layer
+			path, ok = g.aStarMulti(sources, sites[bestJ].via, sites[bestJ].pad.layer, name, time.Time{}, false)
+		}
+		if !ok || len(path) < 2 {
+			return Outcome{Status: "failed", Reason: "jumper-path"}
+		}
+		for k := 0; k < len(path)-1; k++ {
+			a, b := path[k], path[k+1]
+			if a.layer != b.layer {
+				continue
+			}
+			hops = append(hops, core.Trace{
+				ID: core.NewID(), Layer: core.Layer{Index: a.layer}, Net: name, Width: w,
+				Start: core.NewPoint(a.x, a.y), End: core.NewPoint(b.x, b.y),
+			})
+		}
+		if cx, cy, ok := g.worldToCell(sites[bestJ].via.X, sites[bestJ].via.Y); ok {
+			for L := uint8(0); L < uint8(g.layers); L++ {
+				sources = append(sources, cellKey{cx, cy, L})
+			}
+		}
+		connected[bestJ] = true
+	}
+	board.Traces = append(board.Traces, stubs...)
+	board.Traces = append(board.Traces, hops...)
+	board.Vias = append(board.Vias, vias...)
+	for _, t := range stubs {
+		g.blockSegObstacle(t.Start.X, t.Start.Y, t.End.X, t.End.Y, t.Layer.Index, name, t.Width.ToMM()/2)
+	}
+	for _, t := range hops {
+		g.blockSegObstacle(t.Start.X, t.Start.Y, t.End.X, t.End.Y, t.Layer.Index, name, t.Width.ToMM()/2)
+	}
+	for _, v := range vias {
+		g.blockViaObstacle(v.Position.X, v.Position.Y, name, v.Diameter.ToMM()/2)
+	}
+	length := 0.0
+	for _, t := range stubs {
+		length += hypotMM(t.Start, t.End)
+	}
+	for _, t := range hops {
+		length += hypotMM(t.Start, t.End)
+	}
+	return Outcome{Status: "ok", Reason: "jumper", TraceSegments: len(stubs) + len(hops), LengthMM: length}
 }
 
 func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed int, opts Options, deadline time.Time, hasDeadline bool) Outcome {
@@ -546,15 +770,9 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			continue
 		}
 
-		// Snap ends to real pad centres so DRC connectivity sees a touch
-		// (cell centres can sit 0.1 mm off the pad and count as net_split).
-		path[len(path)-1].x = pads[bestJ].p.X
-		path[len(path)-1].y = pads[bestJ].p.Y
-		if n := nearestConnectedPad(pads, connected, path[0]); n >= 0 {
-			path[0].x = pads[n].p.X
-			path[0].y = pads[n].p.Y
-		}
-
+		// Do NOT rewrite path ends to pad centres: a Theta* parent
+		// 10 mm away would then chord through a neighbour pad
+		// (fecha NRESET/NSS vs U2 header, 0.16 mm DRC).
 		w := core.FromMM(opts.TraceWidthMM)
 		for k := 0; k < len(path)-1; k++ {
 			a, b := path[k], path[k+1]
@@ -1280,6 +1498,13 @@ type cellKey struct {
 	l    uint8
 }
 
+type padObs struct {
+	net                    string
+	layer                  uint8
+	through                bool
+	minX, minY, maxX, maxY float64
+}
+
 type grid struct {
 	originX, originY core.Length
 	cell             core.Length
@@ -1289,6 +1514,7 @@ type grid struct {
 	// blocked[layer][y*w+x] = net name occupying, "" free, "*" hard obstacle.
 	// Own-net pads/traces store the net name so the same net may re-enter.
 	blocked [][]string
+	pads    []padObs
 	opts    Options
 	board   *core.Board
 }
@@ -1390,6 +1616,13 @@ func newGrid(board *core.Board, opts Options) *grid {
 					layersToStamp[L] = uint8(L)
 				}
 			}
+			aa := core.PadWorldAABB(fp, pad)
+			g.pads = append(g.pads, padObs{
+				net: net, layer: pad.Layer.Index,
+				through: pad.Drill != nil && *pad.Drill > 0,
+				minX:    aa.Min.X.ToMM(), minY: aa.Min.Y.ToMM(),
+				maxX: aa.Max.X.ToMM(), maxY: aa.Max.Y.ToMM(),
+			})
 			label := net
 			if label == "" {
 				label = "*"
@@ -1550,7 +1783,8 @@ func (g *grid) paint(cx, cy int, layer uint8, net string, radius int) {
 }
 
 // searchClearanceOK: no foreign copper within ceil((halfWidth+0.20)/cell)
-// of (cx,cy) — keeps DRC TraceTrace/TracePad at 0.20 mm.
+// of (cx,cy), and no foreign pad AABB closer than 0.20+half-width
+// (continuous — catches Theta* chords the discrete disk misses).
 func (g *grid) searchClearanceOK(cx, cy int, layer uint8, net string) bool {
 	half := g.opts.TraceWidthMM / 2
 	need := half + 0.20
@@ -1574,7 +1808,43 @@ func (g *grid) searchClearanceOK(cx, cy int, layer uint8, net string) bool {
 			}
 		}
 	}
-	return true
+	wx, wy := g.cellToWorld(cx, cy)
+	return !g.nearForeignPad(wx.ToMM(), wy.ToMM(), layer, net, need)
+}
+
+func (g *grid) nearForeignPad(x, y float64, layer uint8, net string, need float64) bool {
+	for i := range g.pads {
+		p := &g.pads[i]
+		if p.net == net || p.net == "" {
+			continue
+		}
+		if !p.through && p.layer != layer {
+			continue
+		}
+		if pointRectDist(x, y, p.minX, p.minY, p.maxX, p.maxY) < need {
+			return true
+		}
+	}
+	return false
+}
+
+func pointRectDist(x, y, minX, minY, maxX, maxY float64) float64 {
+	dx := 0.0
+	if x < minX {
+		dx = minX - x
+	} else if x > maxX {
+		dx = x - maxX
+	}
+	dy := 0.0
+	if y < minY {
+		dy = minY - y
+	} else if y > maxY {
+		dy = y - maxY
+	}
+	if dx == 0 && dy == 0 {
+		return 0
+	}
+	return math.Hypot(dx, dy)
 }
 
 func (g *grid) passable(cx, cy int, layer uint8, net string) bool {
@@ -1821,7 +2091,22 @@ func (g *grid) lineOfSight(a, b cellKey, net string) bool {
 		if !g.passable(c[0], c[1], a.l, net) {
 			return false
 		}
-		if !g.searchClearanceOK(c[0], c[1], a.l, net) {
+		if g.blocked[a.l][c[1]*g.w+c[0]] != net && !g.searchClearanceOK(c[0], c[1], a.l, net) {
+			return false
+		}
+	}
+	// Continuous sample: a diagonal can skim a pad between cell centres.
+	need := g.opts.TraceWidthMM/2 + 0.20
+	ax, ay := g.cellToWorld(a.x, a.y)
+	bx, by := g.cellToWorld(b.x, b.y)
+	dx, dy := bx.ToMM()-ax.ToMM(), by.ToMM()-ay.ToMM()
+	n := int(math.Hypot(dx, dy) / 0.25)
+	if n < 2 {
+		n = 2
+	}
+	for i := 0; i <= n; i++ {
+		t := float64(i) / float64(n)
+		if g.nearForeignPad(ax.ToMM()+t*dx, ay.ToMM()+t*dy, a.l, net, need) {
 			return false
 		}
 	}
