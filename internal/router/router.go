@@ -187,6 +187,10 @@ func Route(board *core.Board, opts Options) Report {
 		if len(nets[names[i]]) != len(nets[names[j]]) {
 			return len(nets[names[i]]) < len(nets[names[j]])
 		}
+		ti, tj := signalTieBreak(names[i]), signalTieBreak(names[j])
+		if ti != tj {
+			return ti < tj
+		}
 		return names[i] < names[j]
 	})
 
@@ -252,31 +256,58 @@ func Route(board *core.Board, opts Options) Report {
 				g = newGrid(board, opts)
 			}
 			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
-			ok := out.Status == "ok"
-			if ok && victim != "" {
-				vout := routeNet(board, g, victim, nets[victim], opts, deadline, hasDeadline)
-				ok = vout.Status == "ok"
-			}
-			if !ok {
+			if out.Status != "ok" {
 				board.Traces = snapT
 				board.Vias = snapV
 				g = newGrid(board, opts)
 				still = append(still, name)
 			} else {
+				// Keep the recovered net even if the victim cannot
+				// re-route — wiping both was leaving SCK/QG dead.
 				rep.Failed--
 				rep.TraceCount += out.TraceSegments
 				rep.TotalLengthMM += out.LengthMM
+				if victim != "" {
+					vout := routeNet(board, g, victim, nets[victim], opts, deadline, hasDeadline)
+					if vout.Status != "ok" {
+						for i := range rep.PerNet {
+							if rep.PerNet[i].Net == victim && rep.PerNet[i].Outcome.Status == "ok" {
+								rep.PerNet[i].Outcome.Status = "failed"
+								rep.Failed++
+							}
+						}
+					}
+				}
 			}
 			for i := range rep.PerNet {
 				if rep.PerNet[i].Net == name {
 					rep.PerNet[i].Outcome = out
-					if !ok {
-						rep.PerNet[i].Outcome.Status = "failed"
-					}
 				}
 			}
 		}
 		failedNets = still
+	}
+
+	// 4b. Last chance: rebuild grid and try direct/jumper on leftovers.
+	if len(failedNets) > 0 && !pastDeadline() {
+		g = newGrid(board, opts)
+		left := []string{}
+		for _, name := range failedNets {
+			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
+			if out.Status == "ok" {
+				rep.Failed--
+				rep.TraceCount += out.TraceSegments
+				rep.TotalLengthMM += out.LengthMM
+				for i := range rep.PerNet {
+					if rep.PerNet[i].Net == name {
+						rep.PerNet[i].Outcome = out
+					}
+				}
+			} else {
+				left = append(left, name)
+			}
+		}
+		failedNets = left
 	}
 
 	// 5. Organic string-pull (default on). Roll back if it would make
@@ -374,45 +405,52 @@ func pickRipVictim(board *core.Board, pads []padLoc, failed string) string {
 	if len(pads) == 0 {
 		return ""
 	}
-	minX, minY := pads[0].p.X.ToMM(), pads[0].p.Y.ToMM()
-	maxX, maxY := minX, minY
-	for _, p := range pads[1:] {
-		x, y := p.p.X.ToMM(), p.p.Y.ToMM()
-		if x < minX {
-			minX = x
-		}
-		if y < minY {
-			minY = y
-		}
-		if x > maxX {
-			maxX = x
-		}
-		if y > maxY {
-			maxY = y
-		}
-	}
-	minX -= 4
-	minY -= 4
-	maxX += 4
-	maxY += 4
-	hits := map[string]int{}
+	bestNet, bestD := "", 1e9
 	for _, t := range board.Traces {
 		if t.Net == failed || netOrderKey(t.Net) < 3 {
 			continue
 		}
-		x := (t.Start.X.ToMM() + t.End.X.ToMM()) / 2
-		y := (t.Start.Y.ToMM() + t.End.Y.ToMM()) / 2
-		if x >= minX && x <= maxX && y >= minY && y <= maxY {
-			hits[t.Net]++
+		for _, p := range pads {
+			d := distPointSeg(p.p.X.ToMM(), p.p.Y.ToMM(), t.Start.X.ToMM(), t.Start.Y.ToMM(), t.End.X.ToMM(), t.End.Y.ToMM())
+			if d < bestD {
+				bestD, bestNet = d, t.Net
+			}
 		}
 	}
-	best, n := "", 0
-	for net, c := range hits {
-		if c > n || (c == n && net < best) {
-			best, n = net, c
-		}
+	if bestD < 3.0 {
+		return bestNet
 	}
-	return best
+	return ""
+}
+
+func distPointSeg(px, py, x0, y0, x1, y1 float64) float64 {
+	dx, dy := x1-x0, y1-y0
+	l2 := dx*dx + dy*dy
+	if l2 < 1e-12 {
+		return math.Hypot(px-x0, py-y0)
+	}
+	t := ((px-x0)*dx + (py-y0)*dy) / l2
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return math.Hypot(px-(x0+t*dx), py-(y0+t*dy))
+}
+
+func signalTieBreak(name string) int {
+	switch strings.ToUpper(name) {
+	case "SCK", "SCL", "SCLK", "CLK":
+		return 0
+	case "MOSI", "SDA", "SDO":
+		return 1
+	case "MISO", "SDI":
+		return 2
+	case "NSS", "CS", "NRESET", "BUSY", "DIO1":
+		return 3
+	default:
+		return 4
+	}
 }
 
 func netOrderKey(name string) int {
@@ -510,6 +548,9 @@ func existingNetSources(board *core.Board, g *grid, net string) []cellKey {
 }
 
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	if d := routeDirect(board, g, name, pads, opts); d.Status == "ok" {
+		return d
+	}
 	out := routeNetFrom(board, g, name, pads, 0, opts, deadline, hasDeadline)
 	if out.Status == "ok" {
 		return out
@@ -533,19 +574,113 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 	return out
 }
 
+// routeDirect lays straight / L-shape segments when every hop is
+// short and geometrically clear of foreign pads. Closes tight nets
+// (fecha QG on the SOT-23 cluster) that the grid search over-clears.
+func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Options) Outcome {
+	if len(pads) < 2 || len(pads) > 6 {
+		return Outcome{Status: "failed", Reason: "direct"}
+	}
+	need := opts.TraceWidthMM/2 + searchPadClearMM
+	span := 0.0
+	for i := range pads {
+		for j := i + 1; j < len(pads); j++ {
+			d := manhattanMM(pads[i].p, pads[j].p)
+			if d > span {
+				span = d
+			}
+		}
+	}
+	if span > 25 {
+		return Outcome{Status: "failed", Reason: "direct-span"}
+	}
+	w := core.FromMM(opts.TraceWidthMM)
+	connected := map[int]bool{0: true}
+	var segs []core.Trace
+	length := 0.0
+	for len(connected) < len(pads) {
+		bestI, bestJ, bestD := -1, -1, math.MaxFloat64
+		for j := range pads {
+			if connected[j] {
+				continue
+			}
+			for i := range connected {
+				d := manhattanMM(pads[i].p, pads[j].p)
+				if d < bestD {
+					bestD, bestI, bestJ = d, i, j
+				}
+			}
+		}
+		if bestJ < 0 {
+			return Outcome{Status: "failed", Reason: "direct"}
+		}
+		a, b := pads[bestI].p, pads[bestJ].p
+		layer := pads[bestJ].layer
+		ax, ay := a.X.ToMM(), a.Y.ToMM()
+		bx, by := b.X.ToMM(), b.Y.ToMM()
+		var path [][2]float64
+		switch {
+		case g.segmentPadClear(ax, ay, bx, by, layer, name, need):
+			path = [][2]float64{{ax, ay}, {bx, by}}
+		case g.segmentPadClear(ax, ay, bx, ay, layer, name, need) &&
+			g.segmentPadClear(bx, ay, bx, by, layer, name, need):
+			path = [][2]float64{{ax, ay}, {bx, ay}, {bx, by}}
+		case g.segmentPadClear(ax, ay, ax, by, layer, name, need) &&
+			g.segmentPadClear(ax, by, bx, by, layer, name, need):
+			path = [][2]float64{{ax, ay}, {ax, by}, {bx, by}}
+		default:
+			return Outcome{Status: "failed", Reason: "direct-block"}
+		}
+		for k := 0; k+1 < len(path); k++ {
+			s := core.NewPoint(core.FromMM(path[k][0]), core.FromMM(path[k][1]))
+			e := core.NewPoint(core.FromMM(path[k+1][0]), core.FromMM(path[k+1][1]))
+			segs = append(segs, core.Trace{
+				ID: core.NewID(), Layer: core.Layer{Index: layer}, Net: name, Width: w, Start: s, End: e,
+			})
+			length += hypotMM(s, e)
+		}
+		connected[bestJ] = true
+	}
+	board.Traces = append(board.Traces, segs...)
+	for _, t := range segs {
+		g.blockSegObstacle(t.Start.X, t.Start.Y, t.End.X, t.End.Y, t.Layer.Index, name, t.Width.ToMM()/2)
+	}
+	return Outcome{Status: "ok", Reason: "direct", TraceSegments: len(segs), LengthMM: length, LowerBoundMM: lowerBoundMM(pads)}
+}
+
+func (g *grid) segmentPadClear(x0, y0, x1, y1 float64, layer uint8, net string, need float64) bool {
+	dx, dy := x1-x0, y1-y0
+	n := int(math.Hypot(dx, dy) / 0.08)
+	if n < 2 {
+		n = 2
+	}
+	for i := 0; i <= n; i++ {
+		t := float64(i) / float64(n)
+		if g.nearForeignPad(x0+t*dx, y0+t*dy, layer, net, need) {
+			return false
+		}
+	}
+	return true
+}
+
 // routeViaJumper drops a via beside each pad and routes the other
 // layer — the usual header-to-header escape when the top is packed.
 func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts Options) Outcome {
 	if len(pads) < 2 {
 		return Outcome{Status: "failed", Reason: "jumper"}
 	}
-	need := opts.TraceWidthMM/2 + 0.20
+	need := opts.TraceWidthMM/2 + searchPadClearMM
 	type site struct {
 		pad padLoc
 		via core.Point
 	}
 	var sites []site
-	dirs := [][2]float64{{0, -0.6}, {0, 0.6}, {-0.6, 0}, {0.6, 0}, {0.6, -0.6}, {-0.6, -0.6}}
+	dirs := [][2]float64{
+		{0, -0.55}, {0, 0.55}, {-0.55, 0}, {0.55, 0},
+		{0.55, -0.55}, {-0.55, -0.55}, {0.55, 0.55}, {-0.55, 0.55},
+		{0, -0.85}, {0, 0.85}, {-0.85, 0}, {0.85, 0},
+		{0, -1.15}, {1.15, 0}, {-1.15, 0}, {0, 1.15},
+	}
 	for _, p := range pads {
 		var chosen *core.Point
 		px, py := p.p.X.ToMM(), p.p.Y.ToMM()
@@ -831,12 +966,17 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			from.layer = goalLayer
 		}
 		if from.x != padP.X || from.y != padP.Y {
-			pendT = append(pendT, pendingTrace{tr: core.Trace{
-				ID: core.NewID(), Layer: core.Layer{Index: goalLayer},
-				Start: core.NewPoint(from.x, from.y), End: padP, Width: w, Net: name,
-			}})
-			segs++
-			length += hypotMM(core.NewPoint(from.x, from.y), padP)
+			need := opts.TraceWidthMM/2 + searchPadClearMM
+			fx, fy := from.x.ToMM(), from.y.ToMM()
+			px, py := padP.X.ToMM(), padP.Y.ToMM()
+			if g.segmentPadClear(fx, fy, px, py, goalLayer, name, need) {
+				pendT = append(pendT, pendingTrace{tr: core.Trace{
+					ID: core.NewID(), Layer: core.Layer{Index: goalLayer},
+					Start: core.NewPoint(from.x, from.y), End: padP, Width: w, Net: name,
+				}})
+				segs++
+				length += hypotMM(core.NewPoint(from.x, from.y), padP)
+			}
 		}
 		if gx, gy, ok := g.worldToCell(padP.X, padP.Y); ok {
 			sources = append(sources, cellKey{gx, gy, goalLayer})
@@ -1522,6 +1662,10 @@ type grid struct {
 // maxGridDim caps cells per axis; larger boards coarsen the cell pitch.
 const maxGridDim = 320
 
+// searchPadClearMM is the pad-edge gap the search/commit enforce.
+// A hair above DRC min (0.20) so a 0.193 mm skim cannot land.
+const searchPadClearMM = 0.22
+
 func newGrid(board *core.Board, opts Options) *grid {
 	cellMM := opts.CellMM
 	if cellMM < 0.05 {
@@ -1787,7 +1931,7 @@ func (g *grid) paint(cx, cy int, layer uint8, net string, radius int) {
 // (continuous — catches Theta* chords the discrete disk misses).
 func (g *grid) searchClearanceOK(cx, cy int, layer uint8, net string) bool {
 	half := g.opts.TraceWidthMM / 2
-	need := half + 0.20
+	need := half + searchPadClearMM
 	r := int(math.Ceil(need / g.cellMM))
 	if r < 1 {
 		r = 1
@@ -2096,7 +2240,7 @@ func (g *grid) lineOfSight(a, b cellKey, net string) bool {
 		}
 	}
 	// Continuous sample: a diagonal can skim a pad between cell centres.
-	need := g.opts.TraceWidthMM/2 + 0.20
+	need := g.opts.TraceWidthMM/2 + searchPadClearMM
 	ax, ay := g.cellToWorld(a.x, a.y)
 	bx, by := g.cellToWorld(b.x, b.y)
 	dx, dy := bx.ToMM()-ax.ToMM(), by.ToMM()-ay.ToMM()
