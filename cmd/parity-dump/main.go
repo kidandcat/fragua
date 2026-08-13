@@ -18,22 +18,22 @@ import (
 )
 
 type dump struct {
-	Engine     string       `json:"engine"`
-	Path       string       `json:"path"`
-	Geometry   geometry     `json:"geometry"`
-	DRC        checkReport  `json:"drc"`
-	ERC        checkReport  `json:"erc"`
-	Route      *routeDump   `json:"route,omitempty"`
-	Place      *placeDump   `json:"place,omitempty"`
-	CopperHash string       `json:"copper_hash,omitempty"`
+	Engine     string      `json:"engine"`
+	Path       string      `json:"path"`
+	Geometry   geometry    `json:"geometry"`
+	DRC        checkReport `json:"drc"`
+	ERC        checkReport `json:"erc"`
+	Route      *routeDump  `json:"route,omitempty"`
+	Place      *placeDump  `json:"place,omitempty"`
+	CopperHash string      `json:"copper_hash,omitempty"`
 }
 
 type geometry struct {
-	Footprints int        `json:"footprints"`
-	Traces     int        `json:"traces"`
-	Vias       int        `json:"vias"`
-	Pours      int        `json:"pours"`
-	Nets       int        `json:"nets"`
+	Footprints int         `json:"footprints"`
+	Traces     int         `json:"traces"`
+	Vias       int         `json:"vias"`
+	Pours      int         `json:"pours"`
+	Nets       int         `json:"nets"`
 	OutlineMM  *[2]float64 `json:"outline_mm"`
 }
 
@@ -68,8 +68,8 @@ type routeDump struct {
 }
 
 type placeDump struct {
-	InitialHPWLMM float64             `json:"initial_hpwl_mm"`
-	FinalHPWLMM   float64             `json:"final_hpwl_mm"`
+	InitialHPWLMM float64               `json:"initial_hpwl_mm"`
+	FinalHPWLMM   float64               `json:"final_hpwl_mm"`
 	Positions     map[string][3]float64 `json:"positions"`
 }
 
@@ -136,6 +136,7 @@ func main() {
 		opts := placer.DefaultOptions()
 		opts.Seed = 42
 		opts.GlobalStage = false
+		opts.Decouple = false
 		opts.Iterations = 8000
 		rep, err := placer.Place(b, refs, opts)
 		if err != nil {
@@ -299,8 +300,8 @@ func round2(v float64) float64 {
 func hashCopper(b *core.Board) string {
 	h := sha256.New()
 	type tk struct {
-		net           string
-		L             uint8
+		net               string
+		L                 uint8
 		x0, y0, x1, y1, w int64
 	}
 	var ts []tk

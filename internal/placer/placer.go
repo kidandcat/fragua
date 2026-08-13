@@ -29,6 +29,7 @@ type Options struct {
 	FinalTemp       float64
 	MaxStepMM       float64
 	MinStepMM       float64
+	Decouple        bool
 }
 
 // DefaultOptions matches Rust PlaceOptions::default (SA-only temps;
@@ -48,6 +49,7 @@ func DefaultOptions() Options {
 		FinalTemp:       0.05,
 		MaxStepMM:       20.0,
 		MinStepMM:       0.5,
+		Decouple:        true,
 	}
 }
 
@@ -67,8 +69,12 @@ func ParseOptions(o Options, args string) Options {
 			o.Iterations = int(x)
 		case "solder_gap":
 			o.SolderGapMM = x
-		case "global_stage":
+		case "global_stage", "global":
 			o.GlobalStage = x != 0
+		case "decouple":
+			o.Decouple = x != 0
+		case "iters":
+			o.Iterations = int(x)
 		}
 	}
 	return o
@@ -127,6 +133,13 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 	}
 
 	initHPWL := rawHPWL(board)
+	if board.Outline != nil {
+		for _, fp := range footprintsAll(board) {
+			if fp.EdgeMounted {
+				SnapToNearestEdge(fp, *board.Outline)
+			}
+		}
+	}
 	if opts.GlobalStage {
 		globalForce(board, fps, opts)
 	}
@@ -234,6 +247,10 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		fp.Rotation = b.rot
 	}
 
+	if opts.Decouple {
+		PullPassivesToAnchors(board, fps, opts)
+	}
+
 	return Report{
 		InitialHPWLMM: initHPWL,
 		FinalHPWLMM:   rawHPWL(board),
@@ -243,7 +260,10 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 }
 
 func globalForce(board *core.Board, fps []*core.Footprint, opts Options) {
-	type posSnap struct{ x, y core.Length; rot float64 }
+	type posSnap struct {
+		x, y core.Length
+		rot  float64
+	}
 	bestHPWL := rawHPWL(board)
 	best := map[string]posSnap{}
 	for _, fp := range fps {
@@ -551,7 +571,10 @@ func netWeight(nPads int) float64 {
 
 // rawHPWL is unweighted half-perimeter wirelength (report metric).
 func rawHPWL(board *core.Board) float64 {
-	type bb struct{ minX, minY, maxX, maxY float64; n int }
+	type bb struct {
+		minX, minY, maxX, maxY float64
+		n                      int
+	}
 	nets := map[string]*bb{}
 	walk := func(fp *core.Footprint) {
 		if fp == nil {
@@ -605,7 +628,10 @@ func rawHPWL(board *core.Board) float64 {
 
 // weightedHPWL is the SA objective wirelength term (4/(n-1) per net).
 func weightedHPWL(board *core.Board) float64 {
-	type bb struct{ minX, minY, maxX, maxY float64; n int }
+	type bb struct {
+		minX, minY, maxX, maxY float64
+		n                      int
+	}
 	nets := map[string]*bb{}
 	walk := func(fp *core.Footprint) {
 		if fp == nil {
@@ -659,4 +685,16 @@ func weightedHPWL(board *core.Board) float64 {
 
 func compositeScore(board *core.Board, _ []*core.Footprint, opts Options) float64 {
 	return weightedHPWL(board) + opts.GapPenalty*totalGapPenalty(board, opts.MinGapMM)
+}
+
+// LegalAt reports whether fp (already posed) clears the solder floor
+// and stays inside the outline — used by place-legal.
+func LegalAt(board *core.Board, fp *core.Footprint) bool {
+	if board.Outline == nil {
+		return false
+	}
+	if !padsInside(fp, board.Outline, 0.8) {
+		return false
+	}
+	return !firstOverlapper(board, fp)
 }

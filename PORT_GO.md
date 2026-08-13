@@ -111,17 +111,29 @@ internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}
 | Oracle harness | `pcb-oracle` + `parity-dump` + `algo-parity.sh` |
 | Cut-over | blocked until harness PASS on stress + synthetic suite |
 
+### Agent 0→100 (2026-08-13)
+
+Go now exposes the product verbs Rust used on shipped boards: outline/poly,
+cutout/hole, keepout, place/place-legal/edge-place/edge-plan, auto-place
+(SA + edge snap + decoupling ring), pour/auto-pour/stitch, route (Theta* +
+QFN dogbone fanout + pour stitch), compact (feasibility-gated shrink),
+pack/export. Commercial floor = what the Rust app already shipped.
+
 ### Place process (2026-08-13)
 
 - SA-only dump (`--place`, seed 42, no global / edge / decouple / congestion):
   `stress/two-resistors.fragua` → **nm-identical positions** and matching HPWL
   (120.0000 → 6.5791). RNG is xorshift64*; local translate is `old + FromMM(d)`.
-- Full two-stage place (ePlace + decouple ring) is still a process gap.
+- Default `auto-place` now also snaps edge-mounted parts and runs the
+  decoupling ring (caps at a specific IC pin). Full Poisson ePlace is still
+  a force-field stand-in, not the Rust electrostatic solve.
 - `./scripts/place-parity.sh [file.fragua]`
 
 ### Route process (2026-08-13)
 
 - Lazy Theta* parent LOS shortcut is on (any-angle segments, not 4-connect).
+- Dogbone fanout on ≥8-pad SMD packages; isolated pour pads via-stitched
+  only when the pour is on another layer.
 - `tof-card.fragua --route` (30 s): **per_net 15/15**, post-DRC **0E/6W UnconnectedPad**.
   Traces 280 vs rust 147 (was ~1346 Manhattan); length 352 vs 365 mm.
 - Two-resistor synthetic: status + post-DRC kinds **match**; copper hash not identical.

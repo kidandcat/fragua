@@ -1,6 +1,6 @@
 package script
 
-// Usage returns the CLI / GET / help text (script reference grows as verbs land).
+// Usage returns the CLI / GET / help text.
 func Usage() string {
 	return `fragua — AI-native PCB design tool
 
@@ -24,25 +24,45 @@ HTTP API:
 
 Script verbs (line-oriented, agent-first):
   outline W H [radius=R]
+  outline-poly x1 y1 x2 y2 ...
+  cutout x1 y1 ... [label=NAME] | clear-cutouts
+  hole X Y D [label=NAME] | clear-holes
+  keepout X1 Y1 X2 Y2 [no_copper=true] [no_place=true]
   lib KEY … + indented pad NUMBER X Y W H
   sym REF KIND … + indented pin for generic_ic
   net NAME REF.PIN …
+  class NAME [clearance=N] [width=N]
+  net-class NET CLASS
   palette REF KEY | palette list
-  list-lib | lib-list
+  list-lib
   place REF x y [rot=DEG]
-  auto-place [seed=N]
-  route [max_seconds=N]
-  clear-route | delete-trace ID
-  trace NET x1 y1 x2 y2 [layer=Top|Bottom] [width=0.15]
+  place-legal REF [tries=N] [rot=DEG]
+  edge-place REF left|right|top|bottom [along=N]
+  edge-plan REF [REF...]
+  move REF X Y | rotate REF DEG
+  unplace REF | delete REF | clear-board
+  auto-place [REF...] [seed=N] [iters=N]
+  route [max_seconds=N] [organic=true]
+  clear-route | clear-net NET | delete-trace ID | delete-via ID
+  trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
   via NET x y [drill=0.3] [dia=0.6]
+  pour NET [layer=Top] [relief=spokes4|solid]
+  auto-pour [NET...]          (default GND, both layers)
+  clear-pour [NET]
+  stitch                      (via-tie isolated pour pads)
+  silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
   fab-rules jlcpcb|jlcpcb-4l|clear|list
   layer list|add|remove|rename
-  drc / erc / pack [fab=…]
-  compact (stub)
+  drc / erc
+  compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [aspect=keep|free]
+  pack [fab=jlcpcb] [out=DIR] | export DIR
   screenshot PATH
-  save [PATH] | view | status | help
+  save [PATH] | view | status | reset | help
 
-See PORT_GO.md for the Go port plan. Full verb parity is in progress.
+An agent can take a board from 0 to a JLCPCB pack with the verbs above.
+Commercial floor matches the Rust product used on shipped boards:
+auto-place (SA + decouple + edge snap) → route (Theta* + fanout + stitch)
+→ pour/stitch → drc/erc → pack.
 `
 }

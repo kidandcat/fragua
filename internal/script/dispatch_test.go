@@ -68,6 +68,61 @@ status
 	}
 }
 
+func TestAgentProductVerbs(t *testing.T) {
+	p := core.NewProject("prod")
+	rs := RunScript(p, `
+outline 40 30
+lib r0603
+  pad 1 -0.8 0 0.9 0.9
+  pad 2 0.8 0 0.9 0.9
+sym R1 resistor key=r0603
+sym R2 resistor key=r0603
+palette R1 r0603
+palette R2 r0603
+place R1 8 8
+place R2 32 22
+net S R1.1 R2.1
+net OUT R1.2 R2.2
+auto-place R1 R2 seed=42 iters=400
+pour GND layer=Top
+auto-pour GND
+stitch
+drc
+erc
+status
+`)
+	allOK(t, rs)
+	p.RLock()
+	defer p.RUnlock()
+	b := p.Board()
+	if len(b.Footprints) != 2 {
+		t.Fatalf("footprints %d", len(b.Footprints))
+	}
+	if len(b.Pours) < 1 {
+		t.Fatalf("expected pour")
+	}
+}
+
+func TestEdgePlaceAndMove(t *testing.T) {
+	p := core.NewProject("edge")
+	rs := RunScript(p, `
+outline 40 20
+lib term edge=true
+  pad 1 -2.5 0 1.2 1.2
+  pad 2 2.5 0 1.2 1.2
+palette J1 term
+edge-place J1 bottom along=20
+move J1 18 2
+rotate J1 0
+status
+`)
+	allOK(t, rs)
+	fp := p.Board().FootprintByRef("J1")
+	if fp == nil || !fp.EdgeMounted {
+		t.Fatalf("J1 missing or not edge-mounted")
+	}
+}
+
 func TestRuleArea(t *testing.T) {
 	p := core.NewProject("t3")
 	rs := RunScript(p, `
@@ -196,13 +251,13 @@ func TestFabRulesAndScreenshot(t *testing.T) {
 	}
 }
 
-func TestCompactStub(t *testing.T) {
+func TestCompactNeedsOutline(t *testing.T) {
 	p := core.NewProject("t7")
 	rs := RunScript(p, "compact\n")
 	if len(rs) != 1 || rs[0].OK {
-		t.Fatalf("compact should fail clearly: %+v", rs)
+		t.Fatalf("compact without outline should fail: %+v", rs)
 	}
-	if !strings.Contains(rs[0].Result, "not yet implemented") {
+	if !strings.Contains(rs[0].Result, "no outline") {
 		t.Fatalf("msg: %s", rs[0].Result)
 	}
 }

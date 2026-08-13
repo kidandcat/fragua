@@ -193,6 +193,16 @@ func (p *Project) FabProfile() *FabProfileHandle {
 	return p.fabProfile
 }
 
+// Reset clears board, schematic and palette (script `reset`).
+func (p *Project) Reset() {
+	p.mu.Lock()
+	p.board = NewBoard()
+	p.schematic = NewSchematic()
+	p.palette = nil
+	p.mu.Unlock()
+	p.bus.Publish(Event{Kind: EventProjectChanged})
+}
+
 // MutateBoard runs fn with exclusive access to the board.
 func (p *Project) MutateBoard(fn func(b *Board)) {
 	p.mu.Lock()

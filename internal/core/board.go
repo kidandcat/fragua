@@ -28,13 +28,13 @@ const (
 
 // Pad is a copper pad on a footprint.
 type Pad struct {
-	Number string  `json:"number"`
-	Name   string  `json:"name"`
-	Offset Point   `json:"offset"`
+	Number string    `json:"number"`
+	Name   string    `json:"name"`
+	Offset Point     `json:"offset"`
 	Size   [2]Length `json:"size"`
-	Layer  Layer   `json:"layer"`
-	Net    *string `json:"net"`
-	Drill  *Length `json:"drill,omitempty"`
+	Layer  Layer     `json:"layer"`
+	Net    *string   `json:"net"`
+	Drill  *Length   `json:"drill,omitempty"`
 }
 
 // FootprintSilkItem is one library-local silk primitive (Rust tagged enum).
@@ -56,29 +56,29 @@ type FootprintSilk = FootprintSilkItem
 
 // Footprint is a placed (or palette) component instance.
 type Footprint struct {
-	ID          ID             `json:"id"`
-	Reference   string         `json:"reference"`
-	Value       string         `json:"value"`
-	Library     string         `json:"library"`
-	Position    Point          `json:"position"`
-	Rotation    float64        `json:"rotation"`
-	Layer       Layer          `json:"layer"`
-	Pads        []Pad          `json:"pads"`
-	Key         string         `json:"key"`
-	Description string         `json:"description"`
-	EdgeMounted bool           `json:"edge_mounted"`
-	EdgeSide    *EdgeSide      `json:"edge_side"`
+	ID          ID                  `json:"id"`
+	Reference   string              `json:"reference"`
+	Value       string              `json:"value"`
+	Library     string              `json:"library"`
+	Position    Point               `json:"position"`
+	Rotation    float64             `json:"rotation"`
+	Layer       Layer               `json:"layer"`
+	Pads        []Pad               `json:"pads"`
+	Key         string              `json:"key"`
+	Description string              `json:"description"`
+	EdgeMounted bool                `json:"edge_mounted"`
+	EdgeSide    *EdgeSide           `json:"edge_side"`
 	Silk        []FootprintSilkItem `json:"silk"`
 }
 
 // Trace is a copper segment.
 type Trace struct {
-	ID     ID     `json:"id"`
-	Layer  Layer  `json:"layer"`
-	Start  Point  `json:"start"`
-	End    Point  `json:"end"`
-	Width  Length `json:"width"`
-	Net    string `json:"net"`
+	ID    ID     `json:"id"`
+	Layer Layer  `json:"layer"`
+	Start Point  `json:"start"`
+	End   Point  `json:"end"`
+	Width Length `json:"width"`
+	Net   string `json:"net"`
 }
 
 // Via is a plated through-hole connecting layers.
@@ -116,22 +116,22 @@ type StitchPolicy struct {
 
 // Pour is a copper pour region (simplified: full-board or rect).
 type Pour struct {
-	ID             ID              `json:"id,omitempty"`
-	Net            string          `json:"net"`
-	Layer          Layer           `json:"layer"`
-	ThermalRelief  *ThermalRelief  `json:"thermal_relief,omitempty"`
-	Stitching      *StitchPolicy   `json:"stitching,omitempty"`
+	ID            ID             `json:"id,omitempty"`
+	Net           string         `json:"net"`
+	Layer         Layer          `json:"layer"`
+	ThermalRelief *ThermalRelief `json:"thermal_relief,omitempty"`
+	Stitching     *StitchPolicy  `json:"stitching,omitempty"`
 	// Optional polygon; empty means board outline.
 	Polygon []Point `json:"polygon,omitempty"`
 }
 
 // Keepout forbids copper/placement.
 type Keepout struct {
-	ID      ID     `json:"id"`
-	Rect    *Rect  `json:"rect,omitempty"`
-	Polygon []Point `json:"polygon,omitempty"`
-	NoCopper bool  `json:"no_copper,omitempty"`
-	NoPlace  bool  `json:"no_place,omitempty"`
+	ID       ID      `json:"id"`
+	Rect     *Rect   `json:"rect,omitempty"`
+	Polygon  []Point `json:"polygon,omitempty"`
+	NoCopper bool    `json:"no_copper,omitempty"`
+	NoPlace  bool    `json:"no_place,omitempty"`
 }
 
 // SilkLine is a board-level silkscreen segment.
@@ -161,33 +161,33 @@ type Cutout struct {
 
 // MountHole is an NPTH hole (JSON matches Rust pcb_core::MountHole).
 type MountHole struct {
-	ID               ID      `json:"id"`
-	Center           Point   `json:"center"`
-	Diameter         Length  `json:"diameter"`
-	Label            string  `json:"label,omitempty"`
-	KeepoutDiameter  *Length `json:"keepout_diameter,omitempty"`
+	ID              ID      `json:"id"`
+	Center          Point   `json:"center"`
+	Diameter        Length  `json:"diameter"`
+	Label           string  `json:"label,omitempty"`
+	KeepoutDiameter *Length `json:"keepout_diameter,omitempty"`
 }
 
 // Board is the physical layout model.
 type Board struct {
-	Outline             *Rect           `json:"outline"`
-	OutlinePoly         []Point         `json:"outline_poly,omitempty"`
-	OutlineCornerRadius Length          `json:"outline_corner_radius,omitempty"`
+	Outline             *Rect                 `json:"outline"`
+	OutlinePoly         []Point               `json:"outline_poly,omitempty"`
+	OutlineCornerRadius Length                `json:"outline_corner_radius,omitempty"`
 	Footprints          map[string]*Footprint `json:"footprints"`
-	FootprintOrder      []string        `json:"footprint_order"`
-	Traces              []Trace         `json:"traces"`
-	Vias                []Via           `json:"vias"`
-	Pours               []Pour          `json:"pours"`
-	Keepouts            []Keepout       `json:"keepouts"`
-	SilkLines           []SilkLine      `json:"silk_lines"`
-	SilkTexts           []SilkText      `json:"silk_texts"`
-	RuleAreas           []RuleArea      `json:"rule_areas"`
-	FabRules            *FabRules       `json:"fab_rules,omitempty"`
-	Cutouts             []Cutout        `json:"cutouts,omitempty"`
+	FootprintOrder      []string              `json:"footprint_order"`
+	Traces              []Trace               `json:"traces"`
+	Vias                []Via                 `json:"vias"`
+	Pours               []Pour                `json:"pours"`
+	Keepouts            []Keepout             `json:"keepouts"`
+	SilkLines           []SilkLine            `json:"silk_lines"`
+	SilkTexts           []SilkText            `json:"silk_texts"`
+	RuleAreas           []RuleArea            `json:"rule_areas"`
+	FabRules            *FabRules             `json:"fab_rules,omitempty"`
+	Cutouts             []Cutout              `json:"cutouts,omitempty"`
 	// MountHoles is the Rust field name; also accept legacy "holes".
-	MountHoles []MountHole `json:"mount_holes,omitempty"`
-	Holes      []MountHole `json:"holes,omitempty"` // legacy alias
-	Stackup             *LayerStackup   `json:"stackup,omitempty"`
+	MountHoles []MountHole   `json:"mount_holes,omitempty"`
+	Holes      []MountHole   `json:"holes,omitempty"` // legacy alias
+	Stackup    *LayerStackup `json:"stackup,omitempty"`
 }
 
 // NewBoard returns an empty 2-layer board.
@@ -230,6 +230,45 @@ func (b *Board) FootprintByRef(ref string) *Footprint {
 	}
 	for _, fp := range b.Footprints {
 		if fp != nil && fp.Reference == ref {
+			return fp
+		}
+	}
+	return nil
+}
+
+// Clone deep-copies the board via JSON (feasibility search, compact).
+func (b *Board) Clone() *Board {
+	if b == nil {
+		return NewBoard()
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return NewBoard()
+	}
+	var out Board
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return NewBoard()
+	}
+	if out.Footprints == nil {
+		out.Footprints = make(map[string]*Footprint)
+	}
+	return &out
+}
+
+// RemoveFootprintByRef deletes a footprint and returns it.
+func (b *Board) RemoveFootprintByRef(ref string) *Footprint {
+	for i, id := range b.FootprintOrder {
+		fp := b.Footprints[id]
+		if fp == nil || fp.Reference != ref {
+			continue
+		}
+		delete(b.Footprints, id)
+		b.FootprintOrder = append(b.FootprintOrder[:i], b.FootprintOrder[i+1:]...)
+		return fp
+	}
+	for id, fp := range b.Footprints {
+		if fp != nil && fp.Reference == ref {
+			delete(b.Footprints, id)
 			return fp
 		}
 	}

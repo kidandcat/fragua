@@ -186,7 +186,8 @@ func Route(board *core.Board, opts Options) Report {
 		return names[i] < names[j]
 	})
 
-	// 2. Grid with foreign copper inflated by clearance.
+	// 2. Fine-pitch dogbone fanout, then grid with all copper stamped.
+	_ = planFanout(board, opts)
 	g := newGrid(board, opts)
 
 	// Pour-only nets: the pour is the connection (Rust route_one_net).
@@ -261,6 +262,11 @@ func Route(board *core.Board, opts Options) Report {
 			board.Traces = before
 		}
 		refreshReportLengths(board, &rep)
+	}
+
+	// Pour stitching: tie floating plane pads to their pour.
+	if !pastDeadline() {
+		stitchIsolatedPads(board, opts)
 	}
 
 	// Via count for nets that finished ok.
@@ -343,13 +349,46 @@ func footprintsStable(board *core.Board) []*core.Footprint {
 	return append(out, extra...)
 }
 
+func existingNetSources(board *core.Board, g *grid, net string) []cellKey {
+	seen := map[cellKey]bool{}
+	var out []cellKey
+	add := func(x, y core.Length, layer uint8) {
+		cx, cy, ok := g.worldToCell(x, y)
+		if !ok {
+			cx, cy = clampCell(core.NewPoint(x, y), g)
+		}
+		k := cellKey{cx, cy, layer}
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	for _, v := range board.Vias {
+		if v.Net != net {
+			continue
+		}
+		for L := uint8(0); L < uint8(g.layers); L++ {
+			add(v.Position.X, v.Position.Y, L)
+		}
+	}
+	for _, t := range board.Traces {
+		if t.Net != net {
+			continue
+		}
+		add(t.Start.X, t.Start.Y, t.Layer.Index)
+		add(t.End.X, t.End.Y, t.Layer.Index)
+	}
+	return out
+}
+
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	lb := lowerBoundMM(pads)
 
 	// Prim growth: connected set starts with pad 0; multi-source A* from
 	// all same-net tree cells to the nearest unconnected pad.
 	connected := map[int]bool{0: true}
-	sources := []cellKey{}
+	sources := existingNetSources(board, g, name)
 	if sx, sy, ok := g.worldToCell(pads[0].p.X, pads[0].p.Y); ok {
 		sources = append(sources, cellKey{sx, sy, pads[0].layer})
 	} else {
@@ -730,14 +769,14 @@ func organicPass(board *core.Board, opts Options) {
 
 type obstacle struct {
 	// kind: rect (pad), capsule (trace), circle (via)
-	kind   int // 0 rect, 1 capsule, 2 circle
-	min    p2
-	max    p2
-	a, b   p2
-	halfW  float64
-	c      p2
-	r      float64
-	clrMM  float64
+	kind  int // 0 rect, 1 capsule, 2 circle
+	min   p2
+	max   p2
+	a, b  p2
+	halfW float64
+	c     p2
+	r     float64
+	clrMM float64
 }
 
 type obstacleSet struct {
@@ -770,9 +809,9 @@ func collectObstacles(board *core.Board, net string, layer uint8, opts Options) 
 			hh := pad.Size[1].ToMM() / 2
 			padClr := clr
 			os.items = append(os.items, obstacle{
-				kind: 0,
-				min:  p2{cm[0] - hw, cm[1] - hh},
-				max:  p2{cm[0] + hw, cm[1] + hh},
+				kind:  0,
+				min:   p2{cm[0] - hw, cm[1] - hh},
+				max:   p2{cm[0] + hw, cm[1] + hh},
 				clrMM: padClr,
 			})
 		}

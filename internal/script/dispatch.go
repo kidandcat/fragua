@@ -27,11 +27,11 @@ type Result struct {
 
 // openBlock accumulates indented pin/pad lines under sym/lib.
 type openBlock struct {
-	verb   string
-	line   int
-	args   string
-	pins   []core.SchPin
-	pads   []core.LibraryPad
+	verb string
+	line int
+	args string
+	pins []core.SchPin
+	pads []core.LibraryPad
 }
 
 // RunScript executes a multi-line script against project.
@@ -230,12 +230,13 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		})
 		return rep.Summary(), nil
 	case "auto-place", "auto_place":
+		refs, kv := splitRefsKV(args)
 		opts := placer.DefaultOptions()
-		opts = placer.ParseOptions(opts, args)
+		opts = placer.ParseOptions(opts, kv)
 		var rep placer.Report
 		var err error
 		p.MutateBoard(func(b *core.Board) {
-			rep, err = placer.Place(b, nil, opts)
+			rep, err = placer.Place(b, refs, opts)
 		})
 		if err != nil {
 			return "", err
@@ -243,9 +244,13 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return rep.Summary(), nil
 	case "outline":
 		return setOutline(p, args)
+	case "outline-poly", "outline_poly":
+		return cmdOutlinePoly(p, args)
 	case "place":
 		return placeOne(p, args)
-	case "pack":
+	case "place-legal", "place_legal":
+		return cmdPlaceLegal(p, args)
+	case "pack", "export":
 		return packBoard(p, args)
 	case "net":
 		return addNet(p, args)
@@ -282,13 +287,57 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 	case "layer":
 		return layerCmd(p, args)
 	case "compact":
-		return "", fmt.Errorf("compact: not yet implemented in Go port (use auto-place + outline manually)")
+		return cmdCompact(p, args)
 	case "screenshot":
 		return screenshot(p, args)
 	case "list-lib", "lib-list", "list_lib", "lib_list":
 		return listLib(p), nil
+	case "pour":
+		return cmdPour(p, args)
+	case "auto-pour", "auto_pour":
+		return cmdAutoPour(p, args)
+	case "clear-pour", "clear_pour":
+		return cmdClearPour(p, args)
+	case "stitch", "stitch-isolated-pads", "stitch_isolated_pads":
+		return cmdStitch(p, args)
+	case "cutout":
+		return cmdCutout(p, args)
+	case "clear-cutouts", "clear_cutouts":
+		return cmdClearCutouts(p, args)
+	case "hole":
+		return cmdHole(p, args)
+	case "clear-holes", "clear_holes":
+		return cmdClearHoles(p, args)
+	case "keepout":
+		return cmdKeepout(p, args)
+	case "silk-line", "silk_line":
+		return cmdSilkLine(p, args)
+	case "silk-text", "silk_text":
+		return cmdSilkText(p, args)
+	case "move":
+		return cmdMove(p, args)
+	case "rotate":
+		return cmdRotate(p, args)
+	case "delete":
+		return cmdDelete(p, args)
+	case "unplace":
+		return cmdUnplace(p, args)
+	case "clear-board", "clear_board":
+		return cmdClearBoard(p, args)
+	case "clear-net", "clear_net":
+		return cmdClearNet(p, args)
+	case "delete-via", "delete_via":
+		return cmdDeleteVia(p, args)
+	case "edge-place", "edge_place":
+		return cmdEdgePlace(p, args)
+	case "edge-plan", "edge_plan":
+		return cmdEdgePlan(p, args)
+	case "reset":
+		return cmdReset(p, args)
+	case "class", "net-class", "net_class":
+		return cmdNetClass(p, args)
 	default:
-		return "", fmt.Errorf("unknown verb %q (Go port in progress — see PORT_GO.md)", tool)
+		return "", fmt.Errorf("unknown verb %q — see GET /help", tool)
 	}
 }
 
