@@ -62,7 +62,7 @@ Script verbs (line-oriented, agent-first):
   save [PATH] | view | status | reset | help
 
 An agent can take a board from 0 to a JLCPCB pack with the verbs above.
-Commercial floor matches the Rust product used on shipped boards:
+Commercial floor: the same agent loop used on shipped boards:
 auto-place (SA + decouple + edge snap) → route (Theta* + fanout + stitch)
 → pour/stitch → drc/erc → pack.
 `

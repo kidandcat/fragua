@@ -147,7 +147,7 @@ func Run(projectPath string) error {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintf(w, "saved %s\n", path)
 	})
-	// Static UI: prefer on-disk frontend/dist for dev, else embedded ui/.
+	// Static UI: on-disk internal/host/ui for live edit, else embed.
 	uiDir := findUIDir()
 	if uiDir != "" {
 		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir(uiDir))))
@@ -221,22 +221,16 @@ func openBrowser(url string) {
 
 func findUIDir() string {
 	candidates := []string{
-		"frontend/dist",
-		filepath.Join("..", "frontend", "dist"),
+		filepath.Join("internal", "host", "ui"),
 	}
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(dir, "frontend", "dist"),
-			filepath.Join(dir, "..", "frontend", "dist"),
-			filepath.Join(dir, "ui"),
-		)
+		candidates = append(candidates, filepath.Join(dir, "ui"))
 	}
-	// walk up from cwd looking for repo frontend/dist
 	if wd, err := os.Getwd(); err == nil {
 		d := wd
 		for i := 0; i < 6; i++ {
-			candidates = append(candidates, filepath.Join(d, "frontend", "dist"))
+			candidates = append(candidates, filepath.Join(d, "internal", "host", "ui"))
 			parent := filepath.Dir(d)
 			if parent == d {
 				break

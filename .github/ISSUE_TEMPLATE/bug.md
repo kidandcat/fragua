@@ -28,7 +28,7 @@ If the bug depends on a specific board layout, please attach the
 
 - OS:                              <!-- macOS / Linux distro / Windows -->
 - Fragua git rev:                  <!-- `git rev-parse HEAD` -->
-- Rust version:                    <!-- `rustc --version` -->
+- Go version:                      <!-- `go version` -->
 
 **Anything else**
 

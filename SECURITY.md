@@ -25,8 +25,8 @@ public issue is fine.
 - The script API accepting commands from a network attacker who
   somehow gets a request onto the loopback interface (e.g. via a
   CSRF on a website the user visits while fragua is running).
-- The Tauri command surface being abused by a webview extension or
-  a malicious page.
+- The loopback HTTP API being abused via CSRF from a page the user
+  has open while fragua is running.
 
 ## What we don't worry about
 

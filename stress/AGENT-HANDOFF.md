@@ -1,5 +1,9 @@
 # Fragua agent handoff — RP2040 open-hardware stress (2026-07-27)
 
+> **Historical.** This note describes the 2026-07 Rust campaign. The product
+> is now **pure Go** (`go build -o fragua ./cmd/fragua`, `go test ./...`).
+> Cargo / `crates/` / Tauri paths below are archival.
+
 **Audience:** a capable coding agent continuing Fragua work without prior session context.  
 **Language of this doc:** English (repo convention). Jairo speaks Spanish; code/docs stay English.  
 **Repo:** `~/pcb` → `github.com/mentasystems/fragua` (personal; push to `master` is OK).  

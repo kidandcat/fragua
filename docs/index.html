@@ -186,7 +186,7 @@ pack fab=jlcpcb out=~/Downloads</pre>
 
 <section class="install" id="install">
   <h2 data-i18n="install.h2">Install &amp; run</h2>
-  <p data-i18n="install.p1">Fragua is a Rust workspace + a TypeScript frontend hosted in a Tauri 2 shell. Pre-built binaries are on GitHub Releases; or build from source:</p>
+  <p data-i18n="install.p1">Fragua is a single Go binary: local HTTP API and a browser UI. Pre-built binaries are on GitHub Releases; or build from source:</p>
 
 <pre class="snippet"><span class="c"># One-liner install (macOS arm64/x64, Linux x64).</span>
 curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/install.sh | sh
@@ -194,19 +194,19 @@ curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/
 <span class="c"># From source:</span>
 git clone https://github.com/mentasystems/fragua.git
 cd fragua
-npm --prefix frontend install &amp;&amp; npm --prefix frontend run build
+go build -o fragua ./cmd/fragua
 
 <span class="c"># Launch (the `run` subcommand starts the API + UI).</span>
-cargo run --release --bin fragua -- run
+./fragua run
 
 <span class="c"># …or open an existing project file (autosave bound to it).</span>
-cargo run --release --bin fragua -- run /path/to/board.fragua
+./fragua run /path/to/board.fragua
 
 <span class="c"># Bare `fragua` prints usage + the full script reference and exits.</span>
-cargo run --release --bin fragua</pre>
+./fragua</pre>
 
   <p data-i18n="install.p2">
-    The window opens, and a stateless local HTTP API starts on
+    The browser opens, and a stateless local HTTP API starts on
     <code>127.0.0.1:7878</code> (override with <code>FRAGUA_API_ADDR</code>).
     Point any agent that can make HTTP calls at it:
   </p>
@@ -272,9 +272,9 @@ curl -s http://127.0.0.1:7878/script \
     parts, and bug fixes from real-world designs.
   </p>
   <p class="quiet" data-i18n="oss.p2">
-    Built in Rust + Tauri 2 + TypeScript. No <code>kicad-cli</code>, no
+    Built in Go. No <code>kicad-cli</code>, no
     FreeRouting wrapper, no shell-out. Every file format read or written
-    is implemented in the workspace.
+    is implemented in this repo.
   </p>
 </section>
 
@@ -330,8 +330,8 @@ curl -s http://127.0.0.1:7878/script \
     "recipe.lead": "Lo que el agente podría enviar a <code>POST /script</code>. Cada línea es un verbo; cada verbo confirma en el estado del proyecto y emite un evento desde el que la UI se repinta. La pipeline completa — ERC, emplazamiento, enrutado, empaquetado de fabricación — ocurre en el servidor en milisegundos-a-segundos.",
 
     "install.h2": "Instalación y ejecución",
-    "install.p1": "Fragua es un workspace de Rust + un frontend TypeScript en un shell Tauri 2. Hay binarios precompilados en GitHub Releases; o compílalo desde el código:",
-    "install.p2": "La ventana se abre y arranca una API HTTP local sin estado en <code>127.0.0.1:7878</code> (se puede cambiar con <code>FRAGUA_API_ADDR</code>). Apunta hacia ella cualquier agente que pueda hacer llamadas HTTP:",
+    "install.p1": "Fragua es un único binario Go: API HTTP local y UI en el navegador. Hay binarios precompilados en GitHub Releases; o compílalo desde el código:",
+    "install.p2": "Se abre el navegador y arranca una API HTTP local sin estado en <code>127.0.0.1:7878</code> (se puede cambiar con <code>FRAGUA_API_ADDR</code>). Apunta hacia ella cualquier agente que pueda hacer llamadas HTTP:",
     "install.p3": "Las respuestas son <code>text/plain</code>: resultados línea a línea, más un aviso de sesión sin guardar si el proyecto aún no está ligado a un fichero.",
 
     "status.h2": "Estado",
@@ -356,7 +356,7 @@ curl -s http://127.0.0.1:7878/script \
 
     "oss.h2": "Código abierto",
     "oss.p1": "Con licencia MIT. Consulta <a href=\"https://github.com/mentasystems/fragua/blob/master/CONTRIBUTING.md\">CONTRIBUTING.md</a> para ver qué entra en el alcance. Issues y PRs bienvenidos — especialmente añadir proveedores de fabricación, piezas de librería y arreglos de bugs de diseños reales.",
-    "oss.p2": "Construido en Rust + Tauri 2 + TypeScript. Sin <code>kicad-cli</code>, sin envoltorio de FreeRouting, sin shell-out. Cada formato de fichero leído o escrito está implementado en el workspace.",
+    "oss.p2": "Construido en Go. Sin <code>kicad-cli</code>, sin envoltorio de FreeRouting, sin shell-out. Cada formato de fichero leído o escrito está implementado en este repo.",
 
     "footer.license": "licencia MIT",
     "footer.vision": "visión",

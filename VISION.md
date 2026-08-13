@@ -60,11 +60,11 @@ external CAD tool:
 
 - **No external binaries.** No `kicad-cli`, no `java -jar freerouting.jar`,
   no `pcbnew.so`, no shell-out to anything. Every file format read or
-  written is implemented in our own Rust code.
-- **No KiCad/FreeRouting wrapper crates.** External projects are reference
+  written is implemented in our own Go code.
+- **No KiCad/FreeRouting wrappers.** External projects are reference
   material — we read their docs and source for understanding, not for
-  linking. Generic Rust crates (geometry, serialization, UI) are fine.
-- **Agent-first.** The script API is the primary surface. The desktop UI is a
+  linking. Generic Go modules (geometry, serialization) are fine.
+- **Agent-first.** The script API is the primary surface. The browser UI is a
   rich observer/editor on top of the same in-memory project that the script
   tools mutate.
 - **The human is never blocked.** Long-running operations (routing, DRC)
@@ -72,11 +72,10 @@ external CAD tool:
 
 ## Stack
 
-- **Rust** for everything: core data model, parsers, router, placer, DRC,
-  ERC, Gerber writer, ODB++ writer, fab provider abstraction, Tauri app host.
-- **Tauri 2** as the desktop shell.
-- **TypeScript + Vite** for the frontend; SVG for board and schematic
-  rendering.
+- **Go** for everything: core data model, parsers, router, placer, DRC,
+  ERC, Gerber writer, ODB++ writer, fab provider abstraction, HTTP host.
+- **Browser UI** served from the same binary (`GET /ui/`).
+- **SVG** for board rendering.
 
 ## What we are NOT building (now)
 

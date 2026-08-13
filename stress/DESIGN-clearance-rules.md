@@ -108,6 +108,6 @@ Stored on the board; `pack fab=jlcpcb` warns if rules exceed capability.
 3. Stress board: `rule-area-around U1 fine margin=1.5 clearance=0.13
    via_drill=0.20 via_dia=0.45` → route → **DRC errors = 0** and
    fully-connected count strictly above the pre-area baseline.
-4. `cargo test -p pcb-core -p pcb-router -p pcb-drc -p pcb-script` green;
+4. `go test ./internal/core/ ./internal/router/ ./internal/drc/ ./internal/script/` green;
    module-class boards (coarse) route identically to before (no rule areas →
    behavior unchanged except the per-net clearance fix).

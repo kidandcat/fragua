@@ -108,14 +108,6 @@ if [ "$os" = "Darwin" ] && command -v xattr >/dev/null 2>&1; then
   $SUDO xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
 fi
 
-# Linux runtime deps reminder.
-if [ "$os" = "Linux" ]; then
-  if ! ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1; then
-    log "warning: libwebkit2gtk-4.1 not found. Install it, e.g.:"
-    log "  sudo apt install libwebkit2gtk-4.1-0 libayatana-appindicator3-1"
-  fi
-fi
-
 # PATH hint if installing to ~/.local.
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;

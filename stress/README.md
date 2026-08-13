@@ -28,7 +28,8 @@ and [Mitayi-Pico-D1](https://github.com/CIRCUITSTATE/Mitayi-Pico-D1) (MIT).
 ## How to drive
 
 ```sh
-./target/release/fragua run stress/rp2040-minimal.fragua
+go build -o fragua ./cmd/fragua
+./fragua run stress/rp2040-minimal.fragua
 
 curl -s http://127.0.0.1:7878/script \
   -H 'content-type: application/json' \

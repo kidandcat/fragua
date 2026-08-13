@@ -2,9 +2,9 @@
 Thanks for the PR. Couple of quick checks:
 
 - One change per PR. Bundle a refactor with the bug fix it enables.
-- `cargo test --workspace` and `cargo clippy --workspace` are green.
-- If you added or changed a script verb, the `script_reference()`
-  string in `crates/pcb-script/src/tools.rs` is updated.
+- `go test ./...` is green.
+- If you added or changed a script verb, `internal/script/usage.go`
+  and the dispatcher stay in sync.
 
 Drop the comment markers and fill in the sections below.
 -->

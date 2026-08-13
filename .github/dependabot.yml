@@ -1,13 +1,7 @@
 version: 2
 updates:
-  - package-ecosystem: cargo
+  - package-ecosystem: gomod
     directory: "/"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: npm
-    directory: "/frontend"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

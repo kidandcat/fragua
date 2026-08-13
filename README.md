@@ -7,65 +7,36 @@
 
 AI-native PCB design tool. The agent does the work, the human watches and steers.
 
-## Go rewrite (primary going forward)
-
-The product is being rewritten in **Go** (see [`PORT_GO.md`](PORT_GO.md)): single static binary,
-local HTTP API, browser UI — no Tauri/WebKit host. Rust crates remain as a temporary oracle.
+Pure Go: one static binary, local HTTP API, UI in the browser. No Rust, no Tauri, no Node.
 
 ```sh
 go test ./...
 go build -o fragua ./cmd/fragua
 ./fragua run path/to/board.fragua
-# API http://127.0.0.1:7878  (FRAGUA_API_ADDR, FRAGUA_NO_BROWSER)
+# API + UI: http://127.0.0.1:7878  (FRAGUA_API_ADDR, FRAGUA_NO_BROWSER)
 ```
 
-Cross-compile: `GOOS=linux GOARCH=amd64 go build -o fragua-linux ./cmd/fragua`.
-
-Packages: `cmd/fragua`, `internal/{core,drc,erc,gerber,fab,placer,router,render,script,host,odb}`.
-
+Cross-compile: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o fragua-linux ./cmd/fragua`.
 
 - 🌐 Landing: <https://mentasystems.com/fragua>
 - 🧭 [VISION.md](VISION.md) — what we are building and why
-- 🏗️ [ARCHITECTURE.md](ARCHITECTURE.md) — the stack and crate layout
+- 🏗️ [ARCHITECTURE.md](ARCHITECTURE.md) — packages and data flow
 - 🤝 [CONTRIBUTING.md](CONTRIBUTING.md) — how to help
 
 ## Status
 
-**v1.1.x** — end-to-end agent loop, schematic → board → fab-ready zip (and ODB++ from the UI):
+Agent loop: schematic → board → JLCPCB-ready zip.
 
-- `pcb-core`: project model (schematic, board, library, pours, rule areas,
-  stackup, cutouts, NPTH holes), nm fixed-point geometry, tokio broadcast
-  event bus, JSON persistence (`.fragua`; legacy `.json` still loads).
-- `pcb-script`: line-oriented agent DSL — `lib`, `sym`, `net`, `class`,
-  `palette`, `place`, `auto-place`, `edge-mount`, `edge-place`, `edge-plan`,
-  `elevated`, `route`, `compact`, `rule-area`, `fab-rules`, `erc`, `drc`,
-  `auto-pour`, `pack`, plus polygonal outlines / milled cutouts / mount holes.
-  Full reference at app launch and `GET /` / `GET /help`.
-- `pcb-router`: two engines. Default: Theta\* any-angle search on a multi-layer
-  grid + rip-up-and-reroute + optional PathFinder negotiation + Steiner-ish
-  multi-source, with fine-pitch escape-slot matching, reachability-proved
-  fanout, and an organic post-pass (string-pull + arc fillets). Experimental
-  (`route engine=topo`): topological homotopy A\* over a Delaunay dual.
-  Honours per-net `NetClass` and design-rule areas for width / clearance.
-- `pcb-placer`: two stages. Electrostatic global placement (ePlace-style) then
-  simulated-annealing legalisation (hand-solder gap floor + congestion proxy +
-  bundle crossings). Edge planning for edge-mounted parts, decoupling-ring
-  seating for passives, elevated-body awareness. Deterministic for a fixed seed.
-- `pcb-drc` / `pcb-erc`: geometric DRC (clearance, drill, edge, body-off-board,
-  elevated overlap, cutout/hole voids, castellated pads) and schematic ERC
-  (floating pins, drivers, power rails) plus heuristics (decoupling caps, I²C
-  pull-ups).
-- `pcb-fab` + `pcb-gerber` + `pcb-odb`: JLCPCB / PCBWay / Generic pack (Gerber +
-  Excellon + BOM/CPL zip) and ODB++ `.tgz` (UI export; industry interchange).
-- `pcb-render`: Board + schematic → SVG/PNG (substrate, copper, silk, DRC
-  markers; poly outlines and cutouts).
-- `pcb-router-tune`: GA / random search over router genes (cell, via cost,
-  clearance, rotations) — CLI + in-app Auto Routing.
-- `src-tauri` + `frontend`: Tauri 2 shell. Local HTTP API on `127.0.0.1:7878`
-  (override with `FRAGUA_API_ADDR`). Frontend pans/zooms the live SVG and
-  surfaces the activity log.
+- `internal/core`: project model (schematic, board, library, pours, rule areas, stackup), nm fixed-point geometry, JSON persistence (`.fragua`; legacy `.json` still loads).
+- `internal/script`: line-oriented agent DSL — `lib`, `sym`, `net`, `place`, `auto-place`, `route`, `compact`, `rule-area`, `fab-rules`, `layer`, `escape`, `erc`, `drc`, `pack`, …
+- `internal/router`: Theta* any-angle grid, QFN escape-slot matching, RR&R, PathFinder-lite negotiate, organic string-pull, pour stitch. 2- and 4-layer (F / GND / +3V3 / +1V1). JLCPCB mins are the working ceiling.
+- `internal/placer`: simulated-annealing legalisation, decoupling-ring seating, edge snap.
+- `internal/drc` / `internal/erc`: geometric DRC and schematic ERC.
+- `internal/fab` + `internal/gerber` + `internal/odb`: JLCPCB / PCBWay / generic pack (Gerber + Excellon + BOM/CPL) and ODB++.
+- `internal/render`: board SVG (substrate, copper, silk, pad names, drills).
+- `internal/host` + `cmd/fragua`: HTTP API + embedded browser UI.
 
-`cargo test --workspace` is green. Stress campaign notes: [`stress/`](stress/).
+`go test ./...` is green. Stress campaign notes: [`stress/`](stress/).
 
 ## Install
 
@@ -79,8 +50,8 @@ Drops the `fragua` binary in `/usr/local/bin` (or `~/.local/bin` if it
 can't write there). Windows users: grab `fragua-<ver>-windows-x64.zip`
 from the [releases page](https://github.com/mentasystems/fragua/releases/latest).
 
-Then tell your AI to design the hardware with the `fragua` CLI — it launches
-the window, exposes the HTTP script API, and the agent drives the rest.
+Then tell your AI to design the hardware with the `fragua` CLI — it opens
+the browser UI, exposes the HTTP script API, and the agent drives the rest.
 
 ## Run it
 
@@ -89,23 +60,22 @@ the usage + full script reference and exits — so agents can discover the
 surface before starting the server.
 
 ```sh
-# Build the frontend bundle once (release build embeds it).
-npm --prefix frontend install
-npm --prefix frontend run build
+go build -o fragua ./cmd/fragua
 
 # Launch empty in-memory project.
-cargo run --release --bin fragua -- run
+./fragua run
 
-# …or open an existing project (autosave bound to that path):
-cargo run --release --bin fragua -- run /path/to/project.fragua
+# …or open an existing project:
+./fragua run /path/to/project.fragua
 
 # Installed binary:
 fragua run
 fragua run /path/to/project.fragua
 ```
 
-The window opens and the local HTTP API starts on `127.0.0.1:7878`
-(override: `FRAGUA_API_ADDR`).
+The browser opens at `http://127.0.0.1:7878/ui/` and the HTTP API listens
+on `127.0.0.1:7878` (override: `FRAGUA_API_ADDR`). Set `FRAGUA_NO_BROWSER=1`
+to skip the browser.
 
 ## Drive it from an agent
 
@@ -125,8 +95,8 @@ curl -s http://127.0.0.1:7878/script \
   -H 'content-type: application/json' \
   -d '{"script": "outline 80 30 radius=2\nstatus"}'
 
-# Headless PNG of the live board (or schematic).
-curl -s 'http://127.0.0.1:7878/screenshot?view=board&width=1600' -o board.png
+# Live board SVG.
+curl -s 'http://127.0.0.1:7878/screenshot?view=board' -o board.svg
 
 # Persist when launched without a file argument.
 curl -s http://127.0.0.1:7878/save \
@@ -138,7 +108,8 @@ curl -s http://127.0.0.1:7878/save \
 |--------|------|---------|
 | `GET` | `/`, `/help` | Usage + full script reference |
 | `GET` | `/health` | `ok` |
-| `GET` | `/screenshot` | PNG (`view=board\|schematic`, `width=`) |
+| `GET` | `/ui/` | Browser UI |
+| `GET` | `/screenshot` | Board SVG |
 | `POST` | `/script` | Multi-line script body `{"script":"..."}` |
 | `POST` | `/save` | Atomic write + bind autosave `{"path":"..."}` |
 

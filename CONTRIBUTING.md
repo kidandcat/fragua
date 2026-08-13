@@ -8,31 +8,31 @@ in the open. The bar for contributions is "would I want this in my own copy"
 
 ```sh
 # Build and run the tests.
-cargo test --workspace
+go test ./...
 
-# Run the desktop app (the `run` subcommand starts the server + UI).
-npm --prefix frontend install
-npm --prefix frontend run build
-cargo run --release --bin fragua -- run
-# or: cargo run --release --bin fragua -- run /path/to/board.fragua
+# Run the app (HTTP API + browser UI).
+go build -o fragua ./cmd/fragua
+./fragua run
+# or: ./fragua run /path/to/board.fragua
 
 # Bare `fragua` (no `run`) prints usage + the full script reference and exits.
-cargo run --release --bin fragua
+./fragua
 
 # Drive the agent script API (once `fragua run` is up).
 curl -s http://127.0.0.1:7878/                    # usage + full reference
 curl -s http://127.0.0.1:7878/help                # same
 curl -s http://127.0.0.1:7878/health              # ok
-curl -s 'http://127.0.0.1:7878/screenshot?view=board' -o board.png
+curl -s 'http://127.0.0.1:7878/screenshot' -o board.svg
 ```
 
 Override the listen address with `FRAGUA_API_ADDR` if needed.
+Set `FRAGUA_NO_BROWSER=1` to skip opening the browser.
 
 ## What's in scope
 
 - Improvements to the router, placer, DRC, ERC, or fab pipeline.
 - New fab providers (PCBWay variants, OSHPark, Aisler, Eurocircuits…)
-  — add a variant to `pcb_fab::Provider` and the matching `match` arms.
+  — add a preset next to the existing JLCPCB profiles.
 - Library entries — open a PR adding the part to the agent's component
   catalogue.
 - Bug fixes, especially anything found by trying a real-world design.
@@ -44,7 +44,7 @@ Override the listen address with `FRAGUA_API_ADDR` if needed.
   features. The human edits to *correct* the agent, not to design from
   scratch by hand.
 - External CAD tool integrations (`kicad-cli`, FreeRouting, Altium import
-  / export). The non-negotiable rule is "no shell-out, no wrapper crates".
+  / export). The non-negotiable rule is "no shell-out".
 - 3D rendering / SPICE / signal integrity. These belong in adjacent
   tools, not in the core loop.
 
@@ -55,16 +55,13 @@ Override the listen address with `FRAGUA_API_ADDR` if needed.
    different angle.
 2. **One change per PR.** A bug fix and a refactor in the same PR
    doubles the review time.
-3. **Add a test for the regression.** Almost every crate has a `tests/`
-   directory or inline `#[test]`s; pick the closest existing pattern.
-4. **Run `cargo test --workspace` and `cargo clippy --workspace`.**
-   The warnings list is intentionally short; new warnings should be
-   addressed or explicitly silenced with a comment explaining why.
+3. **Add a test for the regression.** Packages under `internal/` have
+   `_test.go` files; pick the closest existing pattern.
+4. **Run `go test ./...`.** New warnings from `go vet` should be fixed.
 5. **Keep the script reference accurate.** If you add or change a
-   verb, update the `SCRIPT_REFERENCE` string in
-   `crates/pcb-script/src/tools.rs` **and** the `VERBS` list in
-   `crates/pcb-script/src/script.rs` so the agent and the human see
-   the new surface at startup, at `GET /`, and in "did you mean"
+   verb, update `internal/script/usage.go` and the dispatcher in
+   `internal/script/dispatch.go` so the agent and the human see the
+   new surface at startup, at `GET /`, and in "did you mean"
    suggestions.
 
 ## Style
@@ -75,29 +72,7 @@ Override the listen address with `FRAGUA_API_ADDR` if needed.
   declared scope or it shouldn't be in the PR.
 - **No dead branches "for the future".** Add the branch when the
   future arrives.
-- **Match the existing crate's conventions.** If the surrounding code
-  uses early returns, use early returns; if it uses exhaustive matches,
-  use exhaustive matches.
-
-## Commit messages
-
-Subject line in imperative mood, ≤ 72 characters; describe *what*
-the change does, not the journey of getting there. Body explains the
-reasoning, the trade-offs, and any behaviour the user/agent will
-notice. We use the body as the changelog — please write it as if a
-maintainer six months from now is reading it cold.
-
-## Reporting bugs
-
-Open an issue with:
-
-- A minimal script that reproduces the problem.
-- The expected behaviour and what you saw instead.
-- The board file (`.fragua`) if the bug depends on geometry — feel
-  free to anonymise net names.
-- The git rev of the build (`git rev-parse HEAD`).
-
-## License
-
-By contributing you agree your work is published under the MIT
-license that covers the rest of the repository.
+- **Match the existing package's conventions.** If the surrounding code
+  uses early returns, use early returns.
+- **Code and docs in English.** Commit messages follow
+  `feat|fix|docs(scope): …`.
