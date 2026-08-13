@@ -19,7 +19,7 @@ func planFanout(board *core.Board, opts Options) int {
 	}
 	added := 0
 	for _, fp := range footprintsStable(board) {
-		if len(fp.Pads) < 8 {
+		if len(fp.Pads) < 8 || minPadPitchMM(fp) >= 0.80 {
 			continue
 		}
 		cx, cy := fp.Position.X.ToMM(), fp.Position.Y.ToMM()

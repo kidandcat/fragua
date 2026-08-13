@@ -178,8 +178,12 @@ func Route(board *core.Board, opts Options) Report {
 	for n := range nets {
 		names = append(names, n)
 	}
-	// Fewest pads first (easier nets claim less board early), then name.
+	// Power rails first (they must span the board), then fewest pads, then name.
 	sort.Slice(names, func(i, j int) bool {
+		pi, pj := netOrderKey(names[i]), netOrderKey(names[j])
+		if pi != pj {
+			return pi < pj
+		}
 		if len(nets[names[i]]) != len(nets[names[j]]) {
 			return len(nets[names[i]]) < len(nets[names[j]])
 		}
@@ -214,6 +218,11 @@ func Route(board *core.Board, opts Options) Report {
 		}
 
 		out := routeNet(board, g, name, pads, opts, deadline, hasDeadline)
+		if out.Status != "ok" && len(pads) <= 3 && !pastDeadline() {
+			cheap := opts
+			cheap.ViaCost = 2
+			out = routeNet(board, g, name, pads, cheap, deadline, hasDeadline)
+		}
 		rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: out})
 		if out.Status == "ok" {
 			rep.TraceCount += out.TraceSegments
@@ -321,6 +330,20 @@ func refreshReportLengths(board *core.Board, rep *Report) {
 }
 
 // footprintsStable returns footprints in deterministic order (FootprintOrder, then ref).
+func netOrderKey(name string) int {
+	u := strings.ToUpper(name)
+	switch {
+	case u == "V5" || u == "+5V" || u == "5V" || u == "VIN":
+		return 0
+	case u == "+3V3" || u == "3V3" || u == "VCC" || u == "VDD" || u == "VSW":
+		return 1
+	case u == "GND" || strings.HasPrefix(u, "GND") || u == "VSS" || u == "AGND":
+		return 2
+	default:
+		return 3
+	}
+}
+
 func footprintsStable(board *core.Board) []*core.Footprint {
 	seen := map[string]bool{}
 	var out []*core.Footprint
@@ -402,17 +425,38 @@ func existingNetSources(board *core.Board, g *grid, net string) []cellKey {
 }
 
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	out := routeNetFrom(board, g, name, pads, 0, opts, deadline, hasDeadline)
+	if out.Status == "ok" || len(pads) < 3 {
+		return out
+	}
+	// Unlucky seed (an edge pad that cannot escape) — try every other pad.
+	for seed := 1; seed < len(pads); seed++ {
+		if hasDeadline && time.Now().After(deadline) {
+			break
+		}
+		out = routeNetFrom(board, g, name, pads, seed, opts, deadline, hasDeadline)
+		if out.Status == "ok" {
+			return out
+		}
+	}
+	return out
+}
+
+func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed int, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	lb := lowerBoundMM(pads)
 
 	// Prim growth: connected set starts with pad 0; multi-source A* from
 	// all same-net tree cells to the nearest unconnected pad.
-	connected := map[int]bool{0: true}
+	if seed < 0 || seed >= len(pads) {
+		seed = 0
+	}
+	connected := map[int]bool{seed: true}
 	sources := existingNetSources(board, g, name)
-	if sx, sy, ok := g.worldToCell(pads[0].p.X, pads[0].p.Y); ok {
-		sources = append(sources, cellKey{sx, sy, pads[0].layer})
+	if sx, sy, ok := g.worldToCell(pads[seed].p.X, pads[seed].p.Y); ok {
+		sources = append(sources, cellKey{sx, sy, pads[seed].layer})
 	} else {
-		sx, sy := clampCell(pads[0].p, g)
-		sources = append(sources, cellKey{sx, sy, pads[0].layer})
+		sx, sy := clampCell(pads[seed].p, g)
+		sources = append(sources, cellKey{sx, sy, pads[seed].layer})
 	}
 
 	type pendingTrace struct {
@@ -556,7 +600,27 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 			segs++
 			length += hypotMM(core.NewPoint(a.x, a.y), core.NewPoint(b.x, b.y))
 		}
-		if gx, gy, ok := g.worldToCell(pads[bestJ].p.X, pads[bestJ].p.Y); ok {
+		// Always land a same-layer stub on the pad centre. A last
+		// step that is only a via (layer flip at the pad cell) used
+		// to leave U1's pad as its own island.
+		padP := pads[bestJ].p
+		from := path[len(path)-1]
+		if from.layer != goalLayer {
+			pendV = append(pendV, pendingVia{v: core.Via{
+				ID: core.NewID(), Position: core.NewPoint(from.x, from.y),
+				Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM), Net: name,
+			}})
+			from.layer = goalLayer
+		}
+		if from.x != padP.X || from.y != padP.Y {
+			pendT = append(pendT, pendingTrace{tr: core.Trace{
+				ID: core.NewID(), Layer: core.Layer{Index: goalLayer},
+				Start: core.NewPoint(from.x, from.y), End: padP, Width: w, Net: name,
+			}})
+			segs++
+			length += hypotMM(core.NewPoint(from.x, from.y), padP)
+		}
+		if gx, gy, ok := g.worldToCell(padP.X, padP.Y); ok {
 			sources = append(sources, cellKey{gx, gy, goalLayer})
 		}
 		connected[bestJ] = true
@@ -1243,15 +1307,10 @@ func newGrid(board *core.Board, opts Options) *grid {
 	} else {
 		o = core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(100), core.FromMM(80)))
 	}
-	edge := core.FromMM(opts.ClearanceMM)
-	minX := o.Min.X + edge
-	minY := o.Min.Y + edge
-	maxX := o.Max.X - edge
-	maxY := o.Max.Y - edge
-	if maxX <= minX || maxY <= minY {
-		minX, minY = o.Min.X, o.Min.Y
-		maxX, maxY = o.Max.X, o.Max.Y
-	}
+	// Full outline so edge-mounted pads (fecha ESP 5V at x=69.25 on
+	// 70 mm) and the perimeter channel Rust uses stay on-grid.
+	minX, minY := o.Min.X, o.Min.Y
+	maxX, maxY := o.Max.X, o.Max.Y
 	widthMM := float64(maxX-minX) / 1e6
 	heightMM := float64(maxY-minY) / 1e6
 	if widthMM/cellMM > maxGridDim {
@@ -1299,15 +1358,10 @@ func newGrid(board *core.Board, opts Options) *grid {
 		g.stampRectObstacle(*k.Rect)
 	}
 
-	// Clearance inflation in cells. ceil() is the quantization guard: when
-	// clearance is not an exact multiple of cell pitch, we round up so
-	// nm→cell snap never under-clears (0.40/0.25 → 2-cell halo, Rust default).
-	clearanceCells := int(math.Ceil(opts.ClearanceMM / cellMM))
-	if clearanceCells < 1 {
-		clearanceCells = 1
-	}
-
-	// Pads: own-net walkable; foreign / no-net blocked. Inflated by clearance.
+	// Pads: stamp BARE copper only. A 2.54 mm header with a 0.40 mm
+	// clearance halo on each pad overwrites its neighbour's centre
+	// (fecha U1 V5/GND) and A* "arrives" on a foreign cell. Foreign
+	// separation is searchClearanceOK, not the stamp.
 	for _, fp := range footprintsStable(board) {
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
@@ -1318,10 +1372,17 @@ func newGrid(board *core.Board, opts Options) *grid {
 			c := core.PadWorldCenter(fp, pad)
 			cx, cy, ok := g.worldToCell(c.X, c.Y)
 			if !ok {
-				continue
+				cx, cy = clampCell(c, g)
 			}
-			pw := int(pad.Size[0]/cell)/2 + clearanceCells
-			ph := int(pad.Size[1]/cell)/2 + clearanceCells
+			ww, hh := core.PadWorldSize(fp, pad)
+			pw := int(ww/cell) / 2
+			ph := int(hh/cell) / 2
+			if pw < 0 {
+				pw = 0
+			}
+			if ph < 0 {
+				ph = 0
+			}
 			layersToStamp := []uint8{pad.Layer.Index}
 			if pad.Drill != nil && *pad.Drill > 0 {
 				layersToStamp = make([]uint8, layers)
@@ -1613,9 +1674,10 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 					continue
 				}
 			}
-			// Search-time clearance disk (Rust): refuse a step whose
-			// cell sits inside DRC min-clearance of foreign copper.
-			if !g.searchClearanceOK(nx, ny, cur.k.l, net) {
+			// Search-time clearance disk. Own-net cells (the pad we
+			// are landing on) skip it: header pads sit 2.54 mm apart
+			// and the disk would otherwise refuse the pin itself.
+			if g.blocked[cur.k.l][ny*g.w+nx] != net && !g.searchClearanceOK(nx, ny, cur.k.l, net) {
 				continue
 			}
 			nk := cellKey{nx, ny, cur.k.l}
