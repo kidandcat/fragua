@@ -230,6 +230,27 @@ layer list
 	}
 }
 
+func TestLayerAddInsertsBeforeBottom(t *testing.T) {
+	p := core.NewProject("t5b")
+	rs := RunScript(p, "outline 20 20\nlayer add In1.Cu signal\nlayer add In2.Cu plane\nlayer list\n")
+	allOK(t, rs)
+	p.RLock()
+	defer p.RUnlock()
+	s := p.Board().StackupOrDefault()
+	if s.CopperCount() != 4 {
+		t.Fatalf("copper %d", s.CopperCount())
+	}
+	want := []string{"F.Cu", "In1.Cu", "In2.Cu", "B.Cu"}
+	for i, n := range want {
+		if s.Layers[i].Name != n {
+			t.Fatalf("layer[%d]=%s want %s", i, s.Layers[i].Name, n)
+		}
+	}
+	if s.BottomLayer().Index != 3 {
+		t.Fatalf("bottom %d", s.BottomLayer().Index)
+	}
+}
+
 func TestFabRulesAndScreenshot(t *testing.T) {
 	p := core.NewProject("t6")
 	dir := t.TempDir()

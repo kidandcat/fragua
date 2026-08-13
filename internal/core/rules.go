@@ -1,41 +1,94 @@
 package core
 
+import "strings"
+
 // FabRules are manufacturing floor limits adopted for the board.
 // JSON tags match Rust pcb_core::FabRules (min_via_drill_mm etc.).
 type FabRules struct {
-	Preset             string     `json:"preset,omitempty"`
-	MinTraceWidthMM    float64    `json:"min_trace_width_mm,omitempty"`
-	MinClearanceMM     float64    `json:"min_clearance_mm,omitempty"`
-	MinViaDrillMM      float64    `json:"min_via_drill_mm,omitempty"`
-	MinAnnularRingMM   float64    `json:"min_annular_ring_mm,omitempty"`
-	MinViaDiameterMM   float64    `json:"min_via_diameter_mm,omitempty"`
-	MinEdgeClearanceMM float64    `json:"min_edge_clearance_mm,omitempty"`
+	Preset             string      `json:"preset,omitempty"`
+	MinTraceWidthMM    float64     `json:"min_trace_width_mm,omitempty"`
+	MinClearanceMM     float64     `json:"min_clearance_mm,omitempty"`
+	MinViaDrillMM      float64     `json:"min_via_drill_mm,omitempty"`
+	MinAnnularRingMM   float64     `json:"min_annular_ring_mm,omitempty"`
+	MinViaDiameterMM   float64     `json:"min_via_diameter_mm,omitempty"`
+	MinEdgeClearanceMM float64     `json:"min_edge_clearance_mm,omitempty"`
 	MaxBoardSizeMM     *[2]float64 `json:"max_board_size_mm,omitempty"`
 }
 
 // RuleArea is a rectangular region with rule overrides.
 type RuleArea struct {
-	ID            ID      `json:"id"`
-	Name          string  `json:"name"`
-	Rect          Rect    `json:"rect"`
-	ClearanceMM   *float64 `json:"clearance_mm,omitempty"`
-	TraceWidthMM  *float64 `json:"trace_width_mm,omitempty"`
-	ViaDrillMM    *float64 `json:"via_drill_mm,omitempty"`
-	ViaDiameterMM *float64 `json:"via_diameter_mm,omitempty"`
-	Priority      int     `json:"priority,omitempty"`
-	AnchorRef     string  `json:"anchor_ref,omitempty"`
-	AnchorMarginMM float64 `json:"anchor_margin_mm,omitempty"`
+	ID             ID       `json:"id"`
+	Name           string   `json:"name"`
+	Rect           Rect     `json:"rect"`
+	ClearanceMM    *float64 `json:"clearance_mm,omitempty"`
+	TraceWidthMM   *float64 `json:"trace_width_mm,omitempty"`
+	ViaDrillMM     *float64 `json:"via_drill_mm,omitempty"`
+	ViaDiameterMM  *float64 `json:"via_diameter_mm,omitempty"`
+	Priority       int      `json:"priority,omitempty"`
+	AnchorRef      string   `json:"anchor_ref,omitempty"`
+	AnchorMarginMM float64  `json:"anchor_margin_mm,omitempty"`
 	// Layers empty means all.
 	Layers []Layer `json:"layers,omitempty"`
 }
 
 // RuleDefaults are global design defaults.
 type RuleDefaults struct {
-	Clearance    Length
-	TraceWidth   Length
-	ViaDrill     Length
-	ViaDiameter  Length
+	Clearance     Length
+	TraceWidth    Length
+	ViaDrill      Length
+	ViaDiameter   Length
 	EdgeClearance Length
+}
+
+// EscapeException is a pin-level override when fab geometry cannot
+// produce a legal dogbone (typically via-in-pad on a stranded QFN pin).
+type EscapeException struct {
+	Ref  string `json:"ref"`           // footprint reference, e.g. U1
+	Pad  string `json:"pad,omitempty"` // pad number; empty = every pad on Ref
+	Mode string `json:"mode"`          // "via_in_pad"
+}
+
+const EscapeViaInPad = "via_in_pad"
+
+// ActiveFabRules returns the board's fab profile, or JLCPCB 2-layer as
+// the default ceiling (we never design tighter than a known fab).
+func ActiveFabRules(b *Board) FabRules {
+	if b != nil && b.FabRules != nil && b.FabRules.MinClearanceMM > 0 {
+		return *b.FabRules
+	}
+	if p := FabRulesPreset("jlcpcb-2l"); p != nil {
+		return *p
+	}
+	return FabRules{MinClearanceMM: 0.127, MinTraceWidthMM: 0.127, MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13}
+}
+
+// ClampToFab raises any value that would be illegal at the fab.
+func (f FabRules) ClampClearance(mm float64) float64 {
+	if f.MinClearanceMM > 0 && mm < f.MinClearanceMM {
+		return f.MinClearanceMM
+	}
+	if mm <= 0 {
+		return f.MinClearanceMM
+	}
+	return mm
+}
+
+func HasEscapeException(b *Board, ref, pad, mode string) bool {
+	if b == nil {
+		return false
+	}
+	for _, e := range b.EscapeExceptions {
+		if !strings.EqualFold(e.Mode, mode) && e.Mode != "" {
+			continue
+		}
+		if !strings.EqualFold(e.Ref, ref) {
+			continue
+		}
+		if e.Pad == "" || e.Pad == pad {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultRules matches the Rust router/DRC baseline (0.2 mm clearance, etc.).
@@ -51,10 +104,10 @@ func DefaultRules() RuleDefaults {
 
 // RuleResolver picks clearance/width for a point and net.
 type RuleResolver struct {
-	Defaults  RuleDefaults
-	Areas     []RuleArea
-	NetClass  map[string]NetClass // name → class
-	NetToClass map[string]string  // net → class name
+	Defaults   RuleDefaults
+	Areas      []RuleArea
+	NetClass   map[string]NetClass // name → class
+	NetToClass map[string]string   // net → class name
 }
 
 // ClearanceAt returns the required clearance at p for the given net

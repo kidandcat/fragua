@@ -286,6 +286,14 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return setFabRules(p, args)
 	case "layer":
 		return layerCmd(p, args)
+	case "escape":
+		return escapeCmd(p, args)
+	case "stackup":
+		if strings.TrimSpace(args) == "4" || strings.TrimSpace(args) == "4l" || strings.TrimSpace(args) == "4layer" {
+			p.MutateBoard(func(b *core.Board) { b.Apply4Layer() })
+			return "stackup: 4-layer (F / In1 GND / In2 +3V3 / B)", nil
+		}
+		return "", fmt.Errorf("stackup 4")
 	case "compact":
 		return cmdCompact(p, args)
 	case "screenshot":
@@ -1028,6 +1036,64 @@ func addRuleArea(p *core.Project, args string) (string, error) {
 	return fmt.Sprintf("rule-area %s clearance=%s mm", name, cl), nil
 }
 
+func escapeCmd(p *core.Project, args string) (string, error) {
+	fields := tokenize(args)
+	if len(fields) < 1 {
+		return "", fmt.Errorf("escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list")
+	}
+	switch strings.ToLower(fields[0]) {
+	case "list":
+		p.RLock()
+		defer p.RUnlock()
+		b := p.Board()
+		var s strings.Builder
+		if b.AutoViaInPadStranded {
+			s.WriteString("auto via-in-pad-stranded: on\n")
+		}
+		for _, e := range b.EscapeExceptions {
+			fmt.Fprintf(&s, "  %s.%s %s\n", e.Ref, e.Pad, e.Mode)
+		}
+		if s.Len() == 0 {
+			return "escape: (none)", nil
+		}
+		return strings.TrimSpace(s.String()), nil
+	case "via-in-pad-stranded", "via_in_pad_stranded":
+		on := true
+		if len(fields) > 1 && (fields[1] == "off" || fields[1] == "false" || fields[1] == "0") {
+			on = false
+		}
+		p.MutateBoard(func(b *core.Board) { b.AutoViaInPadStranded = on })
+		if on {
+			return "escape: via-in-pad-stranded on", nil
+		}
+		return "escape: via-in-pad-stranded off", nil
+	case "via-in-pad", "via_in_pad":
+		if len(fields) < 2 {
+			return "", fmt.Errorf("escape via-in-pad REF.PAD")
+		}
+		ref, pad := fields[1], ""
+		if i := strings.IndexByte(fields[1], '.'); i >= 0 {
+			ref, pad = fields[1][:i], fields[1][i+1:]
+		}
+		p.MutateBoard(func(b *core.Board) {
+			for _, e := range b.EscapeExceptions {
+				if strings.EqualFold(e.Ref, ref) && e.Pad == pad && e.Mode == core.EscapeViaInPad {
+					return
+				}
+			}
+			b.EscapeExceptions = append(b.EscapeExceptions, core.EscapeException{
+				Ref: ref, Pad: pad, Mode: core.EscapeViaInPad,
+			})
+		})
+		if pad == "" {
+			return fmt.Sprintf("escape: via-in-pad %s (all pads)", ref), nil
+		}
+		return fmt.Sprintf("escape: via-in-pad %s.%s", ref, pad), nil
+	default:
+		return "", fmt.Errorf("escape: unknown %q (via-in-pad|via-in-pad-stranded|list)", fields[0])
+	}
+}
+
 func setFabRules(p *core.Project, args string) (string, error) {
 	// fab-rules PRESET | clear | list
 	fields := strings.Fields(args)
@@ -1213,8 +1279,11 @@ func layerCmd(p *core.Project, args string) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("renamed layer `%s` → `%s`", oldN, newN), nil
+	case "4", "4l", "4layer":
+		p.MutateBoard(func(b *core.Board) { b.Apply4Layer() })
+		return "stackup: 4-layer (F / In1 GND / In2 +3V3 / B)", nil
 	default:
-		return "", fmt.Errorf("layer: unknown subcommand `%s` (list|add|remove|rename)", fields[0])
+		return "", fmt.Errorf("layer: unknown subcommand `%s` (list|add|remove|rename|4layer)", fields[0])
 	}
 }
 
@@ -1389,16 +1458,28 @@ func isLayerToken(s string) bool {
 }
 
 func parseLayerToken(s string) core.Layer {
+	return parseLayerTokenOn(s, nil)
+}
+
+func parseLayerTokenOn(s string, board *core.Board) core.Layer {
 	switch strings.ToLower(s) {
 	case "top", "f.cu":
 		return core.LayerTop
 	case "bottom", "b.cu":
+		if board != nil {
+			return board.StackupOrDefault().BottomLayer()
+		}
 		return core.LayerBottom
 	default:
-		if strings.HasPrefix(strings.ToLower(s), "in") {
-			n, err := strconv.Atoi(s[2:])
-			if err == nil {
-				return core.Layer{Index: uint8(n + 1)}
+		low := strings.ToLower(s)
+		if strings.HasPrefix(low, "in") {
+			rest := s[2:]
+			if i := strings.IndexByte(rest, '.'); i >= 0 {
+				rest = rest[:i]
+			}
+			n, err := strconv.Atoi(rest)
+			if err == nil && n >= 1 {
+				return core.Layer{Index: uint8(n)}
 			}
 		}
 		return core.LayerTop

@@ -268,9 +268,18 @@ func (s *LayerStackup) FindLayerByName(name string) (Layer, bool) {
 	return Layer{}, false
 }
 
-// PushLayer appends a copper layer at the bottom of the stack with a dielectric slab.
+// PushLayer inserts a copper layer just above the physical bottom (last
+// entry). Appending after B.Cu used to leave the file named B.Cu as an
+// inner layer and the real bottom named In2.Cu.
 func (s *LayerStackup) PushLayer(spec LayerSpec, slab Dielectric) {
-	s.Layers = append(s.Layers, spec)
+	n := len(s.Layers)
+	if n < 2 {
+		s.Layers = append(s.Layers, spec)
+		s.Dielectrics = append(s.Dielectrics, slab)
+		return
+	}
+	last := s.Layers[n-1]
+	s.Layers = append(s.Layers[:n-1], spec, last)
 	s.Dielectrics = append(s.Dielectrics, slab)
 }
 

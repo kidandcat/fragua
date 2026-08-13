@@ -62,11 +62,15 @@ func (l *Layer) UnmarshalJSON(b []byte) error {
 			return nil
 		}
 		if strings.HasPrefix(s, "In") || strings.HasPrefix(s, "in") {
-			n, err := strconv.Atoi(s[2:])
-			if err != nil {
+			rest := s[2:]
+			if i := strings.IndexByte(rest, '.'); i >= 0 {
+				rest = rest[:i]
+			}
+			n, err := strconv.Atoi(rest)
+			if err != nil || n < 1 {
 				return fmt.Errorf("unknown layer %q", s)
 			}
-			*l = Layer{Index: uint8(n + 1)}
+			*l = Layer{Index: uint8(n)}
 			return nil
 		}
 		return fmt.Errorf("unknown layer %q", s)
@@ -123,11 +127,11 @@ const (
 
 // LayerSpec is one copper/dielectric entry in the stackup.
 type LayerSpec struct {
-	Name            string    `json:"name,omitempty"`
-	Kind            LayerKind `json:"kind,omitempty"`
-	ThicknessUM     float64   `json:"thickness_um,omitempty"`
-	CopperWeightOz  float64   `json:"copper_weight_oz,omitempty"`
-	DielectricEr    float64   `json:"dielectric_er,omitempty"`
+	Name           string    `json:"name,omitempty"`
+	Kind           LayerKind `json:"kind,omitempty"`
+	ThicknessUM    float64   `json:"thickness_um,omitempty"`
+	CopperWeightOz float64   `json:"copper_weight_oz,omitempty"`
+	DielectricEr   float64   `json:"dielectric_er,omitempty"`
 }
 
 // Dielectric describes a dielectric sheet.
@@ -151,6 +155,31 @@ func Default2Layer() LayerStackup {
 		},
 		Dielectrics: []Dielectric{{ThicknessMM: 1.5, Er: 4.5}},
 	}
+}
+
+// Default4Layer is a JLCPCB-class 1.6 mm stack: signal / GND plane / power plane / signal.
+func Default4Layer() LayerStackup {
+	return LayerStackup{
+		Layers: []LayerSpec{
+			{Name: "F.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
+			{Name: "In1.Cu", Kind: LayerKindPower, CopperWeightOz: 1},
+			{Name: "In2.Cu", Kind: LayerKindPower, CopperWeightOz: 1},
+			{Name: "B.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
+		},
+		Dielectrics: []Dielectric{
+			{ThicknessMM: 0.21, Er: 4.5},
+			{ThicknessMM: 1.065, Er: 4.5},
+			{ThicknessMM: 0.21, Er: 4.5},
+		},
+	}
+}
+
+// IsPlane reports whether copper index i is a power/plane layer.
+func (s LayerStackup) IsPlane(i int) bool {
+	if i < 0 || i >= len(s.Layers) {
+		return false
+	}
+	return s.Layers[i].Kind == LayerKindPower
 }
 
 // CopperCount returns the number of copper layers (defaults to 2).

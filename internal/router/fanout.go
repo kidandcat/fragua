@@ -6,9 +6,10 @@ import (
 	"github.com/mentasystems/fragua/internal/core"
 )
 
-// planFanout lays short dogbone stubs + vias off dense SMD packages so
-// the coarse grid can reach fine-pitch pads (commercial QFN/module escape).
-// Conservative: ≥8 pads, skip pour nets, skip PTH, stay inside the outline.
+// planFanout lays radial escape stubs + vias off dense SMD packages so
+// the grid can leave a 0.4 mm QFN. Vias are staggered on two rings when
+// the pad pitch cannot fit a via+clearance on a single ring (otherwise
+// the vias overlap and stamp the whole package as a wall).
 func planFanout(board *core.Board, opts Options) int {
 	if board.Outline == nil {
 		return 0
@@ -17,63 +18,34 @@ func planFanout(board *core.Board, opts Options) int {
 	for _, p := range board.Pours {
 		pour[p.Net] = true
 	}
+
+	viaDia := opts.ViaDiameterMM
+	if viaDia < 0.40 {
+		viaDia = 0.45
+	}
+	viaDrill := opts.ViaDrillMM
+	if viaDrill < 0.18 {
+		viaDrill = 0.20
+	}
+	stubW := opts.TraceWidthMM
+	if stubW > 0.15 {
+		stubW = 0.15
+	}
+	var placed []fanoutXY
 	added := 0
 	for _, fp := range footprintsStable(board) {
-		if len(fp.Pads) < 8 || minPadPitchMM(fp) >= 0.80 {
+		pitch := minPadPitchMM(fp)
+		// QFN/BGA only. A 0.7 mm USB-C row is not a fine-pitch grid —
+		// radial vias walk along the pin row and short the connector.
+		if len(fp.Pads) < 16 || pitch >= 0.55 {
 			continue
 		}
-		cx, cy := fp.Position.X.ToMM(), fp.Position.Y.ToMM()
-		if bb, ok := fpPadBounds(fp); ok {
-			cx = (bb.Min.X.ToMM() + bb.Max.X.ToMM()) / 2
-			cy = (bb.Min.Y.ToMM() + bb.Max.Y.ToMM()) / 2
-		}
-		for i := range fp.Pads {
-			pad := &fp.Pads[i]
-			if pad.Net == nil || *pad.Net == "" || pour[*pad.Net] {
-				continue
-			}
-			if pad.Drill != nil {
-				continue
-			}
-			pc := core.PadWorldCenter(fp, pad)
-			dx := pc.X.ToMM() - cx
-			dy := pc.Y.ToMM() - cy
-			d := math.Hypot(dx, dy)
-			if d < 0.05 {
-				continue
-			}
-			ux, uy := dx/d, dy/d
-			w, h := core.PadWorldSize(fp, pad)
-			reach := math.Max(w.ToMM(), h.ToMM())/2 + 0.45
-			vx := pc.X.ToMM() + ux*reach
-			vy := pc.Y.ToMM() + uy*reach
-			if !outlineContains(board.Outline, vx, vy, 0.6) {
-				continue
-			}
-			if fanoutHitsPad(board, vx, vy, 0.35, fp, i) {
-				continue
-			}
-			net := *pad.Net
-			board.Vias = append(board.Vias, core.Via{
-				ID:       core.NewID(),
-				Net:      net,
-				Position: core.NewPoint(core.FromMM(vx), core.FromMM(vy)),
-				Drill:    core.FromMM(opts.ViaDrillMM),
-				Diameter: core.FromMM(opts.ViaDiameterMM),
-			})
-			board.Traces = append(board.Traces, core.Trace{
-				ID:    core.NewID(),
-				Layer: pad.Layer,
-				Net:   net,
-				Width: core.FromMM(opts.TraceWidthMM),
-				Start: pc,
-				End:   core.NewPoint(core.FromMM(vx), core.FromMM(vy)),
-			})
-			added++
-		}
+		added += assignEscapeSlots(board, fp, opts, viaDia, viaDrill, stubW, &placed)
 	}
 	return added
 }
+
+type fanoutXY struct{ x, y float64 }
 
 func minPadPitchMM(fp *core.Footprint) float64 {
 	if len(fp.Pads) < 2 {
@@ -125,6 +97,71 @@ func fanoutHitsPad(board *core.Board, x, y, r float64, skip *core.Footprint, ski
 			if disk.Intersects(core.PadWorldAABB(fp, &fp.Pads[i])) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// stripStrandedFanout removes via+stub islands that never joined a net's
+// tree. Those are DRC NetSplit errors, not connections.
+func stripStrandedFanout(board *core.Board) {
+	touch := func(a, b core.Point) bool {
+		return hypotMM(a, b) < 0.35
+	}
+	viaHits := make([]int, len(board.Vias))
+	traceHits := make([]int, len(board.Traces))
+	for i, v := range board.Vias {
+		for j, t := range board.Traces {
+			if t.Net != v.Net {
+				continue
+			}
+			if touch(t.Start, v.Position) || touch(t.End, v.Position) {
+				viaHits[i]++
+				traceHits[j]++
+			}
+		}
+	}
+	dropVia := make([]bool, len(board.Vias))
+	dropTr := make([]bool, len(board.Traces))
+	for i, v := range board.Vias {
+		if viaHits[i] != 1 {
+			continue
+		}
+		for j, t := range board.Traces {
+			if t.Net != v.Net || dropTr[j] {
+				continue
+			}
+			if !(touch(t.Start, v.Position) || touch(t.End, v.Position)) {
+				continue
+			}
+			if isFanoutStub(board, t) && traceHits[j] == 1 {
+				dropVia[i] = true
+				dropTr[j] = true
+			}
+		}
+	}
+	keptV := board.Vias[:0]
+	for i, v := range board.Vias {
+		if !dropVia[i] {
+			keptV = append(keptV, v)
+		}
+	}
+	board.Vias = keptV
+	keptT := board.Traces[:0]
+	for i, t := range board.Traces {
+		if !dropTr[i] {
+			keptT = append(keptT, t)
+		}
+	}
+	board.Traces = keptT
+}
+
+func fanoutHitsSite(sites []fanoutXY, x, y, minD float64) bool {
+	min2 := minD * minD
+	for _, s := range sites {
+		dx, dy := s.x-x, s.y-y
+		if dx*dx+dy*dy < min2 {
+			return true
 		}
 	}
 	return false

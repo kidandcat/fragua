@@ -379,3 +379,38 @@ func TestSummary(t *testing.T) {
 		t.Fatal("empty summary")
 	}
 }
+
+func TestSignalOtherLayerSkipsPlanes(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(20)))
+	b.Outline = &o
+	b.Apply4Layer()
+	g := newGrid(b, DefaultOptions())
+	if g.layers != 4 {
+		t.Fatalf("layers=%d", g.layers)
+	}
+	if got := signalOtherLayer(g, 0); got != 3 {
+		t.Fatalf("top should hop to B.Cu, got %d", got)
+	}
+	if got := signalOtherLayer(g, 3); got != 0 {
+		t.Fatalf("B.Cu should hop to F.Cu, got %d", got)
+	}
+}
+
+func TestApplyFabCeilingUsesJLCPCB(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(20)))
+	b.Outline = &o
+	opts := applyFabCeiling(b, DefaultOptions())
+	if opts.ClearanceMM != 0.127 {
+		t.Fatalf("2L clearance=%v want 0.127", opts.ClearanceMM)
+	}
+	if b.FabRules == nil || b.FabRules.Preset != "jlcpcb-2l" {
+		t.Fatalf("fab rules not persisted: %+v", b.FabRules)
+	}
+	b.Apply4Layer()
+	opts = applyFabCeiling(b, DefaultOptions())
+	if opts.ClearanceMM < 0.08 || opts.ClearanceMM > 0.09 {
+		t.Fatalf("4L clearance=%v want ~0.0889", opts.ClearanceMM)
+	}
+}

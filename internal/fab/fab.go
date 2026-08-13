@@ -98,6 +98,18 @@ func Pack(p *core.Project, provider, outDir string) (*PackResult, error) {
 	ercRep := erc.Check(sch, board, erc.DefaultOptions())
 	drcOpts := drc.DefaultOptions()
 	drcOpts.FabProfile = prof.ToHandle()
+	if fab := core.ActiveFabRules(board); fab.MinClearanceMM > 0 {
+		drcOpts.MinClearance = core.FromMM(fab.MinClearanceMM)
+		if fab.MinTraceWidthMM > 0 {
+			drcOpts.MinTraceWidth = core.FromMM(fab.MinTraceWidthMM)
+		}
+		if fab.MinViaDrillMM > 0 {
+			drcOpts.MinDrill = core.FromMM(fab.MinViaDrillMM)
+		}
+		if fab.MinEdgeClearanceMM > 0 {
+			drcOpts.EdgeClearance = core.FromMM(fab.MinEdgeClearanceMM)
+		}
+	}
 	drcRep := drc.Check(board, sch, drcOpts)
 	p.RUnlock()
 

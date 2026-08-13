@@ -22,20 +22,20 @@ const (
 type Kind string
 
 const (
-	KindPadPadClearance         Kind = "pad_pad_clearance"
-	KindTraceTraceClearance     Kind = "trace_trace_clearance"
-	KindTracePadClearance       Kind = "trace_pad_clearance"
-	KindEdgeClearance           Kind = "edge_clearance"
-	KindUnconnectedPad          Kind = "unconnected_pad"
-	KindNetSplit                Kind = "net_split"
-	KindNarrowTrace             Kind = "narrow_trace"
-	KindSmallDrill              Kind = "small_drill"
-	KindSmallComponentDangling  Kind = "small_component_dangling"
-	KindBodyOverlap             Kind = "body_overlap"
-	KindBodyOffBoard            Kind = "body_off_board"
-	KindRoutingInefficient      Kind = "routing_inefficient"
-	KindRuleBelowFabLimit       Kind = "rule_below_fab_limit"
-	KindAnnularRing             Kind = "annular_ring" // used only with fab profile annular checks if present
+	KindPadPadClearance        Kind = "pad_pad_clearance"
+	KindTraceTraceClearance    Kind = "trace_trace_clearance"
+	KindTracePadClearance      Kind = "trace_pad_clearance"
+	KindEdgeClearance          Kind = "edge_clearance"
+	KindUnconnectedPad         Kind = "unconnected_pad"
+	KindNetSplit               Kind = "net_split"
+	KindNarrowTrace            Kind = "narrow_trace"
+	KindSmallDrill             Kind = "small_drill"
+	KindSmallComponentDangling Kind = "small_component_dangling"
+	KindBodyOverlap            Kind = "body_overlap"
+	KindBodyOffBoard           Kind = "body_off_board"
+	KindRoutingInefficient     Kind = "routing_inefficient"
+	KindRuleBelowFabLimit      Kind = "rule_below_fab_limit"
+	KindAnnularRing            Kind = "annular_ring" // used only with fab profile annular checks if present
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -270,7 +270,7 @@ func checkPadPad(pads []padGeom, res *core.RuleResolver, rep *Report) {
 			gap := aabbGapMM(a.rect, b.rect)
 			sx, sy := rectRectClosestSite(a.rect, b.rect)
 			clr := clearanceMM(res, a.net, b.net, sx, sy)
-			if gap+1e-6 < clr {
+			if gap+0.001 < clr {
 				rep.add(Violation{
 					Kind: KindPadPadClearance, Severity: SeverityError,
 					Message: fmt.Sprintf("pad %s – pad %s: %.3f mm < %.3f mm", a.label(), b.label(), gap, clr),
@@ -297,7 +297,7 @@ func checkTraceTrace(board *core.Board, res *core.RuleResolver, rep *Report) {
 			gap := center - halfA - halfB
 			sx, sy := segSegClosestSite(a0, a1, b0, b1)
 			clr := clearanceMM(res, a.Net, b.Net, sx, sy)
-			if gap+1e-6 < clr {
+			if gap+0.001 < clr {
 				rep.add(Violation{
 					Kind: KindTraceTraceClearance, Severity: SeverityError,
 					Message: fmt.Sprintf("trace %s – trace %s: %.3f mm < %.3f mm", a.Net, b.Net, gap, clr),
@@ -324,7 +324,7 @@ func checkTracePad(board *core.Board, pads []padGeom, res *core.RuleResolver, re
 			// so a segment that dips into a fine-pitch rule area is legal there.
 			sx, sy := segRectClosestSite(a, b, pad.rect)
 			clr := clearanceMM(res, tr.Net, pad.net, sx, sy)
-			if gap+1e-6 < clr {
+			if gap+0.001 < clr {
 				cx, cy := rectCenterMM(pad.rect)
 				rep.add(Violation{
 					Kind: KindTracePadClearance, Severity: SeverityError,

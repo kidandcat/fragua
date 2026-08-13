@@ -53,6 +53,7 @@ Script verbs (line-oriented, agent-first):
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
   fab-rules jlcpcb|jlcpcb-4l|clear|list
+  escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
   layer list|add|remove|rename
   drc / erc
   compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [aspect=keep|free]

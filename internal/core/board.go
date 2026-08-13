@@ -183,7 +183,12 @@ type Board struct {
 	SilkTexts           []SilkText            `json:"silk_texts"`
 	RuleAreas           []RuleArea            `json:"rule_areas"`
 	FabRules            *FabRules             `json:"fab_rules,omitempty"`
-	Cutouts             []Cutout              `json:"cutouts,omitempty"`
+	// EscapeExceptions are per-pad process exceptions (via-in-pad) for
+	// pins that cannot leave the package under the fab ceiling.
+	EscapeExceptions []EscapeException `json:"escape_exceptions,omitempty"`
+	// AutoViaInPadStranded vias any fine-pitch pad still without a dogbone.
+	AutoViaInPadStranded bool     `json:"auto_via_in_pad_stranded,omitempty"`
+	Cutouts              []Cutout `json:"cutouts,omitempty"`
 	// MountHoles is the Rust field name; also accept legacy "holes".
 	MountHoles []MountHole   `json:"mount_holes,omitempty"`
 	Holes      []MountHole   `json:"holes,omitempty"` // legacy alias
@@ -206,6 +211,90 @@ func (b *Board) StackupOrDefault() LayerStackup {
 		return *b.Stackup
 	}
 	return Default2Layer()
+}
+
+// Apply4Layer promotes a 2-layer board to the default 4-layer FR-4 stack
+// (signal / GND plane / +3V3 plane / signal). Existing "Bottom" copper
+// (index 1 on 2L) is remapped to the new physical bottom.
+func (b *Board) Apply4Layer() {
+	if b.Stackup != nil && b.Stackup.CopperCount() >= 4 {
+		return
+	}
+	oldBottom := uint8(1)
+	if b.Stackup != nil {
+		oldBottom = b.Stackup.BottomLayer().Index
+	}
+	s := Default4Layer()
+	newBottom := s.BottomLayer().Index
+	remap := func(l *Layer) {
+		if l != nil && l.Index == oldBottom {
+			l.Index = newBottom
+		}
+	}
+	for _, fp := range b.Footprints {
+		if fp == nil {
+			continue
+		}
+		remap(&fp.Layer)
+		for i := range fp.Pads {
+			if fp.Pads[i].Drill != nil && *fp.Pads[i].Drill > 0 {
+				continue // PTH occupies every layer
+			}
+			remap(&fp.Pads[i].Layer)
+		}
+	}
+	for i := range b.Traces {
+		remap(&b.Traces[i].Layer)
+	}
+	for i := range b.Pours {
+		remap(&b.Pours[i].Layer)
+	}
+	b.Stackup = &s
+	if b.FabRules == nil || b.FabRules.Preset == "" || b.FabRules.Preset == "jlcpcb-2l" {
+		b.FabRules = FabRulesPreset("jlcpcb-4l")
+	}
+	relief := ThermalRelief{Kind: "spokes4", SpokeWidthMM: 0.4, GapMM: 0.4}
+	hasGND, has3V3, has1V1 := false, false, false
+	for _, p := range b.Pours {
+		if p.Net == "GND" && p.Layer.Index == 1 {
+			hasGND = true
+		}
+		if (p.Net == "+3V3" || p.Net == "3V3") && p.Layer.Index == 2 {
+			has3V3 = true
+		}
+		if (p.Net == "+1V1" || p.Net == "1V1") && p.Layer.Index == newBottom {
+			has1V1 = true
+		}
+	}
+	if !hasGND {
+		b.Pours = append(b.Pours, Pour{Net: "GND", Layer: Layer{Index: 1}, ThermalRelief: &relief})
+	}
+	if !has3V3 {
+		b.Pours = append(b.Pours, Pour{Net: "+3V3", Layer: Layer{Index: 2}, ThermalRelief: &relief})
+	}
+	// Core rail: if the schematic has +1V1, give it the bottom as a
+	// plane (F / GND / +3V3 / +1V1). QFN dogbones still via onto it.
+	if !has1V1 && boardHasNet(b, "+1V1", "1V1") {
+		b.Pours = append(b.Pours, Pour{Net: "+1V1", Layer: Layer{Index: newBottom}, ThermalRelief: &relief})
+	}
+}
+
+func boardHasNet(b *Board, names ...string) bool {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	for _, fp := range b.Footprints {
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			if fp.Pads[i].Net != nil && want[*fp.Pads[i].Net] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AddFootprint inserts a footprint and appends to order.
