@@ -75,6 +75,26 @@ func planFanout(board *core.Board, opts Options) int {
 	return added
 }
 
+func minPadPitchMM(fp *core.Footprint) float64 {
+	if len(fp.Pads) < 2 {
+		return 99
+	}
+	best := 99.0
+	cs := make([]core.Point, len(fp.Pads))
+	for i := range fp.Pads {
+		cs[i] = core.PadWorldCenter(fp, &fp.Pads[i])
+	}
+	for i := 0; i < len(cs); i++ {
+		for j := i + 1; j < len(cs); j++ {
+			d := math.Hypot(cs[i].X.ToMM()-cs[j].X.ToMM(), cs[i].Y.ToMM()-cs[j].Y.ToMM())
+			if d > 0.05 && d < best {
+				best = d
+			}
+		}
+	}
+	return best
+}
+
 func fpPadBounds(fp *core.Footprint) (core.Rect, bool) {
 	if fp == nil || len(fp.Pads) == 0 {
 		return core.Rect{}, false

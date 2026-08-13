@@ -349,6 +349,25 @@ func footprintsStable(board *core.Board) []*core.Footprint {
 	return append(out, extra...)
 }
 
+func nearestConnectedPad(pads []padLoc, connected map[int]bool, g gpos) int {
+	best, bestD := -1, math.MaxFloat64
+	for i := range pads {
+		if !connected[i] {
+			continue
+		}
+		dx := pads[i].p.X.ToMM() - g.x.ToMM()
+		dy := pads[i].p.Y.ToMM() - g.y.ToMM()
+		d := dx*dx + dy*dy
+		if d < bestD {
+			bestD, best = d, i
+		}
+	}
+	if best >= 0 && bestD < 1.0 { // within 1 mm of a connected pad
+		return best
+	}
+	return -1
+}
+
 func existingNetSources(board *core.Board, g *grid, net string) []cellKey {
 	seen := map[cellKey]bool{}
 	var out []cellKey
@@ -481,6 +500,15 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 			}
 			connected[bestJ] = true
 			continue
+		}
+
+		// Snap ends to real pad centres so DRC connectivity sees a touch
+		// (cell centres can sit 0.1 mm off the pad and count as net_split).
+		path[len(path)-1].x = pads[bestJ].p.X
+		path[len(path)-1].y = pads[bestJ].p.Y
+		if n := nearestConnectedPad(pads, connected, path[0]); n >= 0 {
+			path[0].x = pads[n].p.X
+			path[0].y = pads[n].p.Y
 		}
 
 		w := core.FromMM(opts.TraceWidthMM)
