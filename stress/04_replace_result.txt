@@ -1,0 +1,115 @@
+script: 78 ok, 0 failed
+[L2 ok placement.clear_board] cleared 33 footprint(s) and all routing
+[L3 ok palette.clear] Palette cleared
+[L4 ok board.set_outline] Board outline set to 80.0 × 45.0 mm, corner radius 1.50 mm
+[L7 ok palette.add_from_library] Spawned U1 from rp2040_qfn56
+[L8 ok palette.add_from_library] Spawned U2 from w25q16_soic8
+[L9 ok palette.add_from_library] Spawned U3 from ldo_sot23_5
+[L10 ok palette.add_from_library] Spawned Y1 from xtal_3225
+[L11 ok palette.add_from_library] Spawned J1 from usbc_16p
+[L12 ok palette.add_from_library] Spawned J2 from header_1x03_2.54mm
+[L13 ok palette.add_from_library] Spawned J3 from header_1x10_2.54mm
+[L14 ok palette.add_from_library] Spawned J4 from header_1x10_2.54mm
+[L15 ok palette.add_from_library] Spawned SW1 from sw_smd_4x4
+[L16 ok palette.add_from_library] Spawned SW2 from sw_smd_4x4
+[L17 ok palette.add_from_library] Spawned D1 from led_0603
+[L18 ok palette.add_from_library] Spawned R1 from r_0603
+[L19 ok palette.add_from_library] Spawned R2 from r_0603
+[L20 ok palette.add_from_library] Spawned R3 from r_0603
+[L21 ok palette.add_from_library] Spawned R4 from r_0603
+[L22 ok palette.add_from_library] Spawned R5 from r_0603
+[L23 ok palette.add_from_library] Spawned R6 from r_0603
+[L24 ok palette.add_from_library] Spawned R7 from r_0603
+[L25 ok palette.add_from_library] Spawned R8 from r_0603
+[L26 ok palette.add_from_library] Spawned C1 from c_0603
+[L27 ok palette.add_from_library] Spawned C2 from c_0603
+[L28 ok palette.add_from_library] Spawned C3 from c_0603
+[L29 ok palette.add_from_library] Spawned C4 from c_0603
+[L30 ok palette.add_from_library] Spawned C5 from c_0603
+[L31 ok palette.add_from_library] Spawned C6 from c_0603
+[L32 ok palette.add_from_library] Spawned C7 from c_0603
+[L33 ok palette.add_from_library] Spawned C8 from c_0603
+[L34 ok palette.add_from_library] Spawned C9 from c_0603
+[L35 ok palette.add_from_library] Spawned C10 from c_0603
+[L36 ok palette.add_from_library] Spawned C11 from c_0603
+[L37 ok palette.add_from_library] Spawned C12 from c_0603
+[L38 ok palette.add_from_library] Spawned C13 from c_0603
+[L39 ok palette.add_from_library] Spawned C14 from c_0603
+[L40 ok palette.add_from_library] Spawned C15 from c_0603
+[L41 ok palette.add_from_library] Spawned C16 from c_0603
+[L42 ok palette.add_from_library] Spawned C17 from c_0603
+[L46 ok placement.batch] 0 placed, 1 failed
+  FAIL J1 (place): J1 is edge-mounted but its bottom side (local bottom) must sit on a board edge; the bbox is off-edge — pick a position whose bbox touches the board outline
+[L48 ok placement.batch] 0 placed, 1 failed
+  FAIL J2 (place): J2 is edge-mounted but its top side (local top) must sit on a board edge; the bbox is off-edge — pick a position whose bbox touches the board outline
+[L50 ok placement.batch] 0 placed, 1 failed
+  FAIL J3 (place): J3 is edge-mounted but its left side (local left) must sit on a board edge; the bbox is off-edge — pick a position whose bbox touches the board outline
+[L52 ok placement.batch] 0 placed, 1 failed
+  FAIL J4 (place): J4 inflated body extends 10.28 mm past the right board outline
+[L55 ok placement.batch] 1 placed, 0 failed
+  ok U1
+[L57 ok placement.batch] 1 placed, 0 failed
+  ok U2
+[L59 ok placement.batch] 1 placed, 0 failed
+  ok Y1
+[L61 ok placement.batch] 1 placed, 0 failed
+  ok U3
+[L64 ok placement.batch] 1 placed, 0 failed
+  ok C15
+[L65 ok placement.batch] 1 placed, 0 failed
+  ok C16
+[L68 ok placement.batch] 1 placed, 0 failed
+  ok R1
+[L69 ok placement.batch] 1 placed, 0 failed
+  ok R2
+[L70 ok placement.batch] 1 placed, 0 failed
+  ok R3
+[L71 ok placement.batch] 1 placed, 0 failed
+  ok R4
+[L74 ok placement.batch] 1 placed, 0 failed
+  ok C13
+[L75 ok placement.batch] 1 placed, 0 failed
+  ok C14
+[L76 ok placement.batch] 1 placed, 0 failed
+  ok C17
+[L77 ok placement.batch] 1 placed, 0 failed
+  ok R8
+[L80 ok placement.batch] 1 placed, 0 failed
+  ok C12
+[L83 ok placement.batch] 1 placed, 0 failed
+  ok C1
+[L84 ok placement.batch] 0 placed, 1 failed
+  FAIL C2 (place): C2 at (40.00, 29.00) mm would overlap U1 — pick another position
+[L85 ok placement.batch] 1 placed, 0 failed
+  ok C3
+[L86 ok placement.batch] 1 placed, 0 failed
+  ok C4
+[L87 ok placement.batch] 1 placed, 0 failed
+  ok C5
+[L88 ok placement.batch] 0 placed, 1 failed
+  FAIL C6 (place): C6 at (36.00, 29.00) mm would overlap U1 — pick another position
+[L89 ok placement.batch] 0 placed, 1 failed
+  FAIL C7 (place): C7 at (44.00, 19.00) mm would overlap U1 — pick another position
+[L90 ok placement.batch] 0 placed, 1 failed
+  FAIL C8 (place): C8 at (36.00, 19.00) mm would overlap U1 — pick another position
+[L91 ok placement.batch] 0 placed, 1 failed
+  FAIL C9 (place): C9 at (44.00, 29.00) mm would overlap U1 — pick another position
+[L92 ok placement.batch] 1 placed, 0 failed
+  ok C10
+[L93 ok placement.batch] 1 placed, 0 failed
+  ok C11
+[L96 ok placement.batch] 1 placed, 0 failed
+  ok SW1
+[L97 ok placement.batch] 1 placed, 0 failed
+  ok SW2
+[L98 ok placement.batch] 1 placed, 0 failed
+  ok R5
+[L99 ok placement.batch] 1 placed, 0 failed
+  ok R6
+[L102 ok placement.batch] 1 placed, 0 failed
+  ok R7
+[L103 ok placement.batch] 1 placed, 0 failed
+  ok D1
+[L105 ok project.status] project : 27 footprint(s)
+[L106 ok view.summary] 36 symbols, 39 nets (1 fully connected), 27 placed, 9 in palette; DRC 49E 109W
+[L107 ok project.save] Saved to /Users/jairo/pcb/stress/rp2040-minimal.fragua

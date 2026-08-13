@@ -1,0 +1,25 @@
+script: 5 ok, 0 failed
+[L2 ok route.run] Routed: 3 traces, 0 vias, 46.3 mm wire, 18 failed (detour 0.73× over 63.1 mm lower bound), 3 pass(es) (18 failed: CC2, GPIO25, QSPI_SCLK, QSPI_SD0, QSPI_SD1, QSPI_SD2, QSPI_SD3, USB_DM, USB_DM_MCU, USB_DP, USB_DP_MCU, XIN, XOUT, RUN, QSPI_SS, +1V1, VBUS, +3V3); organic: 26 chains smoothed, 76.7 → 76.1 mm; DRC: 51 error(s), 100 warning(s)
+hints:
+  - net CC2 failed: J1 (pad at 36.5,1.5 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net GPIO25 failed: R7 (pad at 46.6,20.3 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SCLK failed: U2 (pad at 37.7,9.4 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SD0 failed: U2 (pad at 37.7,8.1 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SD1 failed: U2 (pad at 32.3,10.6 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SD2 failed: U2 (pad at 32.3,9.4 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SD3 failed: U2 (pad at 37.7,10.6 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net USB_DM failed: J1 (pad at 35.0,1.5 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net USB_DM_MCU failed: R1 (pad at 37.8,14.7 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net USB_DP failed: J1 (pad at 34.3,1.5 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net USB_DP_MCU failed: R2 (pad at 55.8,8.0 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net XIN failed: C15 (pad at 11.2,12.0 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net XOUT failed: C16 (pad at 11.2,18.0 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net RUN failed: U1 (pad at 36.4,23.4 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net QSPI_SS failed: U1 (pad at 33.2,16.6 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net +1V1 failed: C6 (pad at 14.2,5.0 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net VBUS failed: J1 (pad at 32.6,1.5 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+  - net +3V3 failed: C5 (pad at 54.2,5.0 mm) is the outlier — moving it closer to the rest of the net usually frees the corridor
+[L3 ok project.save] Saved to /Users/jairo/pcb/stress/rp2040-minimal.fragua
+[L4 ok project.screenshot] Wrote board screenshot (718784 bytes) to /Users/jairo/pcb/stress/rp2040-minimal-routed.png
+[L5 ok view.summary] 36 symbols, 39 nets (4 fully connected), 33 placed, 3 in palette; DRC 51E 100W
+[L6 ok net.status] 39 nets total, 35 with unconnected pads (QSPI_SS, QSPI_SD1, HDRB2, GPIO25, QSPI_SD0, USB_DM, USB_DP, CC2, QSPI_SD2, GPIO1, VBUS, GPIO5, QSPI_SD3, GPIO2, SWCLK, GPIO0, GPIO3, QSPI_SCLK, GPIO9, XIN, HDRB4, +1V1, GPIO7, RUN, XOUT, GPIO6, HDRB1, +3V3, USB_DP_MCU, GPIO8, HDRB5, HDRB3, SWDIO, GPIO4, USB_DM_MCU)

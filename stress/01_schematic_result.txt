@@ -1,0 +1,117 @@
+script: 109 ok, 0 failed
+[L1 ok project.reset] Project reset
+[L3 ok library.create] Queued rp2040_qfn56 for review (57 pads, 1 pending total). Confirm via UI review pane OR `confirm-lib rp2040_qfn56` after checking pin-1 / chirality. Optional: `attach rp2040_qfn56 photo <path>` before confirming.
+[L67 ok library.create] Queued w25q16_soic8 for review (8 pads, 2 pending total). Confirm via UI review pane OR `confirm-lib w25q16_soic8` after checking pin-1 / chirality. Optional: `attach w25q16_soic8 photo <path>` before confirming.
+[L81 ok library.create] Queued xtal_3225 for review (4 pads, 3 pending total). Confirm via UI review pane OR `confirm-lib xtal_3225` after checking pin-1 / chirality. Optional: `attach xtal_3225 photo <path>` before confirming.
+[L91 ok library.create] Queued usbc_16p for review (11 pads, 4 pending total). Confirm via UI review pane OR `confirm-lib usbc_16p` after checking pin-1 / chirality. Optional: `attach usbc_16p photo <path>` before confirming.
+[L105 ok library.create] Queued ldo_sot23_5 for review (5 pads, 5 pending total). Confirm via UI review pane OR `confirm-lib ldo_sot23_5` after checking pin-1 / chirality. Optional: `attach ldo_sot23_5 photo <path>` before confirming.
+[L112 ok library.create] Queued r_0603 for review (2 pads, 6 pending total). Confirm via UI review pane OR `confirm-lib r_0603` after checking pin-1 / chirality. Optional: `attach r_0603 photo <path>` before confirming.
+[L116 ok library.create] Queued sw_smd_4x4 for review (4 pads, 7 pending total). Confirm via UI review pane OR `confirm-lib sw_smd_4x4` after checking pin-1 / chirality. Optional: `attach sw_smd_4x4 photo <path>` before confirming.
+[L126 ok library.create] Queued header_1x03_2.54mm for review (3 pads, 8 pending total). Confirm via UI review pane OR `confirm-lib header_1x03_2.54mm` after checking pin-1 / chirality. Optional: `attach header_1x03_2.54mm photo <path>` before confirming.
+[L131 ok library.create] Queued header_1x10_2.54mm for review (10 pads, 9 pending total). Confirm via UI review pane OR `confirm-lib header_1x10_2.54mm` after checking pin-1 / chirality. Optional: `attach header_1x10_2.54mm photo <path>` before confirming.
+[L143 ok library.confirm] Confirmed rp2040_qfn56 — now in on-disk library (palette/place/body-rect ready)
+[L144 ok library.confirm] Confirmed w25q16_soic8 — now in on-disk library (palette/place/body-rect ready)
+[L145 ok library.confirm] Confirmed xtal_3225 — now in on-disk library (palette/place/body-rect ready)
+[L146 ok library.confirm] Confirmed usbc_16p — now in on-disk library (palette/place/body-rect ready)
+[L147 ok library.confirm] Confirmed ldo_sot23_5 — now in on-disk library (palette/place/body-rect ready)
+[L148 ok library.confirm] Confirmed r_0603 — now in on-disk library (palette/place/body-rect ready)
+[L149 ok library.confirm] Confirmed sw_smd_4x4 — now in on-disk library (palette/place/body-rect ready)
+[L150 ok library.confirm] Confirmed header_1x03_2.54mm — now in on-disk library (palette/place/body-rect ready)
+[L151 ok library.confirm] Confirmed header_1x10_2.54mm — now in on-disk library (palette/place/body-rect ready)
+[L152 ok library.set_body_rect] Body rect on rp2040_qfn56: 7.00×7.00 mm → placement margin T0.00 R0.00 B0.00 L0.00 mm
+[L153 ok library.set_body_rect] Body rect on w25q16_soic8: 5.20×5.40 mm → placement margin T0.50 R0.00 B0.50 L0.00 mm
+[L154 ok library.set_body_rect] Body rect on xtal_3225: 3.20×2.50 mm → placement margin T0.00 R0.00 B0.00 L0.00 mm
+[L155 ok library.set_body_rect] Body rect on usbc_16p: 9.00×4.00 mm → placement margin T0.80 R0.00 B1.20 L0.00 mm
+[L156 ok library.set_body_rect] Body rect on ldo_sot23_5: 3.00×3.00 mm → placement margin T0.05 R0.25 B0.05 L0.25 mm
+[L157 ok library.set_body_rect] Body rect on sw_smd_4x4: 4.00×4.00 mm → placement margin T0.60 R0.00 B0.60 L0.00 mm
+[L158 ok library.set_edge_mounted] edge-mount on usbc_16p: true (local bottom side on the outline)
+[L159 ok library.set_edge_mounted] edge-mount on header_1x03_2.54mm: true (local top side on the outline)
+[L160 ok library.set_edge_mounted] edge-mount on header_1x10_2.54mm: true (local left side on the outline)
+[L161 ok board.set_outline] Board outline set to 70.0 × 40.0 mm, corner radius 1.50 mm
+[L162 ok schematic.set_class] class ground set
+[L163 ok schematic.set_class] class power set (width=0.35 mm, clearance=0.2 mm)
+[L164 ok schematic.set_class] class usb set (width=0.25 mm, clearance=0.2 mm)
+[L165 ok schematic.add_symbol] Added U1 (c8c12ff3-f1ba-4989-a860-9b611699a4fc)
+[L209 ok schematic.add_symbol] Added U2 (2c29e140-2adf-42c1-bbf4-f6eaae5d04f1)
+[L218 ok schematic.add_symbol] Added U3 (bfd1e995-364e-49b7-a61d-6c42f90ce8e8)
+[L224 ok schematic.add_symbol] Added Y1 (627c76ac-30d2-4242-a45e-a71b1296a710)
+[L229 ok schematic.add_symbol] Added C1 (d32e758e-4170-4688-98c2-412f2ee16b88)
+[L230 ok schematic.add_symbol] Added C2 (ca953a51-41fc-49cb-947a-a213bc31968f)
+[L231 ok schematic.add_symbol] Added C3 (e87f6846-4252-4fd9-81dd-828d6bc0c138)
+[L232 ok schematic.add_symbol] Added C4 (e1d48d36-79f9-4c5f-98d1-963f23095aff)
+[L233 ok schematic.add_symbol] Added C5 (a009a756-5629-4bf3-8105-c734001881f3)
+[L234 ok schematic.add_symbol] Added C6 (c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a)
+[L235 ok schematic.add_symbol] Added C7 (ea747205-5637-4877-91ca-cf7d192ebba4)
+[L236 ok schematic.add_symbol] Added C8 (28281e46-2366-4424-ae72-d4ace4d670f4)
+[L237 ok schematic.add_symbol] Added C9 (81c768c1-9d0c-43fb-9bd5-a10bc9d86722)
+[L238 ok schematic.add_symbol] Added C10 (0b92839a-2cd4-4a4a-bbb8-db6e52dc8083)
+[L239 ok schematic.add_symbol] Added C11 (2d314e21-5660-4547-89c4-90d1352034b7)
+[L240 ok schematic.add_symbol] Added C12 (30267868-fe59-4a48-8f5e-c514514aba01)
+[L241 ok schematic.add_symbol] Added C13 (ac47332a-32ea-412a-8c26-7ed125d00c2b)
+[L242 ok schematic.add_symbol] Added C14 (ad59ede6-d99d-4b65-95d8-4ff86b741066)
+[L243 ok schematic.add_symbol] Added C15 (91d2a9b0-110b-4246-9639-eb00fc95cd29)
+[L244 ok schematic.add_symbol] Added C16 (6b586390-c36c-4fac-aaf8-44022f316c37)
+[L245 ok schematic.add_symbol] Added C17 (27523ce0-1ced-47cb-8e4f-1bb23e0f80c8)
+[L246 ok schematic.add_symbol] Added R1 (a1cd5001-3177-4fa6-9c0d-97ba263edb50)
+[L247 ok schematic.add_symbol] Added R2 (0bd0827f-b4d9-4dff-90c1-9323332c5004)
+[L248 ok schematic.add_symbol] Added R3 (b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c)
+[L249 ok schematic.add_symbol] Added R4 (13006c44-059b-42b0-aff0-57f607b8eaad)
+[L250 ok schematic.add_symbol] Added R5 (5eed3782-184b-4e67-90dd-c57899931235)
+[L251 ok schematic.add_symbol] Added R6 (796eb1d7-1d75-4373-afba-688e7eb83029)
+[L252 ok schematic.add_symbol] Added R7 (420fe4cb-b392-4f5f-91ed-339cb326dc1e)
+[L253 ok schematic.add_symbol] Added R8 (afbaf2eb-75d3-4e83-b9e3-e799e132ff55)
+[L254 ok schematic.add_symbol] Added D1 (6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9)
+[L255 ok schematic.add_symbol] Added SW1 (b0f0c06f-56cb-40c9-909a-ae0b034c7b48)
+[L260 ok schematic.add_symbol] Added SW2 (f36794af-80f6-4c9f-850e-3bac7ace8929)
+[L265 ok schematic.add_symbol] Added J1 (b9ac1ce9-3f1e-49d2-8c23-cb0c64119067)
+[L276 ok schematic.add_symbol] Added J2 (0da88a93-be8a-4ab8-922c-b1b09ed8e2b8)
+[L280 ok schematic.add_symbol] Added J3 (2c47f0c7-c90a-431d-a9f9-21689ee80687)
+[L291 ok schematic.add_symbol] Added J4 (5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f)
+[L302 ok schematic.connect] Net GND now has 36 connection(s)
+[L303 ok schematic.connect] Net VBUS now has 6 connection(s)
+[L304 ok schematic.connect] Net +3V3 now has 23 connection(s)
+[L305 ok schematic.connect] Net +1V1 now has 6 connection(s)
+[L306 ok schematic.connect] Net USB_DM now has 2 connection(s)
+[L307 ok schematic.connect] Net USB_DM_MCU now has 2 connection(s)
+[L308 ok schematic.connect] Net USB_DP now has 2 connection(s)
+[L309 ok schematic.connect] Net USB_DP_MCU now has 2 connection(s)
+[L310 ok schematic.connect] Net CC1 now has 2 connection(s)
+[L311 ok schematic.connect] Net CC2 now has 2 connection(s)
+[L312 ok schematic.connect] Net XIN now has 3 connection(s)
+[L313 ok schematic.connect] Net XOUT now has 3 connection(s)
+[L314 ok schematic.connect] Net QSPI_SS now has 5 connection(s)
+[L315 ok schematic.connect] Net QSPI_SCLK now has 2 connection(s)
+[L316 ok schematic.connect] Net QSPI_SD0 now has 2 connection(s)
+[L317 ok schematic.connect] Net QSPI_SD1 now has 2 connection(s)
+[L318 ok schematic.connect] Net QSPI_SD2 now has 2 connection(s)
+[L319 ok schematic.connect] Net QSPI_SD3 now has 2 connection(s)
+[L320 ok schematic.connect] Net GPIO25 now has 2 connection(s)
+[L321 ok schematic.connect] Net LED_A now has 2 connection(s)
+[L322 ok schematic.connect] Net RUN now has 4 connection(s)
+[L323 ok schematic.connect] Net SWDIO now has 2 connection(s)
+[L324 ok schematic.connect] Net SWCLK now has 2 connection(s)
+[L325 ok schematic.connect] Net LDO_BYP now has 2 connection(s)
+[L326 ok schematic.connect] Net GPIO0 now has 2 connection(s)
+[L327 ok schematic.connect] Net GPIO1 now has 2 connection(s)
+[L328 ok schematic.connect] Net GPIO2 now has 2 connection(s)
+[L329 ok schematic.connect] Net GPIO3 now has 2 connection(s)
+[L330 ok schematic.connect] Net GPIO4 now has 2 connection(s)
+[L331 ok schematic.connect] Net GPIO5 now has 2 connection(s)
+[L332 ok schematic.connect] Net GPIO6 now has 2 connection(s)
+[L333 ok schematic.connect] Net GPIO7 now has 2 connection(s)
+[L334 ok schematic.connect] Net GPIO8 now has 2 connection(s)
+[L335 ok schematic.connect] Net GPIO9 now has 2 connection(s)
+[L336 ok schematic.connect] Net HDRB1 now has 2 connection(s)
+[L337 ok schematic.connect] Net HDRB2 now has 2 connection(s)
+[L338 ok schematic.connect] Net HDRB3 now has 2 connection(s)
+[L339 ok schematic.connect] Net HDRB4 now has 2 connection(s)
+[L340 ok schematic.connect] Net HDRB5 now has 2 connection(s)
+[L341 ok erc.run] ERC: 0 error(s), 14 warning(s)
+  [Warning] J4.6 is not connected to any net
+  [Warning] J4.7 is not connected to any net
+  [Warning] J4.8 is not connected to any net
+  [Warning] J4.9 is not connected to any net
+  [Warning] J4.10 is not connected to any net
+  [Warning] net GND has PowerIn pin(s) but no PowerOut source — did you forget to wire the supply?
+  ... and 8 more (see structuredContent.violations)
+[L342 ok project.save] Saved to /Users/jairo/pcb/stress/rp2040-minimal.fragua

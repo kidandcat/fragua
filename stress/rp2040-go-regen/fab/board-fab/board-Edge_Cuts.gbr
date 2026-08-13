@@ -1,0 +1,15 @@
+G04 pcb Edge.Cuts*
+%TF.GenerationSoftware,pcb,pcb-gerber,1.1.0*%
+%TF.FileFunction,Profile,NP*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+%MOMM*%
+%LPD*%
+%ADD10C,0.050000*%
+D10*
+X0Y0D02*
+X36000000Y0D01*
+X36000000Y30000000D01*
+X0Y30000000D01*
+X0Y0D01*
+M02*

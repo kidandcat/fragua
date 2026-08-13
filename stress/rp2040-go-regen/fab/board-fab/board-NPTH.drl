@@ -1,0 +1,7 @@
+M48
+; pcb NPTH drills
+FMAT,2
+METRIC,LZ,000.000
+%
+G90
+M30

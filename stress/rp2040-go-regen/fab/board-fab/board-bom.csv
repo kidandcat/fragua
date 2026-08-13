@@ -1,0 +1,21 @@
+Reference,Value,Footprint,Quantity
+J2,,library:header_1x03_2.54mm,1
+J3 J4,,library:header_1x10_2.54mm,2
+U3,,library:ldo_sot23_5,1
+U1,,library:rp2040_qfn56,1
+J1,,library:usbc_16p,1
+U2,,library:w25q16_soic8,1
+C1 C12 C17 C2 C3 C4 C5 C6 C7 C8 C9,100nF,library:c_0603,11
+R6,10k,library:r_0603,1
+C13 C14,10uF,library:c_0603,2
+Y1,12MHz,library:xtal_3225,1
+R5 R8,1k,library:r_0603,2
+C10,1uF,library:c_0603,1
+C11,2.2uF,library:c_0603,1
+R1 R2,27,library:r_0603,2
+C15 C16,27pF,library:c_0603,2
+R7,470,library:r_0603,1
+R3 R4,5.1k,library:r_0603,2
+SW1,BOOT,library:sw_smd_4x4,1
+SW2,RESET,library:sw_smd_4x4,1
+D1,green,library:led_0603,1

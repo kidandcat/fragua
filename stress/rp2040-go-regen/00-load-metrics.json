@@ -1,0 +1,31 @@
+{
+  "drc_by_kind": {
+    "net_split": 3,
+    "routing_inefficient": 3,
+    "rule_below_fab_limit": 1,
+    "small_component_dangling": 15,
+    "unconnected_pad": 24
+  },
+  "drc_errors": 3,
+  "drc_summary": "drc: 3 errors, 43 warnings (46 findings)",
+  "drc_warnings": 43,
+  "erc_by_kind": {
+    "floating_pin": 5,
+    "missing_decoupling_cap": 12,
+    "unconnected_input": 5,
+    "undriven_input": 1,
+    "unpowered_power_net": 1
+  },
+  "erc_errors": 0,
+  "erc_summary": "erc: 0 errors, 24 warnings (24 findings)",
+  "erc_warnings": 24,
+  "footprints": 36,
+  "label": "load",
+  "outline_mm": [
+    36,
+    30
+  ],
+  "pours": 2,
+  "traces": 290,
+  "vias": 80
+}
