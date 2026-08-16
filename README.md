@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mentasystems/fragua/actions/workflows/ci.yml/badge.svg)](https://github.com/mentasystems/fragua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d6905b.svg)](LICENSE)
-[![Landing](https://img.shields.io/badge/landing-mentasystems.com%2Ffragua-d6905b)](https://mentasystems.com/fragua)
+[![Landing](https://img.shields.io/badge/landing-fragua.cloud-d6905b)](https://fragua.cloud)
 [![Release](https://img.shields.io/github/v/release/mentasystems/fragua?color=d6905b)](https://github.com/mentasystems/fragua/releases/latest)
 
 AI-native PCB design tool. The agent does the work, the human watches and steers.
@@ -18,7 +18,7 @@ go build -o fragua ./cmd/fragua
 
 Cross-compile: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o fragua-linux ./cmd/fragua`.
 
-- 🌐 Landing: <https://mentasystems.com/fragua>
+- 🌐 Landing: <https://fragua.cloud>
 - 🧭 [VISION.md](VISION.md) — what we are building and why
 - 🏗️ [ARCHITECTURE.md](ARCHITECTURE.md) — packages and data flow
 - 🤝 [CONTRIBUTING.md](CONTRIBUTING.md) — how to help
