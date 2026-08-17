@@ -351,3 +351,52 @@ func TestDefaultMinDrillIs03(t *testing.T) {
 		t.Fatalf("default min drill %v want 0.3", DefaultOptions().MinDrill.ToMM())
 	}
 }
+
+func TestIsolatedPourNoVia(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// Top pour GND, bottom pad GND, no via.
+	b.Pours = []core.Pour{{Net: "GND", Layer: core.LayerTop}}
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1",
+		Position: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		Layer:    core.LayerBottom,
+		Pads: []core.Pad{{
+			Number: "1", Size: [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Layer: core.LayerBottom, Net: netPtr("GND"),
+		}},
+	})
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindIsolatedPour) == 0 {
+		t.Fatalf("expected isolated_pour, got %+v", rep.Violations)
+	}
+}
+
+func TestEmptyStitchingDoesNotPass(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.Pours = []core.Pour{{
+		Net: "GND", Layer: core.LayerTop,
+		Stitching: &core.StitchPolicy{}, // empty {}
+	}}
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindUnstitchedPour) == 0 {
+		t.Fatalf("empty stitching:{} must not silently pass, got %+v", rep.Violations)
+	}
+}
+
+func TestHoleToHoleTooClose(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.Vias = []core.Via{
+		{ID: core.NewID(), Position: core.NewPoint(core.FromMM(10), core.FromMM(10)), Drill: core.FromMM(0.3), Diameter: core.FromMM(0.6), Net: "A"},
+		{ID: core.NewID(), Position: core.NewPoint(core.FromMM(10.4), core.FromMM(10)), Drill: core.FromMM(0.3), Diameter: core.FromMM(0.6), Net: "B"},
+	}
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindHoleToHole) == 0 {
+		t.Fatalf("expected hole_to_hole, got %+v", rep.Violations)
+	}
+}

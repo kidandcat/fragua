@@ -31,6 +31,9 @@ func writeBOM(board *core.Board) string {
 	}
 	groups := map[key][]string{}
 	for _, fp := range footprintsInOrder(board) {
+		if fp.Fiducial {
+			continue
+		}
 		k := key{
 			value: fp.Value,
 			pkg:   core.FootprintPackageName(fp),
@@ -111,6 +114,34 @@ func normalizeDeg(deg float64) float64 {
 		return 0
 	}
 	return deg
+}
+
+// writeNetlist emits a clear net → pads listing for the fab pack.
+func writeNetlist(board *core.Board) string {
+	nets := map[string][]string{}
+	for _, fp := range footprintsInOrder(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net == "" {
+				continue
+			}
+			nets[*pad.Net] = append(nets[*pad.Net], fp.Reference+"."+pad.Number)
+		}
+	}
+	names := make([]string, 0, len(nets))
+	for n := range nets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Fragua netlist (net → pads)\n")
+	b.WriteString("# Units: none (connectivity only)\n")
+	for _, n := range names {
+		refs := append([]string(nil), nets[n]...)
+		sort.Strings(refs)
+		fmt.Fprintf(&b, "%s: %s\n", n, strings.Join(refs, ", "))
+	}
+	return b.String()
 }
 
 func csvField(s string) string {

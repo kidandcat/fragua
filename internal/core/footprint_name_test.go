@@ -12,7 +12,9 @@ func TestPackageNameFromLibrary(t *testing.T) {
 		{"R_0805", "R_0805_2012Metric"},
 		{"Resistor_SMD:R_0805", "R_0805_2012Metric"},
 		{"C_0603_1608Metric", "C_0603_1608Metric"},
-		{"library:qfn-56", "qfn-56"},
+		{"library:qfn-56", "QFN-56-1EP_7x7mm_P0.4mm"},
+		{"sot23", "SOT-23"},
+		{"soic8", "SOIC-8_3.9x4.9mm_P1.27mm"},
 		{"", ""},
 	}
 	for _, c := range cases {

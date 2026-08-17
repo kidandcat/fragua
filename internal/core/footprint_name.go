@@ -7,6 +7,32 @@ import (
 
 // Imperial EIA size → IPC-7351 metric body (mm tenths).
 // 0603 (0.06"×0.03") = 1608 (1.6×0.8 mm).
+// ipcPackageAlias maps common library keys to IPC-ish package names.
+var ipcPackageAlias = map[string]string{
+	"sot23":   "SOT-23",
+	"sot_23":  "SOT-23",
+	"sot23_3": "SOT-23",
+	"soic8":   "SOIC-8_3.9x4.9mm_P1.27mm",
+	"soic_8":  "SOIC-8_3.9x4.9mm_P1.27mm",
+	"sop8":    "SOIC-8_3.9x4.9mm_P1.27mm",
+	"tssop8":  "TSSOP-8_3x3mm_P0.65mm",
+	"qfn16":    "QFN-16-1EP_3x3mm_P0.5mm",
+	"qfn_16":   "QFN-16-1EP_3x3mm_P0.5mm",
+	"qfn20":    "QFN-20-1EP_4x4mm_P0.5mm",
+	"qfn_20":   "QFN-20-1EP_4x4mm_P0.5mm",
+	"qfn24":    "QFN-24-1EP_4x4mm_P0.5mm",
+	"qfn_24":   "QFN-24-1EP_4x4mm_P0.5mm",
+	"qfn32":    "QFN-32-1EP_5x5mm_P0.5mm",
+	"qfn_32":   "QFN-32-1EP_5x5mm_P0.5mm",
+	"qfn40":    "QFN-40-1EP_5x5mm_P0.4mm",
+	"qfn_40":   "QFN-40-1EP_5x5mm_P0.4mm",
+	"qfn48":    "QFN-48-1EP_6x6mm_P0.4mm",
+	"qfn_48":   "QFN-48-1EP_6x6mm_P0.4mm",
+	"qfn56":    "QFN-56-1EP_7x7mm_P0.4mm",
+	"qfn_56":   "QFN-56-1EP_7x7mm_P0.4mm",
+	"fiducial": "Fiducial_1mm",
+}
+
 var imperialToMetric = map[string]string{
 	"01005": "0402",
 	"0201":  "0603",
@@ -57,6 +83,9 @@ func PackageNameFromLibrary(lib string) string {
 	}
 	if strings.HasSuffix(strings.ToLower(name), "metric") && strings.Contains(name, "_") {
 		return name
+	}
+	if alias, ok := ipcPackageAlias[strings.ToLower(strings.ReplaceAll(name, "-", "_"))]; ok {
+		return alias
 	}
 	key := strings.ReplaceAll(name, "-", "_")
 	m := passiveKeyRE.FindStringSubmatch(key)

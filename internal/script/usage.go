@@ -46,10 +46,14 @@ Script verbs (line-oriented, agent-first):
   clear-route | clear-net NET | delete-trace ID | delete-via ID
   trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
   via NET x y [drill=0.3] [dia=0.6]
-  pour NET [layer=Top] [relief=spokes4|solid]
+  pour NET [layer=Top] [relief=spokes4|solid] [stitch=true] [pitch=N]
   auto-pour [NET...]          (default GND, both layers)
   clear-pour [NET]
-  stitch                      (via-tie isolated pour pads)
+  stitch                      (grid + pad vias that tie pour islands)
+  nc REF.PIN [REF.PIN...]     (mark unused MCU pins; no floating_pin)
+  fiducial X Y [ref=FID1]
+  diff NETA NETB              (diff-pair data; no field solver)
+  class NAME [clearance=N] [width=N] [impedance=Z]
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
   fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
@@ -57,7 +61,7 @@ Script verbs (line-oriented, agent-first):
   layer list|add|remove|rename
   drc / erc
   compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [aspect=keep|free]
-  pack [fab=jlcpcb] [out=DIR] | export DIR
+  pack [fab=jlcpcb] [out=DIR] | export DIR   (fails on ERC errors)
   screenshot PATH
   save [PATH] | view | status | reset | help
 

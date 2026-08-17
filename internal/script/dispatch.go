@@ -156,6 +156,12 @@ func absorbContinuation(b *openBlock, line int, body string) error {
 				pin.Name = strings.TrimPrefix(t, "name=")
 			} else if strings.HasPrefix(t, "role=") {
 				pin.Role = expandRole(strings.TrimPrefix(t, "role="))
+				if pin.Role == core.PinNC {
+					pin.NC = true
+				}
+			} else if strings.EqualFold(t, "nc") {
+				pin.NC = true
+				pin.Role = core.PinNC
 			} else if !strings.Contains(t, "=") {
 				pin.Name = t
 			}
@@ -308,6 +314,12 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return cmdClearPour(p, args)
 	case "stitch", "stitch-isolated-pads", "stitch_isolated_pads":
 		return cmdStitch(p, args)
+	case "nc":
+		return cmdNC(p, args)
+	case "fiducial":
+		return cmdFiducial(p, args)
+	case "diff", "diff-pair", "diff_pair":
+		return cmdDiffPair(p, args)
 	case "cutout":
 		return cmdCutout(p, args)
 	case "clear-cutouts", "clear_cutouts":
@@ -1160,6 +1172,7 @@ func setFabRules(p *core.Project, args string) (string, error) {
 		MinClearanceMM: rules.MinClearanceMM, MinDrillMM: rules.MinViaDrillMM,
 		MinAnnularRingMM: rules.MinAnnularRingMM, MinViaDiameterMM: rules.MinViaDiameterMM,
 		MinEdgeClearanceMM: rules.MinEdgeClearanceMM,
+		MinHoleToHoleMM:    rules.MinHoleToHoleMM, MinSliverMM: rules.MinSliverMM,
 		MaxBoardSizeMM:     maxSz,
 	})
 	return fmt.Sprintf(
@@ -1496,6 +1509,8 @@ func expandRole(s string) core.PinRole {
 		return core.PinPowerOut
 	case "power_in", "power-in", "power":
 		return core.PinPowerIn
+	case "nc", "no_connect", "no-connect", "unused":
+		return core.PinNC
 	default:
 		return core.PinPassive
 	}

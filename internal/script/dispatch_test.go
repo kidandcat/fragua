@@ -230,6 +230,67 @@ pack fab=jlcpcb out=`+out+`
 	}
 }
 
+func TestNCAndPackFailsOnERCError(t *testing.T) {
+	p := core.NewProject("t-erc")
+	lib, err := core.OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetLibrary(lib)
+	rs := RunScript(p, `
+outline 20 20
+sym U1 ic
+  pin 1 L IN role=input
+  pin 2 R NC role=nc
+erc
+`)
+	if len(rs) == 0 {
+		t.Fatal("no results")
+	}
+	ercLine := rs[len(rs)-1]
+	if !ercLine.OK {
+		t.Fatalf("erc verb failed: %s", ercLine.Result)
+	}
+	if !strings.Contains(ercLine.Result, "1 errors") && !strings.Contains(ercLine.Result, "error") {
+		t.Fatalf("expected ERC error for open input: %s", ercLine.Result)
+	}
+	out := t.TempDir()
+	rs2 := RunScript(p, "pack fab=jlcpcb out="+out+"\n")
+	if len(rs2) != 1 || rs2[0].OK {
+		t.Fatalf("pack must be NOT READY on ERC errors: %+v", rs2)
+	}
+	if !strings.Contains(rs2[0].Result, "NOT READY") {
+		t.Fatalf("pack msg: %s", rs2[0].Result)
+	}
+}
+
+func TestFiducialDiffStitch(t *testing.T) {
+	p := core.NewProject("t-stretch")
+	rs := RunScript(p, `
+outline 30 20
+fiducial 2 2 ref=FID1
+diff USB_DP USB_DM
+class USB90 impedance=90
+pour GND layer=Top stitch=true pitch=5
+`)
+	allOK(t, rs)
+	p.RLock()
+	defer p.RUnlock()
+	fp := p.Board().FootprintByRef("FID1")
+	if fp == nil || !fp.Fiducial {
+		t.Fatal("fiducial missing")
+	}
+	if p.Schematic().Nets["USB_DP"] == nil || p.Schematic().Nets["USB_DP"].DiffPair != "USB_DM" {
+		t.Fatalf("diff pair: %+v", p.Schematic().Nets)
+	}
+	if p.Schematic().NetClasses["USB90"] == nil || p.Schematic().NetClasses["USB90"].ImpedanceOhms != 90 {
+		t.Fatalf("impedance class: %+v", p.Schematic().NetClasses)
+	}
+	if len(p.Board().Pours) != 1 || !p.Board().Pours[0].StitchRequested() {
+		t.Fatalf("pour stitch: %+v", p.Board().Pours)
+	}
+}
+
 func TestListLib(t *testing.T) {
 	p := core.NewProject("t-lib-list")
 	lib, err := core.OpenAt(t.TempDir())

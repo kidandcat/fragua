@@ -28,14 +28,15 @@ func TestFabPackFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 14 {
-		t.Fatalf("files: %d want 14", len(paths))
+	if len(paths) != 15 {
+		t.Fatalf("files: %d want 15", len(paths))
 	}
 	want := []string{
 		"demo-F_Cu.gbr", "demo-B_Cu.gbr", "demo-F_Mask.gbr", "demo-B_Mask.gbr",
 		"demo-F_SilkS.gbr", "demo-B_SilkS.gbr", "demo-F_Paste.gbr", "demo-B_Paste.gbr",
 		"demo-Edge_Cuts.gbr",
-		"demo-PTH.drl", "demo-NPTH.drl", "demo-bom.csv", "demo-pos.csv", "README.txt",
+		"demo-PTH.drl", "demo-NPTH.drl", "demo-bom.csv", "demo-pos.csv",
+		"demo-netlist.txt", "README.txt",
 	}
 	for i, p := range paths {
 		base := filepath.Base(p)
@@ -515,5 +516,47 @@ func TestInnerCopperFileFunction(t *testing.T) {
 	bCu, _ := os.ReadFile(filepath.Join(dir, "in-B_Cu.gbr"))
 	if !strings.Contains(string(bCu), "%TF.FileFunction,Copper,L4,Bot*%") {
 		t.Fatalf("B.Cu 4L FileFunction:\n%s", bCu[:min(300, len(bCu))])
+	}
+}
+
+func TestNetlistAndFiducial(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(20)))
+	b.Outline = &o
+	n := "GND"
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1", Value: "10k", Library: "r_0603",
+		Position: core.NewPoint(core.FromMM(5), core.FromMM(5)),
+		Layer:    core.LayerTop,
+		Pads: []core.Pad{
+			{Number: "1", Offset: core.NewPoint(core.FromMM(-0.8), 0), Size: [2]core.Length{core.FromMM(0.8), core.FromMM(0.9)}, Layer: core.LayerTop, Net: &n},
+		},
+	})
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "FID1", Value: "FIDUCIAL", Library: "fiducial",
+		Fiducial: true, Position: core.NewPoint(core.FromMM(2), core.FromMM(2)),
+		Layer: core.LayerTop,
+		Pads: []core.Pad{
+			{Number: "1", Size: [2]core.Length{core.FromMM(1), core.FromMM(1)}, Layer: core.LayerTop},
+		},
+	})
+	dir := t.TempDir()
+	if _, err := WriteFabPack(b, "nl", dir); err != nil {
+		t.Fatal(err)
+	}
+	nl, err := os.ReadFile(filepath.Join(dir, "nl-netlist.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(nl), "GND: R1.1") {
+		t.Fatalf("netlist:\n%s", nl)
+	}
+	bom, _ := os.ReadFile(filepath.Join(dir, "nl-bom.csv"))
+	if strings.Contains(string(bom), "FID1") {
+		t.Fatalf("fiducial must not appear in BOM:\n%s", bom)
+	}
+	pos, _ := os.ReadFile(filepath.Join(dir, "nl-pos.csv"))
+	if !strings.Contains(string(pos), "FID1") {
+		t.Fatalf("fiducial should be in CPL:\n%s", pos)
 	}
 }

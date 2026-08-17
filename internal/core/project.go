@@ -41,6 +41,8 @@ type FabProfileHandle struct {
 	MinAnnularRingMM   float64
 	MinViaDiameterMM   float64
 	MinEdgeClearanceMM float64
+	MinHoleToHoleMM    float64
+	MinSliverMM        float64
 	MaxBoardSizeMM     [2]float64
 }
 
@@ -325,25 +327,29 @@ func FabRulesPreset(name string) *FabRules {
 		return &FabRules{
 			Preset: "jlcpcb-2l", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
 			MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15,
-			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: &sz,
 		}
 	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2", "jlcpcb_2l_via02":
 		return &FabRules{
 			Preset: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
 			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: &sz,
 		}
 	case "jlcpcb-4l", "jlcpcb_4l", "jlcpcb-4":
 		return &FabRules{
 			Preset: "jlcpcb-4l", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
 			MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15,
-			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: &sz,
 		}
 	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2", "jlcpcb_4l_via02":
 		return &FabRules{
 			Preset: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
 			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: &sz,
 		}
 	default:
 		return nil

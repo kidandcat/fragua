@@ -74,6 +74,8 @@ type Footprint struct {
 	LcscID       string `json:"lcsc_id,omitempty"`
 	MPN          string `json:"mpn,omitempty"`
 	Manufacturer string `json:"manufacturer,omitempty"`
+	// Fiducial is a board optical mark: in CPL, omitted from BOM.
+	Fiducial bool `json:"fiducial,omitempty"`
 	// Courtyard / body: used by DRC. BodyRect is footprint-local mm (Y-up).
 	BodyRect        *BodyRect       `json:"body_rect,omitempty"`
 	PlacementMargin PlacementMargin `json:"placement_margin,omitempty"`
@@ -116,11 +118,19 @@ func (t ThermalRelief) IsSpokes4() bool {
 }
 
 // StitchPolicy for pour via stitching.
+// Presence on a pour (including empty `stitching: {}`) means stitching
+// was requested — DRC must not silently pass an unstitched plane.
 type StitchPolicy struct {
 	Enabled  bool    `json:"enabled,omitempty"`
 	PitchMM  float64 `json:"pitch_mm,omitempty"`
 	DrillMM  float64 `json:"drill_mm,omitempty"`
 	Diameter float64 `json:"diameter_mm,omitempty"`
+}
+
+// StitchRequested reports that the pour asked for stitching vias.
+// A non-nil policy counts, including the empty object `{}`.
+func (p *Pour) StitchRequested() bool {
+	return p != nil && p.Stitching != nil
 }
 
 // Pour is a copper pour region (simplified: full-board or rect).

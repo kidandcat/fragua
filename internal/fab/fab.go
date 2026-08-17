@@ -31,6 +31,8 @@ type Profile struct {
 	MinAnnularRingMM   float64
 	MinViaDiameterMM   float64
 	MinEdgeClearanceMM float64
+	MinHoleToHoleMM    float64
+	MinSliverMM        float64
 	MaxBoardSizeMM     [2]float64
 }
 
@@ -41,25 +43,29 @@ func ProfileByName(name string) (Profile, error) {
 		return Profile{
 			Name: "jlcpcb", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
 			MinDrillMM: 0.30, MinAnnularRingMM: 0.15, MinViaDiameterMM: 0.60,
-			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
 	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2":
 		return Profile{
 			Name: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
 			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
-			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
 	case "jlcpcb-4l":
 		return Profile{
 			Name: "jlcpcb-4l", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
 			MinDrillMM: 0.30, MinAnnularRingMM: 0.15, MinViaDiameterMM: 0.60,
-			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
 	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2":
 		return Profile{
 			Name: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
 			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
-			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
+			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
 	case Pcbway:
 		return Profile{
@@ -84,6 +90,7 @@ func (p Profile) ToHandle() *core.FabProfileHandle {
 		Name: p.Name, MinTraceWidthMM: p.MinTraceWidthMM, MinClearanceMM: p.MinClearanceMM,
 		MinDrillMM: p.MinDrillMM, MinAnnularRingMM: p.MinAnnularRingMM,
 		MinViaDiameterMM: p.MinViaDiameterMM, MinEdgeClearanceMM: p.MinEdgeClearanceMM,
+		MinHoleToHoleMM: p.MinHoleToHoleMM, MinSliverMM: p.MinSliverMM,
 		MaxBoardSizeMM: p.MaxBoardSizeMM,
 	}
 }
@@ -130,9 +137,20 @@ func Pack(p *core.Project, provider, outDir string) (*PackResult, error) {
 		if fab.MinEdgeClearanceMM > 0 {
 			drcOpts.EdgeClearance = core.FromMM(fab.MinEdgeClearanceMM)
 		}
+		if fab.MinHoleToHoleMM > 0 {
+			drcOpts.MinHoleToHole = core.FromMM(fab.MinHoleToHoleMM)
+		}
+		if fab.MinSliverMM > 0 {
+			drcOpts.MinSliver = core.FromMM(fab.MinSliverMM)
+		}
 	}
 	drcRep := drc.Check(board, sch, drcOpts)
 	p.RUnlock()
+
+	if ercRep.Errors > 0 {
+		return &PackResult{DRCErrors: drcRep.Errors, ERCErrors: ercRep.Errors},
+			fmt.Errorf("pack: NOT READY (%d ERC error(s); warnings are ok)", ercRep.Errors)
+	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err

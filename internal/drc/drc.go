@@ -39,6 +39,10 @@ const (
 	KindViaPadClearance        Kind = "via_pad_clearance"
 	KindViaTraceClearance      Kind = "via_trace_clearance"
 	KindCourtyardOverlap       Kind = "courtyard_overlap"
+	KindIsolatedPour           Kind = "isolated_pour"
+	KindUnstitchedPour         Kind = "unstitched_pour"
+	KindHoleToHole             Kind = "hole_to_hole"
+	KindCopperSliver           Kind = "copper_sliver"
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -64,6 +68,8 @@ type Options struct {
 	MinTraceWidth           core.Length
 	MinDrill                core.Length
 	MinAnnularRing          core.Length
+	MinHoleToHole           core.Length
+	MinSliver               core.Length
 	RoutingInefficientRatio float64
 	FabProfile              *core.FabProfileHandle
 }
@@ -76,6 +82,8 @@ func DefaultOptions() Options {
 		MinTraceWidth:           core.FromMM(0.1),
 		MinDrill:                core.FromMM(0.3),
 		MinAnnularRing:          core.FromMM(0.15),
+		MinHoleToHole:           core.FromMM(0.50),
+		MinSliver:               core.FromMM(0.15),
 		RoutingInefficientRatio: 1.5,
 	}
 }
@@ -238,6 +246,26 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 	checkNarrowTraces(board, resolver, &rep)
 	checkSmallDrills(board, minDrillMM, &rep)
 	checkAnnularRing(board, minAnnularMM, &rep)
+	checkIsolatedPours(board, &rep)
+	minH2H := opts.MinHoleToHole.ToMM()
+	if minH2H <= 0 {
+		minH2H = 0.50
+	}
+	if board.FabRules != nil && board.FabRules.MinHoleToHoleMM > 0 {
+		minH2H = board.FabRules.MinHoleToHoleMM
+	}
+	if opts.FabProfile != nil && opts.FabProfile.MinHoleToHoleMM > 0 {
+		minH2H = opts.FabProfile.MinHoleToHoleMM
+	}
+	checkHoleToHole(board, minH2H, &rep)
+	minSliver := opts.MinSliver.ToMM()
+	if minSliver <= 0 {
+		minSliver = 0.15
+	}
+	if board.FabRules != nil && board.FabRules.MinSliverMM > 0 {
+		minSliver = board.FabRules.MinSliverMM
+	}
+	checkCopperSliver(board, pads, minSliver, &rep)
 	checkRoutingInefficient(board, opts, &rep)
 	checkRuleAreasVsFab(board, &rep)
 
@@ -863,6 +891,178 @@ func checkRuleAreasVsFab(board *core.Board, rep *Report) {
 		}
 		if area.ViaDiameterMM != nil && *area.ViaDiameterMM+1e-9 < fr.MinViaDiameterMM {
 			warn("via diameter", *area.ViaDiameterMM, fr.MinViaDiameterMM)
+		}
+	}
+}
+
+func checkIsolatedPours(board *core.Board, rep *Report) {
+	for i := range board.Pours {
+		pr := &board.Pours[i]
+		hasVia := pourHasTieVia(board, pr)
+		otherLayer := pourHasOtherLayerCopper(board, pr)
+		if pr.StitchRequested() && !hasVia {
+			cx, cy := pourMarker(board, pr)
+			rep.add(Violation{
+				Kind: KindUnstitchedPour, Severity: SeverityError,
+				Message: fmt.Sprintf("pour %s on layer %d requested stitching but has no stitch via", pr.Net, pr.Layer.Index),
+				Net:     pr.Net, XMM: cx, YMM: cy,
+			})
+		}
+		if otherLayer && !hasVia {
+			cx, cy := pourMarker(board, pr)
+			rep.add(Violation{
+				Kind: KindIsolatedPour, Severity: SeverityError,
+				Message: fmt.Sprintf("pour %s on layer %d is isolated (no via to the rest of the net)", pr.Net, pr.Layer.Index),
+				Net:     pr.Net, XMM: cx, YMM: cy,
+			})
+		}
+	}
+}
+
+func pourHasTieVia(board *core.Board, pr *core.Pour) bool {
+	for _, v := range board.Vias {
+		if v.Net != pr.Net {
+			continue
+		}
+		if pointInPour(board, *pr, v.Position.X.ToMM(), v.Position.Y.ToMM()) {
+			return true
+		}
+	}
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Drill == nil || pad.Net == nil || *pad.Net != pr.Net {
+				continue
+			}
+			c := core.PadWorldCenter(fp, pad)
+			if pointInPour(board, *pr, c.X.ToMM(), c.Y.ToMM()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pourHasOtherLayerCopper(board *core.Board, pr *core.Pour) bool {
+	for _, fp := range board.Footprints {
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net != pr.Net {
+				continue
+			}
+			if pad.Drill != nil {
+				continue
+			}
+			if pad.Layer.Index != pr.Layer.Index {
+				return true
+			}
+		}
+	}
+	for _, t := range board.Traces {
+		if t.Net == pr.Net && t.Layer.Index != pr.Layer.Index {
+			return true
+		}
+	}
+	return false
+}
+
+func pourMarker(board *core.Board, pr *core.Pour) (float64, float64) {
+	if len(pr.Polygon) > 0 {
+		return pr.Polygon[0].X.ToMM(), pr.Polygon[0].Y.ToMM()
+	}
+	if board.Outline != nil {
+		return (board.Outline.Min.X.ToMM() + board.Outline.Max.X.ToMM()) / 2,
+			(board.Outline.Min.Y.ToMM() + board.Outline.Max.Y.ToMM()) / 2
+	}
+	return 0, 0
+}
+
+type hole struct {
+	x, y, r float64
+	label   string
+}
+
+func checkHoleToHole(board *core.Board, minGapMM float64, rep *Report) {
+	var holes []hole
+	for _, v := range board.Vias {
+		holes = append(holes, hole{v.Position.X.ToMM(), v.Position.Y.ToMM(), v.Drill.ToMM() / 2, "via " + v.Net})
+	}
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Drill == nil {
+				continue
+			}
+			c := core.PadWorldCenter(fp, pad)
+			holes = append(holes, hole{c.X.ToMM(), c.Y.ToMM(), pad.Drill.ToMM() / 2, fp.Reference + "." + pad.Number})
+		}
+	}
+	for _, h := range board.MountHoles {
+		holes = append(holes, hole{h.Center.X.ToMM(), h.Center.Y.ToMM(), h.Diameter.ToMM() / 2, "NPTH"})
+	}
+	for _, h := range board.Holes {
+		holes = append(holes, hole{h.Center.X.ToMM(), h.Center.Y.ToMM(), h.Diameter.ToMM() / 2, "NPTH"})
+	}
+	for i := 0; i < len(holes); i++ {
+		for j := i + 1; j < len(holes); j++ {
+			a, b := holes[i], holes[j]
+			gap := math.Hypot(a.x-b.x, a.y-b.y) - a.r - b.r
+			if gap+1e-6 < minGapMM {
+				rep.add(Violation{
+					Kind: KindHoleToHole, Severity: SeverityError,
+					Message: fmt.Sprintf("hole-to-hole %s – %s: %.3f mm < %.3f mm", a.label, b.label, gap, minGapMM),
+					XMM:     (a.x + b.x) / 2, YMM: (a.y + b.y) / 2,
+				})
+			}
+		}
+	}
+}
+
+func checkCopperSliver(board *core.Board, pads []padGeom, minSliverMM float64, rep *Report) {
+	// Same-net copper with a positive gap thinner than min sliver (acid trap).
+	for i := 0; i < len(pads); i++ {
+		for j := i + 1; j < len(pads); j++ {
+			a, b := pads[i], pads[j]
+			if a.net == "" || a.net != b.net || !a.sharesLayerWith(b) {
+				continue
+			}
+			gap := aabbGapMM(a.rect, b.rect)
+			if gap > TouchTolMM && gap+1e-6 < minSliverMM {
+				sx, sy := rectRectClosestSite(a.rect, b.rect)
+				rep.add(Violation{
+					Kind: KindCopperSliver, Severity: SeverityWarning,
+					Message: fmt.Sprintf("copper sliver %s – %s: %.3f mm < %.3f mm", a.label(), b.label(), gap, minSliverMM),
+					Net:     a.net, XMM: sx, YMM: sy,
+				})
+			}
+		}
+	}
+	for _, v := range board.Vias {
+		c := ptMM(v.Position)
+		vr := v.Diameter.ToMM() / 2
+		for _, pad := range pads {
+			if pad.net == "" || pad.net != v.Net {
+				continue
+			}
+			gap := pointRectDistance(c, pad.rect) - vr
+			if gap > TouchTolMM && gap+1e-6 < minSliverMM {
+				rep.add(Violation{
+					Kind: KindCopperSliver, Severity: SeverityWarning,
+					Message: fmt.Sprintf("copper sliver via %s – pad %s: %.3f mm < %.3f mm", v.Net, pad.label(), gap, minSliverMM),
+					Net:     v.Net, XMM: c[0], YMM: c[1],
+				})
+			}
 		}
 	}
 }

@@ -12,6 +12,8 @@ type FabRules struct {
 	MinAnnularRingMM   float64     `json:"min_annular_ring_mm,omitempty"`
 	MinViaDiameterMM   float64     `json:"min_via_diameter_mm,omitempty"`
 	MinEdgeClearanceMM float64     `json:"min_edge_clearance_mm,omitempty"`
+	MinHoleToHoleMM    float64     `json:"min_hole_to_hole_mm,omitempty"`
+	MinSliverMM        float64     `json:"min_sliver_mm,omitempty"`
 	MaxBoardSizeMM     *[2]float64 `json:"max_board_size_mm,omitempty"`
 }
 
@@ -59,7 +61,7 @@ func ActiveFabRules(b *Board) FabRules {
 	if p := FabRulesPreset("jlcpcb-2l"); p != nil {
 		return *p
 	}
-	return FabRules{MinClearanceMM: 0.127, MinTraceWidthMM: 0.127, MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15, MinEdgeClearanceMM: 0.30}
+	return FabRules{MinClearanceMM: 0.127, MinTraceWidthMM: 0.127, MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15, MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15}
 }
 
 // ClampToFab raises any value that would be illegal at the fab.

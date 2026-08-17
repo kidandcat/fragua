@@ -44,20 +44,33 @@ func kvString(kv, key string) (string, bool) {
 }
 
 func cmdPour(p *core.Project, args string) (string, error) {
-	// pour NET [layer=Top|Bottom] [relief=spokes4|solid]
+	// pour NET [layer=Top|Bottom] [relief=spokes4|solid] [stitch=true] [pitch=N]
 	fields := strings.Fields(args)
 	if len(fields) < 1 {
-		return "", fmt.Errorf("pour NET [layer=Top] [relief=spokes4|solid]")
+		return "", fmt.Errorf("pour NET [layer=Top] [relief=spokes4|solid] [stitch=true]")
 	}
 	net := fields[0]
 	layer := core.LayerTop
 	relief := "spokes4"
+	var stitch *core.StitchPolicy
 	for _, t := range fields[1:] {
 		switch {
 		case strings.HasPrefix(t, "layer="):
 			layer = parseLayerToken(strings.TrimPrefix(t, "layer="))
 		case strings.HasPrefix(t, "relief="):
 			relief = strings.TrimPrefix(t, "relief=")
+		case strings.HasPrefix(t, "stitch="):
+			v := strings.TrimPrefix(t, "stitch=")
+			if v == "true" || v == "1" || v == "{}" || v == "yes" {
+				stitch = &core.StitchPolicy{Enabled: true}
+			}
+		case strings.HasPrefix(t, "pitch="):
+			var pitch float64
+			fmt.Sscanf(t, "pitch=%f", &pitch)
+			if stitch == nil {
+				stitch = &core.StitchPolicy{Enabled: true}
+			}
+			stitch.PitchMM = pitch
 		}
 	}
 	p.MutateBoard(func(b *core.Board) {
@@ -69,7 +82,7 @@ func cmdPour(p *core.Project, args string) (string, error) {
 		}
 		tr := core.ThermalRelief{Kind: relief}
 		b.Pours = append(out, core.Pour{
-			ID: core.NewID(), Net: net, Layer: layer, ThermalRelief: &tr,
+			ID: core.NewID(), Net: net, Layer: layer, ThermalRelief: &tr, Stitching: stitch,
 		})
 	})
 	return fmt.Sprintf("pour %s on %s", net, layer.LegacyName()), nil
@@ -126,9 +139,120 @@ func cmdStitch(p *core.Project, _ string) (string, error) {
 	opts := router.DefaultOptions()
 	n := 0
 	p.MutateBoard(func(b *core.Board) {
+		fab := core.ActiveFabRules(b)
+		if fab.MinViaDrillMM > 0 {
+			opts.ViaDrillMM = fab.MinViaDrillMM
+		}
+		if fab.MinViaDiameterMM > 0 {
+			opts.ViaDiameterMM = fab.MinViaDiameterMM
+		}
 		n = router.StitchIsolatedPads(b, opts)
 	})
-	return fmt.Sprintf("stitched %d isolated pads", n), nil
+	return fmt.Sprintf("stitched %d vias", n), nil
+}
+
+func cmdNC(p *core.Project, args string) (string, error) {
+	// nc REF.PIN [REF.PIN...]
+	fields := strings.Fields(args)
+	if len(fields) < 1 {
+		return "", fmt.Errorf("nc REF.PIN [REF.PIN...]")
+	}
+	marked := 0
+	p.MutateSchematic(func(s *core.Schematic) {
+		for _, tok := range fields {
+			parts := strings.SplitN(tok, ".", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			ref, pin := parts[0], parts[1]
+			for _, sym := range s.Symbols {
+				if sym == nil || sym.Reference != ref {
+					continue
+				}
+				for i := range sym.Kind.ICPins {
+					if sym.Kind.ICPins[i].Number == pin {
+						sym.Kind.ICPins[i].NC = true
+						sym.Kind.ICPins[i].Role = core.PinNC
+						marked++
+					}
+				}
+			}
+		}
+	})
+	if marked == 0 {
+		return "", fmt.Errorf("nc: no matching pins (use on generic_ic pin numbers)")
+	}
+	return fmt.Sprintf("nc %d pin(s)", marked), nil
+}
+
+func cmdFiducial(p *core.Project, args string) (string, error) {
+	// fiducial X Y [ref=FID1]
+	fields := strings.Fields(args)
+	if len(fields) < 2 {
+		return "", fmt.Errorf("fiducial X Y [ref=FID1]")
+	}
+	x, e1 := strconv.ParseFloat(fields[0], 64)
+	y, e2 := strconv.ParseFloat(fields[1], 64)
+	if e1 != nil || e2 != nil {
+		return "", fmt.Errorf("fiducial: bad coordinates")
+	}
+	ref := ""
+	for _, t := range fields[2:] {
+		if strings.HasPrefix(t, "ref=") {
+			ref = strings.TrimPrefix(t, "ref=")
+		}
+	}
+	p.MutateBoard(func(b *core.Board) {
+		if ref == "" {
+			n := 1
+			for _, fp := range b.Footprints {
+				if fp != nil && fp.Fiducial {
+					n++
+				}
+			}
+			ref = fmt.Sprintf("FID%d", n)
+		}
+		b.AddFootprint(&core.Footprint{
+			ID:        core.NewID(),
+			Reference: ref,
+			Value:     "FIDUCIAL",
+			Library:   "fiducial",
+			Key:       "fiducial",
+			Fiducial:  true,
+			Position:  core.NewPoint(core.FromMM(x), core.FromMM(y)),
+			Layer:     core.LayerTop,
+			Pads: []core.Pad{{
+				Number: "1",
+				Size:   [2]core.Length{core.FromMM(1.0), core.FromMM(1.0)},
+				Layer:  core.LayerTop,
+			}},
+		})
+	})
+	return fmt.Sprintf("fiducial %s at %.2f,%.2f", ref, x, y), nil
+}
+
+func cmdDiffPair(p *core.Project, args string) (string, error) {
+	fields := strings.Fields(args)
+	if len(fields) < 2 {
+		return "", fmt.Errorf("diff NETA NETB")
+	}
+	a, b := fields[0], fields[1]
+	p.MutateSchematic(func(s *core.Schematic) {
+		if s.Nets == nil {
+			s.Nets = map[string]*core.Net{}
+		}
+		ensure := func(name, pair string) {
+			n := s.Nets[name]
+			if n == nil {
+				n = &core.Net{Name: name}
+				s.Nets[name] = n
+			}
+			n.DiffPair = pair
+		}
+		ensure(a, b)
+		ensure(b, a)
+	})
+	return fmt.Sprintf("diff %s %s", a, b), nil
 }
 
 func cmdOutlinePoly(p *core.Project, args string) (string, error) {
@@ -629,6 +753,13 @@ func cmdNetClass(p *core.Project, args string) (string, error) {
 		if strings.HasPrefix(t, "width=") {
 			v, _ := strconv.ParseFloat(strings.TrimPrefix(t, "width="), 64)
 			cls.TraceWidthMM = v
+		}
+		if strings.HasPrefix(t, "impedance=") {
+			v, _ := strconv.ParseFloat(strings.TrimPrefix(t, "impedance="), 64)
+			cls.ImpedanceOhms = v
+		}
+		if strings.HasPrefix(t, "diff=") {
+			cls.DiffPair = strings.TrimPrefix(t, "diff=")
 		}
 	}
 	p.MutateSchematic(func(s *core.Schematic) {
