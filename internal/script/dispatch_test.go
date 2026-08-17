@@ -412,3 +412,69 @@ status
 		t.Fatalf("symbol: %+v", found)
 	}
 }
+
+func TestTeardropAndImpedanceVerbs(t *testing.T) {
+	p := core.NewProject("t-z")
+	out := t.TempDir()
+	rs := RunScript(p, `
+outline 40 20
+lib rpad
+  pad 1 0 0 1.2 1.2
+palette R1 rpad
+place R1 10 10
+net SIG R1.1
+trace SIG 10 10 25 10 width=0.25
+teardrop on
+class Z50 impedance=50
+impedance SIG
+pack fab=jlcpcb out=`+out+`
+`)
+	allOK(t, rs)
+	if !p.Board().Teardrops {
+		t.Fatal("teardrop on did not persist")
+	}
+	cls := p.Schematic().NetClasses["Z50"]
+	if cls == nil || cls.ImpedanceOhms != 50 || cls.TraceWidthMM < 2.5 || cls.TraceWidthMM > 3.5 {
+		t.Fatalf("class Z50 should compute ~3 mm width: %+v", cls)
+	}
+	var zLine string
+	for _, r := range rs {
+		if r.Tool == "impedance" {
+			zLine = r.Result
+		}
+	}
+	if !strings.Contains(zLine, "microstrip") || !strings.Contains(zLine, "Z0=") {
+		t.Fatalf("impedance SIG: %s", zLine)
+	}
+	gbr, err := os.ReadFile(filepath.Join(out, "t-z-fab", "t-z-F_Cu.gbr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gbr), "G36*") {
+		t.Fatal("pack with teardrop on must put copper G36 in F_Cu")
+	}
+	ipc, err := os.ReadFile(filepath.Join(out, "t-z-fab", "t-z-ipc-d-356.ipc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ipc), "P  UNITS CUST 0") || !strings.Contains(string(ipc), "327") {
+		t.Fatalf("IPC-D-356A pack file:\n%s", ipc)
+	}
+}
+
+func TestImpedanceMissingErErrors(t *testing.T) {
+	p := core.NewProject("t-z-err")
+	p.MutateBoard(func(b *core.Board) {
+		b.Stackup = &core.LayerStackup{
+			Layers:      []core.LayerSpec{{Name: "F.Cu"}, {Name: "B.Cu"}},
+			Dielectrics: []core.Dielectric{{ThicknessMM: 1.6}},
+		}
+	})
+	rs := RunScript(p, "impedance SIG\n")
+	if len(rs) != 1 || rs[0].OK {
+		t.Fatalf("unset Er must error: %+v", rs)
+	}
+	if !strings.Contains(rs[0].Result, "Er") {
+		t.Fatalf("error should mention Er: %s", rs[0].Result)
+	}
+}

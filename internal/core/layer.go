@@ -172,7 +172,7 @@ func Default2Layer() LayerStackup {
 			{Name: "F.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
 			{Name: "B.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
 		},
-		Dielectrics: []Dielectric{{ThicknessMM: 1.5, Er: 4.5}},
+		Dielectrics: []Dielectric{{ThicknessMM: 1.5, Er: 4.6}},
 	}
 }
 
@@ -188,9 +188,9 @@ func Default4Layer() LayerStackup {
 			{Name: "B.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
 		},
 		Dielectrics: []Dielectric{
-			{ThicknessMM: 0.21, Er: 4.5},
-			{ThicknessMM: 1.065, Er: 4.5},
-			{ThicknessMM: 0.21, Er: 4.5},
+			{ThicknessMM: 0.21, Er: 4.6},
+			{ThicknessMM: 1.065, Er: 4.6},
+			{ThicknessMM: 0.21, Er: 4.6},
 		},
 	}
 }
@@ -253,12 +253,12 @@ func (s LayerStackup) DielectricThicknessMM() float64 {
 	return 1.5
 }
 
-// DielectricEr returns relative permittivity or 4.5.
+// DielectricEr returns relative permittivity or 4.6 (FR-4).
 func (s LayerStackup) DielectricEr() float64 {
 	if len(s.Dielectrics) > 0 && s.Dielectrics[0].Er > 0 {
 		return s.Dielectrics[0].Er
 	}
-	return 4.5
+	return 4.6
 }
 
 // CopperThicknessMM returns approx thickness from first copper weight (1 oz ≈ 0.035 mm).

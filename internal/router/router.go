@@ -35,6 +35,8 @@ type Options struct {
 	FineEscape      bool    // opt-in; ignored (not implemented)
 	Negotiate       bool    // extra negotiation rounds on leftovers
 	SearchClearMM   float64 // pad-edge search gap; 0 → fab ceiling
+	Teardrops       bool    // add copper teardrops at pad/via junctions
+	TeardropsSet    bool    // true if teardrop= was in the script args
 }
 
 // DefaultOptions returns Rust-aligned 2-layer Grid defaults.
@@ -71,6 +73,10 @@ func ParseOptions(o Options, args string) Options {
 			continue
 		case "negotiate":
 			o.Negotiate = v == "true" || v == "1"
+			continue
+		case "teardrop", "teardrops":
+			o.Teardrops = v == "true" || v == "1" || v == "on"
+			o.TeardropsSet = true
 			continue
 		}
 		var x float64
@@ -145,6 +151,9 @@ type padLoc struct {
 // Route autoroutes all multi-pad nets on the board. Mutates board traces/vias
 // (appends to existing copper unless caller cleared first).
 func Route(board *core.Board, opts Options) Report {
+	if opts.TeardropsSet && board != nil {
+		board.Teardrops = opts.Teardrops
+	}
 	start := time.Now()
 	// Rust: max_seconds None/0/non-finite → no deadline.
 	var deadline time.Time
