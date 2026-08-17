@@ -69,6 +69,17 @@ type Footprint struct {
 	EdgeMounted bool                `json:"edge_mounted"`
 	EdgeSide    *EdgeSide           `json:"edge_side"`
 	Silk        []FootprintSilkItem `json:"silk"`
+	// BOM / assembly fields. Copied from the library entry or `sym`/`lib`
+	// script tokens. Never invented — empty means the part has no number.
+	LcscID       string `json:"lcsc_id,omitempty"`
+	MPN          string `json:"mpn,omitempty"`
+	Manufacturer string `json:"manufacturer,omitempty"`
+	// Fiducial is a board optical mark: in CPL, omitted from BOM.
+	Fiducial bool `json:"fiducial,omitempty"`
+	// Courtyard / body: used by DRC. BodyRect is footprint-local mm (Y-up).
+	BodyRect        *BodyRect       `json:"body_rect,omitempty"`
+	PlacementMargin PlacementMargin `json:"placement_margin,omitempty"`
+	Elevated        bool            `json:"elevated,omitempty"`
 }
 
 // Trace is a copper segment.
@@ -107,11 +118,19 @@ func (t ThermalRelief) IsSpokes4() bool {
 }
 
 // StitchPolicy for pour via stitching.
+// Presence on a pour (including empty `stitching: {}`) means stitching
+// was requested — DRC must not silently pass an unstitched plane.
 type StitchPolicy struct {
 	Enabled  bool    `json:"enabled,omitempty"`
 	PitchMM  float64 `json:"pitch_mm,omitempty"`
 	DrillMM  float64 `json:"drill_mm,omitempty"`
 	Diameter float64 `json:"diameter_mm,omitempty"`
+}
+
+// StitchRequested reports that the pour asked for stitching vias.
+// A non-nil policy counts, including the empty object `{}`.
+func (p *Pour) StitchRequested() bool {
+	return p != nil && p.Stitching != nil
 }
 
 // Pour is a copper pour region (simplified: full-board or rect).
@@ -195,13 +214,15 @@ type Board struct {
 	Stackup    *LayerStackup `json:"stackup,omitempty"`
 }
 
-// NewBoard returns an empty 2-layer board.
+// NewBoard returns an empty 2-layer board with a persisted default stackup.
 func NewBoard() *Board {
+	s := Default2Layer()
 	return &Board{
 		Footprints:     make(map[string]*Footprint),
 		FootprintOrder: nil,
 		Traces:         nil,
 		Vias:           nil,
+		Stackup:        &s,
 	}
 }
 
@@ -214,8 +235,11 @@ func (b *Board) StackupOrDefault() LayerStackup {
 }
 
 // Apply4Layer promotes a 2-layer board to the default 4-layer FR-4 stack
-// (signal / GND plane / +3V3 plane / signal). Existing "Bottom" copper
-// (index 1 on 2L) is remapped to the new physical bottom.
+// (F.Cu / In1.Cu / In2.Cu / B.Cu). Existing "Bottom" copper (index 1 on 2L)
+// is remapped to the new physical bottom. Plane *assigned nets* (GND / a
+// detected power rail) are recorded on the stackup; pours are added only
+// for nets that already exist on the board — never a hardcoded +3V3/+1V1
+// stack pretending to be the only 4-layer design.
 func (b *Board) Apply4Layer() {
 	if b.Stackup != nil && b.Stackup.CopperCount() >= 4 {
 		return
@@ -249,52 +273,81 @@ func (b *Board) Apply4Layer() {
 	for i := range b.Pours {
 		remap(&b.Pours[i].Layer)
 	}
+	gnd := firstExistingNet(b, "GND", "Gnd", "gnd")
+	pwr := firstExistingNet(b, "+3V3", "3V3", "+5V", "5V", "VCC", "VDD", "+1V8", "1V8", "+1V1", "1V1")
+	if gnd != "" && len(s.Layers) > 1 {
+		s.Layers[1].AssignedNet = gnd
+	}
+	if pwr != "" && len(s.Layers) > 2 {
+		s.Layers[2].AssignedNet = pwr
+	}
 	b.Stackup = &s
-	if b.FabRules == nil || b.FabRules.Preset == "" || b.FabRules.Preset == "jlcpcb-2l" {
+	if b.FabRules == nil || b.FabRules.Preset == "" || b.FabRules.Preset == "jlcpcb-2l" || b.FabRules.Preset == "jlcpcb-2l-via02" {
 		b.FabRules = FabRulesPreset("jlcpcb-4l")
 	}
 	relief := ThermalRelief{Kind: "spokes4", SpokeWidthMM: 0.4, GapMM: 0.4}
-	hasGND, has3V3, has1V1 := false, false, false
-	for _, p := range b.Pours {
-		if p.Net == "GND" && p.Layer.Index == 1 {
-			hasGND = true
+	hasPlane := func(net string, layer uint8) bool {
+		for _, p := range b.Pours {
+			if p.Net == net && p.Layer.Index == layer {
+				return true
+			}
 		}
-		if (p.Net == "+3V3" || p.Net == "3V3") && p.Layer.Index == 2 {
-			has3V3 = true
-		}
-		if (p.Net == "+1V1" || p.Net == "1V1") && p.Layer.Index == newBottom {
-			has1V1 = true
-		}
+		return false
 	}
-	if !hasGND {
-		b.Pours = append(b.Pours, Pour{Net: "GND", Layer: Layer{Index: 1}, ThermalRelief: &relief})
+	if gnd != "" && !hasPlane(gnd, 1) {
+		b.Pours = append(b.Pours, Pour{Net: gnd, Layer: Layer{Index: 1}, ThermalRelief: &relief})
 	}
-	if !has3V3 {
-		b.Pours = append(b.Pours, Pour{Net: "+3V3", Layer: Layer{Index: 2}, ThermalRelief: &relief})
-	}
-	// Core rail: if the schematic has +1V1, give it the bottom as a
-	// plane (F / GND / +3V3 / +1V1). QFN dogbones still via onto it.
-	if !has1V1 && boardHasNet(b, "+1V1", "1V1") {
-		b.Pours = append(b.Pours, Pour{Net: "+1V1", Layer: Layer{Index: newBottom}, ThermalRelief: &relief})
+	if pwr != "" && !hasPlane(pwr, 2) {
+		b.Pours = append(b.Pours, Pour{Net: pwr, Layer: Layer{Index: 2}, ThermalRelief: &relief})
 	}
 }
 
 func boardHasNet(b *Board, names ...string) bool {
+	return firstExistingNet(b, names...) != ""
+}
+
+func firstExistingNet(b *Board, names ...string) string {
+	if b == nil {
+		return ""
+	}
 	want := map[string]bool{}
 	for _, n := range names {
 		want[n] = true
+	}
+	seen := func(n string) string {
+		if want[n] {
+			return n
+		}
+		return ""
 	}
 	for _, fp := range b.Footprints {
 		if fp == nil {
 			continue
 		}
 		for i := range fp.Pads {
-			if fp.Pads[i].Net != nil && want[*fp.Pads[i].Net] {
-				return true
+			if fp.Pads[i].Net != nil {
+				if hit := seen(*fp.Pads[i].Net); hit != "" {
+					return hit
+				}
 			}
 		}
 	}
-	return false
+	for _, p := range b.Pours {
+		if hit := seen(p.Net); hit != "" {
+			return hit
+		}
+	}
+	for _, t := range b.Traces {
+		if hit := seen(t.Net); hit != "" {
+			return hit
+		}
+	}
+	for _, v := range b.Vias {
+		if hit := seen(v.Net); hit != "" {
+			return hit
+		}
+	}
+	return ""
 }
 
 // AddFootprint inserts a footprint and appends to order.
@@ -417,6 +470,76 @@ func LocalToWorld(fp *Footprint, p Point) Point {
 func ResolveSilkText(fp *Footprint, raw string) string {
 	s := strings.ReplaceAll(raw, "{REF}", fp.Reference)
 	return strings.ReplaceAll(s, "{VAL}", fp.Value)
+}
+
+// CourtyardMarginMM is applied around the pad-union AABB when a footprint
+// has no library body_rect and no placement_margin. Documented default
+// for DRC courtyard overlap (not a fab rule).
+const CourtyardMarginMM = 0.25
+
+// CourtyardWorld returns the world-space courtyard AABB.
+// Preference: library body_rect (rotated), else pad-union expanded by
+// placement_margin, else pad-union + CourtyardMarginMM.
+func CourtyardWorld(fp *Footprint) (Rect, bool) {
+	if fp == nil {
+		return Rect{}, false
+	}
+	if fp.BodyRect != nil {
+		corners := []Point{
+			{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MinYMM)},
+			{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MinYMM)},
+			{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
+			{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
+		}
+		w0 := LocalToWorld(fp, corners[0])
+		out := Rect{Min: w0, Max: w0}
+		for _, c := range corners[1:] {
+			p := LocalToWorld(fp, c)
+			if p.X < out.Min.X {
+				out.Min.X = p.X
+			}
+			if p.Y < out.Min.Y {
+				out.Min.Y = p.Y
+			}
+			if p.X > out.Max.X {
+				out.Max.X = p.X
+			}
+			if p.Y > out.Max.Y {
+				out.Max.Y = p.Y
+			}
+		}
+		return out, true
+	}
+	if len(fp.Pads) == 0 {
+		return Rect{}, false
+	}
+	body := PadWorldAABB(fp, &fp.Pads[0])
+	for i := 1; i < len(fp.Pads); i++ {
+		body = body.Union(PadWorldAABB(fp, &fp.Pads[i]))
+	}
+	m := fp.PlacementMargin
+	if m.IsZero() {
+		return body.Expand(FromMM(CourtyardMarginMM)), true
+	}
+	// Placement margin is footprint-local (top/right/bottom/left). After
+	// 90° snaps, expand the world AABB by the matching sides.
+	rot := math.Mod(fp.Rotation, 360)
+	if rot < 0 {
+		rot += 360
+	}
+	top, right, bottom, left := m.TopMM, m.RightMM, m.BottomMM, m.LeftMM
+	switch {
+	case rot > 45 && rot <= 135:
+		top, right, bottom, left = left, top, right, bottom
+	case rot > 135 && rot <= 225:
+		top, right, bottom, left = bottom, left, top, right
+	case rot > 225 && rot <= 315:
+		top, right, bottom, left = right, bottom, left, top
+	}
+	return Rect{
+		Min: Point{X: body.Min.X - FromMM(left), Y: body.Min.Y - FromMM(bottom)},
+		Max: Point{X: body.Max.X + FromMM(right), Y: body.Max.Y + FromMM(top)},
+	}, true
 }
 
 // PadWorldAABB returns the axis-aligned bounding box of a pad (90° rotations).

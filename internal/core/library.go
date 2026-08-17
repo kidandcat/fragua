@@ -174,6 +174,7 @@ type LibraryEntry struct {
 	Silk                    []LibrarySilk   `json:"silk"`
 	LcscID                  *string         `json:"lcsc_id,omitempty"`
 	MPN                     *string         `json:"mpn,omitempty"`
+	Manufacturer            *string         `json:"manufacturer,omitempty"`
 	Attachments             []Attachment    `json:"attachments"`
 	CreatedAt               uint64          `json:"created_at"`
 	FootprintViewTransform  ViewTransform   `json:"footprint_view_transform"`
@@ -317,20 +318,36 @@ func (e *LibraryEntry) ToFootprint(reference, value string, layer Layer, rotatio
 			Drill:  drill,
 		})
 	}
-	return &Footprint{
-		ID:          NewID(),
-		Reference:   reference,
-		Value:       value,
-		Library:     "library:" + e.Key,
-		Position:    NewPoint(FromMM(-100), FromMM(-100)),
-		Rotation:    rotation,
-		Layer:       layer,
-		Pads:        pads,
-		Key:         e.Key,
-		Description: e.Description,
-		EdgeMounted: e.EdgeMounted,
-		EdgeSide:    e.EdgeSide,
+	fp := &Footprint{
+		ID:              NewID(),
+		Reference:       reference,
+		Value:           value,
+		Library:         "library:" + e.Key,
+		Position:        NewPoint(FromMM(-100), FromMM(-100)),
+		Rotation:        rotation,
+		Layer:           layer,
+		Pads:            pads,
+		Key:             e.Key,
+		Description:     e.Description,
+		EdgeMounted:     e.EdgeMounted,
+		EdgeSide:        e.EdgeSide,
+		PlacementMargin: e.BodyKeepout(),
+		Elevated:        e.Elevated,
 	}
+	if e.BodyRect != nil {
+		br := *e.BodyRect
+		fp.BodyRect = &br
+	}
+	if e.LcscID != nil {
+		fp.LcscID = *e.LcscID
+	}
+	if e.MPN != nil {
+		fp.MPN = *e.MPN
+	}
+	if e.Manufacturer != nil {
+		fp.Manufacturer = *e.Manufacturer
+	}
+	return fp
 }
 
 // FreeformPads builds a simple linear pad row for N pins.
@@ -595,6 +612,10 @@ func cloneEntry(e LibraryEntry) LibraryEntry {
 	if e.MPN != nil {
 		s := *e.MPN
 		out.MPN = &s
+	}
+	if e.Manufacturer != nil {
+		s := *e.Manufacturer
+		out.Manufacturer = &s
 	}
 	return out
 }

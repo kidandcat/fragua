@@ -183,6 +183,114 @@ status
 	}
 }
 
+func TestSymLcscReachesPackBOM(t *testing.T) {
+	p := core.NewProject("t-lcsc")
+	lib, err := core.OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetLibrary(lib)
+	out := t.TempDir()
+	rs := RunScript(p, `
+outline 20 20
+lib r_0603 lcsc=C25804 mpn=RC0603FR-0710KL manufacturer=Yageo value=10k
+  pad 1 -0.8 0 0.8 0.9
+  pad 2  0.8 0 0.8 0.9
+sym R1 resistor key=r_0603 value=10k lcsc=C25804
+palette R1 r_0603
+place R1 10 10
+fab-rules jlcpcb
+pack fab=jlcpcb out=`+out+`
+`)
+	allOK(t, rs)
+	fp := p.Board().FootprintByRef("R1")
+	if fp == nil || fp.LcscID != "C25804" {
+		t.Fatalf("lcsc not on footprint: %+v", fp)
+	}
+	bom, err := os.ReadFile(filepath.Join(out, "t-lcsc-fab", "t-lcsc-bom.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(bom)
+	if !strings.Contains(text, "LCSC Part #") || !strings.Contains(text, "C25804") {
+		t.Fatalf("BOM missing LCSC:\n%s", text)
+	}
+	if strings.Contains(text, "library:") {
+		t.Fatalf("library: prefix in BOM:\n%s", text)
+	}
+	if _, err := os.Stat(filepath.Join(out, "t-lcsc-fab", "t-lcsc-F_Paste.gbr")); err != nil {
+		t.Fatal("missing paste gerber")
+	}
+	readme, err := os.ReadFile(filepath.Join(out, "t-lcsc-fab", "README.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "F_Paste") || !strings.Contains(string(readme), "Fragua") {
+		t.Fatalf("README incomplete:\n%s", readme)
+	}
+}
+
+func TestNCAndPackFailsOnERCError(t *testing.T) {
+	p := core.NewProject("t-erc")
+	lib, err := core.OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetLibrary(lib)
+	rs := RunScript(p, `
+outline 20 20
+sym U1 ic
+  pin 1 L IN role=input
+  pin 2 R NC role=nc
+erc
+`)
+	if len(rs) == 0 {
+		t.Fatal("no results")
+	}
+	ercLine := rs[len(rs)-1]
+	if !ercLine.OK {
+		t.Fatalf("erc verb failed: %s", ercLine.Result)
+	}
+	if !strings.Contains(ercLine.Result, "1 errors") && !strings.Contains(ercLine.Result, "error") {
+		t.Fatalf("expected ERC error for open input: %s", ercLine.Result)
+	}
+	out := t.TempDir()
+	rs2 := RunScript(p, "pack fab=jlcpcb out="+out+"\n")
+	if len(rs2) != 1 || rs2[0].OK {
+		t.Fatalf("pack must be NOT READY on ERC errors: %+v", rs2)
+	}
+	if !strings.Contains(rs2[0].Result, "NOT READY") {
+		t.Fatalf("pack msg: %s", rs2[0].Result)
+	}
+}
+
+func TestFiducialDiffStitch(t *testing.T) {
+	p := core.NewProject("t-stretch")
+	rs := RunScript(p, `
+outline 30 20
+fiducial 2 2 ref=FID1
+diff USB_DP USB_DM
+class USB90 impedance=90
+pour GND layer=Top stitch=true pitch=5
+`)
+	allOK(t, rs)
+	p.RLock()
+	defer p.RUnlock()
+	fp := p.Board().FootprintByRef("FID1")
+	if fp == nil || !fp.Fiducial {
+		t.Fatal("fiducial missing")
+	}
+	if p.Schematic().Nets["USB_DP"] == nil || p.Schematic().Nets["USB_DP"].DiffPair != "USB_DM" {
+		t.Fatalf("diff pair: %+v", p.Schematic().Nets)
+	}
+	if p.Schematic().NetClasses["USB90"] == nil || p.Schematic().NetClasses["USB90"].ImpedanceOhms != 90 {
+		t.Fatalf("impedance class: %+v", p.Schematic().NetClasses)
+	}
+	if len(p.Board().Pours) != 1 || !p.Board().Pours[0].StitchRequested() {
+		t.Fatalf("pour stitch: %+v", p.Board().Pours)
+	}
+}
+
 func TestListLib(t *testing.T) {
 	p := core.NewProject("t-lib-list")
 	lib, err := core.OpenAt(t.TempDir())

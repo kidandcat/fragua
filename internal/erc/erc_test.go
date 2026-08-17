@@ -1,6 +1,7 @@
 package erc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -54,4 +55,39 @@ func TestFloatingPin(t *testing.T) {
 	if !found {
 		t.Fatalf("expected floating pin, got %+v", rep)
 	}
+}
+
+func TestNCPinNotFloating(t *testing.T) {
+	sch := core.NewSchematic()
+	id := core.NewID()
+	sch.Symbols[id.String()] = &core.Symbol{
+		ID: id, Reference: "U1",
+		Kind: core.SymbolKind{Kind: "generic_ic", ICPins: []core.SchPin{
+			{Number: "1", Side: core.PinLeft, Role: core.PinInput},
+			{Number: "2", Side: core.PinRight, Role: core.PinNC, NC: true},
+		}},
+	}
+	sch.SymbolOrder = []string{id.String()}
+	rep := Check(sch, nil, Options{Heuristics: false})
+	for _, v := range rep.Violations {
+		if strings.Contains(v.Message, "U1.2") {
+			t.Fatalf("NC pin should be silent: %+v", rep.Violations)
+		}
+	}
+	if countKind(rep, KindUnconnectedInput) == 0 {
+		t.Fatalf("open required input U1.1 must be an error, got %+v", rep.Violations)
+	}
+	if rep.Errors == 0 {
+		t.Fatal("open input must count as ERC error")
+	}
+}
+
+func countKind(rep Report, k Kind) int {
+	n := 0
+	for _, v := range rep.Violations {
+		if v.Kind == k {
+			n++
+		}
+	}
+	return n
 }

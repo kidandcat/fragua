@@ -405,6 +405,9 @@ func TestApplyFabCeilingUsesJLCPCB(t *testing.T) {
 	if opts.ClearanceMM != 0.127 {
 		t.Fatalf("2L clearance=%v want 0.127", opts.ClearanceMM)
 	}
+	if opts.ViaDrillMM != 0.30 || opts.ViaDiameterMM != 0.60 {
+		t.Fatalf("2L via drill/dia=%v/%v want 0.30/0.60", opts.ViaDrillMM, opts.ViaDiameterMM)
+	}
 	if b.FabRules == nil || b.FabRules.Preset != "jlcpcb-2l" {
 		t.Fatalf("fab rules not persisted: %+v", b.FabRules)
 	}

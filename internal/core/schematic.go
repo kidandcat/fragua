@@ -27,7 +27,13 @@ const (
 	PinBidir    PinRole = "bidir"
 	PinPowerOut PinRole = "power_out"
 	PinPowerIn  PinRole = "power_in"
+	PinNC       PinRole = "nc"
 )
+
+// IsNC reports a no-connect / explicitly unused pin.
+func (p SchPin) IsNC() bool {
+	return p.Role == PinNC || p.NC
+}
 
 // SchPin is one pin on a generic IC symbol.
 type SchPin struct {
@@ -35,6 +41,7 @@ type SchPin struct {
 	Name   string  `json:"name"`
 	Side   PinSide `json:"side"`
 	Role   PinRole `json:"role"`
+	NC     bool    `json:"nc,omitempty"`
 }
 
 // SymbolKind tags the symbol type. JSON uses {"kind":"resistor"} or generic_ic with pins.
@@ -102,14 +109,17 @@ func (k SymbolKind) Pins() []SchPin {
 
 // Symbol is a schematic symbol instance.
 type Symbol struct {
-	ID          ID         `json:"id"`
-	Reference   string     `json:"reference"`
-	Value       string     `json:"value"`
-	Kind        SymbolKind `json:"kind"`
-	Position    Point      `json:"position"`
-	Rotation    float64    `json:"rotation"`
-	Key         string     `json:"key"`
-	Description string     `json:"description"`
+	ID           ID         `json:"id"`
+	Reference    string     `json:"reference"`
+	Value        string     `json:"value"`
+	Kind         SymbolKind `json:"kind"`
+	Position     Point      `json:"position"`
+	Rotation     float64    `json:"rotation"`
+	Key          string     `json:"key"`
+	Description  string     `json:"description"`
+	LcscID       string     `json:"lcsc_id,omitempty"`
+	MPN          string     `json:"mpn,omitempty"`
+	Manufacturer string     `json:"manufacturer,omitempty"`
 }
 
 // NetConnection links a symbol pin to a net.
@@ -123,9 +133,11 @@ type Net struct {
 	Name        string          `json:"name"`
 	Connections []NetConnection `json:"connections"`
 	Class       string          `json:"class,omitempty"`
+	DiffPair    string          `json:"diff_pair,omitempty"`
 }
 
 // NetClass holds physical rules for a class of nets.
+// ImpedanceOhms is stored for later; DRC does not field-solve it.
 type NetClass struct {
 	Name               string  `json:"name"`
 	TraceWidthMM       float64 `json:"trace_width_mm,omitempty"`
@@ -133,6 +145,8 @@ type NetClass struct {
 	LengthToleranceMM  float64 `json:"length_tolerance_mm,omitempty"`
 	ViaDrillMM         float64 `json:"via_drill_mm,omitempty"`
 	ViaDiameterMM      float64 `json:"via_diameter_mm,omitempty"`
+	ImpedanceOhms      float64 `json:"impedance_ohms,omitempty"`
+	DiffPair           string  `json:"diff_pair,omitempty"`
 }
 
 // Schematic is the netlist + layout hints.

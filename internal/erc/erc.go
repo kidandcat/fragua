@@ -155,14 +155,27 @@ func checkFloatingPins(sch *core.Schematic, rep *Report) {
 	for _, sym := range symbolsInOrder(sch) {
 		pins := sym.Kind.Pins()
 		for _, pin := range pins {
-			if !wired[sym.Reference][pin.Number] {
+			if pin.IsNC() {
+				continue
+			}
+			if wired[sym.Reference][pin.Number] {
+				continue
+			}
+			if pin.Role == core.PinInput {
 				rep.add(Violation{
-					Kind: KindFloatingPin, Severity: SeverityWarning,
-					Message: fmt.Sprintf("%s.%s floating", sym.Reference, pin.Number),
-					Symbol:  sym.Reference,
+					Kind: KindUnconnectedInput, Severity: SeverityError,
+					Message:  fmt.Sprintf("%s.%s required input is open", sym.Reference, pin.Number),
+					Symbol:   sym.Reference,
 					Involved: []string{sym.Reference + "." + pin.Number},
 				})
+				continue
 			}
+			rep.add(Violation{
+				Kind: KindFloatingPin, Severity: SeverityWarning,
+				Message:  fmt.Sprintf("%s.%s floating", sym.Reference, pin.Number),
+				Symbol:   sym.Reference,
+				Involved: []string{sym.Reference + "." + pin.Number},
+			})
 		}
 	}
 }
@@ -275,6 +288,9 @@ func checkRoleBasedRules(board *core.Board, sch *core.Schematic, rep *Report) {
 			if sym == nil {
 				continue
 			}
+			if pinIsNC(sym, c.PinNumber) {
+				continue
+			}
 			role := pinRoleOf(sym, c.PinNumber)
 			roles[netName] = append(roles[netName], pinRole{
 				label: sym.Reference + "." + c.PinNumber,
@@ -329,7 +345,7 @@ func checkRoleBasedRules(board *core.Board, sch *core.Schematic, rep *Report) {
 		for _, p := range pins {
 			if p.role == core.PinInput && !hasDriver {
 				rep.add(Violation{
-					Kind: KindUnconnectedInput, Severity: SeverityWarning,
+					Kind: KindUnconnectedInput, Severity: SeverityError,
 					Message:  fmt.Sprintf("input pin %s on net %s has no driver", p.label, netName),
 					Net:      netName,
 					Symbol:   strings.Split(p.label, ".")[0],
@@ -350,7 +366,7 @@ func checkRoleBasedRules(board *core.Board, sch *core.Schematic, rep *Report) {
 				inv = append(inv, p.label)
 			}
 			rep.add(Violation{
-				Kind: KindUndrivenInput, Severity: SeverityWarning,
+				Kind: KindUndrivenInput, Severity: SeverityError,
 				Message:  fmt.Sprintf("net %s has only Input pins (%d) and no driver", netName, len(pins)),
 				Net:      netName,
 				Involved: inv,
@@ -552,6 +568,18 @@ func symbolRef(sch *core.Schematic, id core.ID) string {
 		return s.Reference
 	}
 	return id.String()
+}
+
+func pinIsNC(sym *core.Symbol, pin string) bool {
+	if sym == nil {
+		return false
+	}
+	for _, p := range sym.Kind.Pins() {
+		if p.Number == pin {
+			return p.IsNC()
+		}
+	}
+	return false
 }
 
 func pinRoleOf(sym *core.Symbol, pin string) core.PinRole {

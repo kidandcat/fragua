@@ -8,10 +8,13 @@ import (
 
 // StitchIsolatedPads is the script-facing pour stitch.
 func StitchIsolatedPads(board *core.Board, opts Options) int {
-	return stitchIsolatedPads(board, opts)
+	n := stitchIsolatedPads(board, opts)
+	n += stitchPourGrid(board, opts, false)
+	return n
 }
 
 func stitchIsolatedPads(board *core.Board, opts Options) int {
+	nGrid := stitchPourGrid(board, opts, true) // only pours that asked for stitching
 	// net → layers that already have a pour. A pad sitting in a same-layer
 	// pour is already connected; we only via-stitch to a pour on another layer.
 	pourLayers := map[string][]uint8{}
@@ -21,9 +24,9 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 		}
 	}
 	if len(pourLayers) == 0 {
-		return 0
+		return nGrid
 	}
-	added := 0
+	added := nGrid
 	for _, fp := range footprintsStable(board) {
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
@@ -113,6 +116,202 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 		}
 	}
 	return added
+}
+
+// stitchPourGrid drops a via lattice inside pours that requested stitching
+// (including empty `stitching: {}`) or that have same-net copper on another
+// layer with no via in the island. Vias actually tie the plane through.
+func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
+	if board.Outline == nil && len(board.Pours) == 0 {
+		return 0
+	}
+	fab := core.ActiveFabRules(board)
+	added := 0
+	for i := range board.Pours {
+		pr := &board.Pours[i]
+		need := pr.StitchRequested() || (!onlyRequested && pourNeedsViaTie(board, pr))
+		if !need {
+			continue
+		}
+		if viaInPour(board, pr) {
+			continue
+		}
+		pitch := 2.54
+		if pr.Stitching != nil && pr.Stitching.PitchMM > 0 {
+			pitch = pr.Stitching.PitchMM
+		}
+		drill := opts.ViaDrillMM
+		dia := opts.ViaDiameterMM
+		if pr.Stitching != nil && pr.Stitching.DrillMM > 0 {
+			drill = pr.Stitching.DrillMM
+		}
+		if pr.Stitching != nil && pr.Stitching.Diameter > 0 {
+			dia = pr.Stitching.Diameter
+		}
+		if drill <= 0 {
+			drill = fab.MinViaDrillMM
+		}
+		if dia <= 0 {
+			dia = fab.MinViaDiameterMM
+		}
+		if drill <= 0 {
+			drill = 0.30
+		}
+		if dia <= 0 {
+			dia = 0.60
+		}
+		xmin, ymin, xmax, ymax := pourBoundsMM(board, pr)
+		margin := math.Max(dia/2+0.4, 0.8)
+		for x := xmin + margin; x <= xmax-margin+1e-9; x += pitch {
+			for y := ymin + margin; y <= ymax-margin+1e-9; y += pitch {
+				if !pointInPourRegion(board, pr, x, y) {
+					continue
+				}
+				if !outlineContains(board.Outline, x, y, 0.4) {
+					continue
+				}
+				if fanoutHitsPad(board, x, y, dia/2+0.15, nil, -1) {
+					continue
+				}
+				if viaNear(board, x, y, pitch*0.45) {
+					continue
+				}
+				snapV := len(board.Vias)
+				board.Vias = append(board.Vias, core.Via{
+					ID:       core.NewID(),
+					Net:      pr.Net,
+					Position: core.NewPoint(core.FromMM(x), core.FromMM(y)),
+					Drill:    core.FromMM(drill),
+					Diameter: core.FromMM(dia),
+				})
+				if !copperClearanceFrom(board, len(board.Traces), commitClearance(board)) {
+					board.Vias = board.Vias[:snapV]
+					continue
+				}
+				added++
+			}
+		}
+	}
+	return added
+}
+
+func pourNeedsViaTie(board *core.Board, pr *core.Pour) bool {
+	if pr == nil || pr.Net == "" {
+		return false
+	}
+	if viaInPour(board, pr) {
+		return false
+	}
+	for _, fp := range board.Footprints {
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net != pr.Net {
+				continue
+			}
+			if pad.Drill != nil {
+				c := core.PadWorldCenter(fp, pad)
+				if pointInPourRegion(board, pr, c.X.ToMM(), c.Y.ToMM()) {
+					return false
+				}
+				continue
+			}
+			if pad.Layer.Index != pr.Layer.Index {
+				return true
+			}
+		}
+	}
+	for _, t := range board.Traces {
+		if t.Net == pr.Net && t.Layer.Index != pr.Layer.Index {
+			return true
+		}
+	}
+	return false
+}
+
+func viaInPour(board *core.Board, pr *core.Pour) bool {
+	for _, v := range board.Vias {
+		if v.Net != pr.Net {
+			continue
+		}
+		if pointInPourRegion(board, pr, v.Position.X.ToMM(), v.Position.Y.ToMM()) {
+			return true
+		}
+	}
+	return false
+}
+
+func viaNear(board *core.Board, x, y, rMM float64) bool {
+	r2 := rMM * rMM
+	for _, v := range board.Vias {
+		dx := v.Position.X.ToMM() - x
+		dy := v.Position.Y.ToMM() - y
+		if dx*dx+dy*dy <= r2 {
+			return true
+		}
+	}
+	return false
+}
+
+func pourBoundsMM(board *core.Board, pr *core.Pour) (xmin, ymin, xmax, ymax float64) {
+	if len(pr.Polygon) >= 3 {
+		xmin, ymin = pr.Polygon[0].X.ToMM(), pr.Polygon[0].Y.ToMM()
+		xmax, ymax = xmin, ymin
+		for _, p := range pr.Polygon[1:] {
+			x, y := p.X.ToMM(), p.Y.ToMM()
+			if x < xmin {
+				xmin = x
+			}
+			if y < ymin {
+				ymin = y
+			}
+			if x > xmax {
+				xmax = x
+			}
+			if y > ymax {
+				ymax = y
+			}
+		}
+		return
+	}
+	if board.Outline != nil {
+		return board.Outline.Min.X.ToMM(), board.Outline.Min.Y.ToMM(),
+			board.Outline.Max.X.ToMM(), board.Outline.Max.Y.ToMM()
+	}
+	return 0, 0, 0, 0
+}
+
+func pointInPourRegion(board *core.Board, pr *core.Pour, x, y float64) bool {
+	if len(pr.Polygon) >= 3 {
+		return pointInPoly(pr.Polygon, x, y)
+	}
+	if board.Outline == nil {
+		return false
+	}
+	r := *board.Outline
+	inset := 0.3
+	return x >= r.Min.X.ToMM()+inset && x <= r.Max.X.ToMM()-inset &&
+		y >= r.Min.Y.ToMM()+inset && y <= r.Max.Y.ToMM()-inset
+}
+
+func pointInPoly(poly []core.Point, x, y float64) bool {
+	n := len(poly)
+	if n < 3 {
+		return false
+	}
+	inside := false
+	j := n - 1
+	for i := 0; i < n; i++ {
+		xi, yi := poly[i].X.ToMM(), poly[i].Y.ToMM()
+		xj, yj := poly[j].X.ToMM(), poly[j].Y.ToMM()
+		if (yi > y) != (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi+1e-18)+xi {
+			inside = !inside
+		}
+		j = i
+	}
+	return inside
 }
 
 func hasNearbyCopper(board *core.Board, net string, p core.Point, rMM float64) bool {

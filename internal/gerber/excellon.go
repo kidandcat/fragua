@@ -18,7 +18,7 @@ func writeExcellon(board *core.Board, plated bool) string {
 		kind = "PTH"
 	}
 	fmt.Fprintf(&b, "M48\n")
-	fmt.Fprintf(&b, "; pcb %s drills\n", kind)
+	fmt.Fprintf(&b, "; Fragua %s %s drills\n", core.Version, kind)
 	b.WriteString("FMAT,2\n")
 	b.WriteString("METRIC,LZ,000.000\n")
 

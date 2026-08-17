@@ -8,58 +8,138 @@ import (
 	"github.com/mentasystems/fragua/internal/core"
 )
 
-// writeBOM groups footprints by (value, library); references joined by space.
-// Columns: Reference,Value,Footprint,Quantity (matches Rust pcb-gerber).
+// BOM columns an EE / JLCPCB SMT importer expects.
+// Comment is the value; Designator is the joined refs; LCSC Part # is
+// present even when empty (never invented).
+const bomHeader = "Comment,Designator,Footprint,LCSC Part #,Manufacturer,MPN,Quantity"
+
+// CPL / JLC "Coordinate file" columns. Matches the KiCad JLCPCB plugin:
+// Designator,Val,Package,Mid X,Mid Y,Rotation,Layer
+//
+// Convention (documented in README.txt):
+//   - Origin: board lower-left, X right, Y up, millimetres
+//   - Mid X/Y: footprint origin (same as Fragua placement)
+//   - Rotation: degrees counterclockwise
+//   - Bottom-side rotation is (180 − placement) mod 360, matching the
+//     KiCad JLC plugin (jlcpcb-tools / Fabrication Toolkit)
+const posHeader = "Designator,Val,Package,Mid X,Mid Y,Rotation,Layer"
+
+// writeBOM groups footprints by (value, package, lcsc, manufacturer, mpn).
 func writeBOM(board *core.Board) string {
-	type key struct{ value, lib string }
+	type key struct {
+		value, pkg, lcsc, mfr, mpn string
+	}
 	groups := map[key][]string{}
 	for _, fp := range footprintsInOrder(board) {
-		k := key{fp.Value, fp.Library}
+		if fp.Fiducial {
+			continue
+		}
+		k := key{
+			value: fp.Value,
+			pkg:   core.FootprintPackageName(fp),
+			lcsc:  fp.LcscID,
+			mfr:   fp.Manufacturer,
+			mpn:   fp.MPN,
+		}
 		groups[k] = append(groups[k], fp.Reference)
 	}
 	keys := make([]key, 0, len(groups))
 	for k := range groups {
 		keys = append(keys, k)
 	}
-	// BTreeMap order: value then library.
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].value != keys[j].value {
 			return keys[i].value < keys[j].value
 		}
-		return keys[i].lib < keys[j].lib
+		if keys[i].pkg != keys[j].pkg {
+			return keys[i].pkg < keys[j].pkg
+		}
+		if keys[i].lcsc != keys[j].lcsc {
+			return keys[i].lcsc < keys[j].lcsc
+		}
+		return keys[i].mpn < keys[j].mpn
 	})
 
 	var b strings.Builder
-	b.WriteString("Reference,Value,Footprint,Quantity\n")
+	b.WriteString(bomHeader + "\n")
 	for _, k := range keys {
 		refs := append([]string(nil), groups[k]...)
 		sort.Strings(refs)
-		joined := strings.Join(refs, " ")
-		fmt.Fprintf(&b, "%s,%s,%s,%d\n",
-			csvField(joined), csvField(k.value), csvField(k.lib), len(refs))
+		joined := strings.Join(refs, ",")
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%d\n",
+			csvField(k.value),
+			csvField(joined),
+			csvField(k.pkg),
+			csvField(k.lcsc),
+			csvField(k.mfr),
+			csvField(k.mpn),
+			len(refs),
+		)
 	}
 	return b.String()
 }
 
-// writePos emits pick-and-place CSV.
-// Columns: Reference,Value,Footprint,X,Y,Rotation,Side
+// writePos emits a JLC-friendly pick-and-place / coordinate CSV.
 func writePos(board *core.Board) string {
 	var b strings.Builder
-	b.WriteString("Reference,Value,Footprint,X,Y,Rotation,Side\n")
+	b.WriteString(posHeader + "\n")
 	for _, fp := range footprintsInOrder(board) {
-		side := "top"
+		layer := "top"
+		rot := fp.Rotation
 		if !fp.Layer.IsTop() {
-			side = "bottom"
+			layer = "bottom"
+			// KiCad JLCPCB plugin: bottom rotation as seen from the top.
+			rot = 180 - rot
 		}
+		rot = normalizeDeg(rot)
 		fmt.Fprintf(&b, "%s,%s,%s,%.4f,%.4f,%.2f,%s\n",
 			csvField(fp.Reference),
 			csvField(fp.Value),
-			csvField(fp.Library),
+			csvField(core.FootprintPackageName(fp)),
 			fp.Position.X.ToMM(),
 			fp.Position.Y.ToMM(),
-			fp.Rotation,
-			side,
+			rot,
+			layer,
 		)
+	}
+	return b.String()
+}
+
+func normalizeDeg(deg float64) float64 {
+	deg = deg - 360*float64(int(deg/360))
+	if deg < 0 {
+		deg += 360
+	}
+	if deg == 360 {
+		return 0
+	}
+	return deg
+}
+
+// writeNetlist emits a clear net → pads listing for the fab pack.
+func writeNetlist(board *core.Board) string {
+	nets := map[string][]string{}
+	for _, fp := range footprintsInOrder(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net == "" {
+				continue
+			}
+			nets[*pad.Net] = append(nets[*pad.Net], fp.Reference+"."+pad.Number)
+		}
+	}
+	names := make([]string, 0, len(nets))
+	for n := range nets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Fragua netlist (net → pads)\n")
+	b.WriteString("# Units: none (connectivity only)\n")
+	for _, n := range names {
+		refs := append([]string(nil), nets[n]...)
+		sort.Strings(refs)
+		fmt.Fprintf(&b, "%s: %s\n", n, strings.Join(refs, ", "))
 	}
 	return b.String()
 }
