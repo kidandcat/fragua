@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mentasystems/fragua/internal/core"
+	"github.com/mentasystems/fragua/internal/impedance"
 )
 
 // Severity of a violation.
@@ -43,6 +44,8 @@ const (
 	KindUnstitchedPour         Kind = "unstitched_pour"
 	KindHoleToHole             Kind = "hole_to_hole"
 	KindCopperSliver           Kind = "copper_sliver"
+	KindImpedanceMismatch      Kind = "impedance_mismatch"
+	KindTeardropClearance      Kind = "teardrop_clearance"
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -268,6 +271,8 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 	checkCopperSliver(board, pads, minSliver, &rep)
 	checkRoutingInefficient(board, opts, &rep)
 	checkRuleAreasVsFab(board, &rep)
+	checkTeardropClearance(board, pads, resolver, &rep)
+	checkImpedance(board, sch, &rep)
 
 	return rep
 }
@@ -1542,4 +1547,180 @@ func segmentAABBDistance(a, b [2]float64, rect core.Rect) float64 {
 		}
 	}
 	return best
+}
+
+// checkTeardropClearance treats teardrop copper as same-net: it never
+// flags a teardrop against its own pad/via/trace. Other nets still see
+// the extra copper.
+func checkTeardropClearance(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {
+	tears := core.BuildTeardrops(board)
+	if len(tears) == 0 {
+		return
+	}
+	for _, td := range tears {
+		aabb := td.AABB()
+		cx := (aabb.Min.X.ToMM() + aabb.Max.X.ToMM()) / 2
+		cy := (aabb.Min.Y.ToMM() + aabb.Max.Y.ToMM()) / 2
+		for _, pad := range pads {
+			if pad.net != "" && pad.net == td.Net {
+				continue
+			}
+			if !pad.occupiesLayer(td.Layer) {
+				continue
+			}
+			gap := polyRectGapFull(td.Poly, pad.rect)
+			clr := clearanceMM(res, td.Net, pad.net, cx, cy)
+			if gap+0.001 < clr {
+				rep.add(Violation{
+					Kind: KindTeardropClearance, Severity: SeverityError,
+					Message: fmt.Sprintf("teardrop %s – pad %s: %.3f mm < %.3f mm", td.Net, pad.label(), gap, clr),
+					Net:     td.Net, XMM: cx, YMM: cy,
+				})
+			}
+		}
+		for _, tr := range board.Traces {
+			if tr.Net == td.Net || tr.Layer.Index != td.Layer.Index {
+				continue
+			}
+			gap := polySegGap(td.Poly, ptMM(tr.Start), ptMM(tr.End)) - tr.Width.ToMM()/2
+			clr := clearanceMM(res, td.Net, tr.Net, cx, cy)
+			if gap+0.001 < clr {
+				rep.add(Violation{
+					Kind: KindTeardropClearance, Severity: SeverityError,
+					Message: fmt.Sprintf("teardrop %s – trace %s: %.3f mm < %.3f mm", td.Net, tr.Net, gap, clr),
+					Net:     td.Net, XMM: cx, YMM: cy,
+				})
+			}
+		}
+		for _, v := range board.Vias {
+			if v.Net == td.Net {
+				continue
+			}
+			gap := polyCircleGap(td.Poly, ptMM(v.Position), v.Diameter.ToMM()/2)
+			clr := clearanceMM(res, td.Net, v.Net, cx, cy)
+			if gap+0.001 < clr {
+				rep.add(Violation{
+					Kind: KindTeardropClearance, Severity: SeverityError,
+					Message: fmt.Sprintf("teardrop %s – via %s: %.3f mm < %.3f mm", td.Net, v.Net, gap, clr),
+					Net:     td.Net, XMM: cx, YMM: cy,
+				})
+			}
+		}
+	}
+}
+
+func polySegGap(poly []core.Point, a, b [2]float64) float64 {
+	best := math.Inf(1)
+	n := len(poly)
+	for i := 0; i < n; i++ {
+		p0, p1 := ptMM(poly[i]), ptMM(poly[(i+1)%n])
+		d := segmentSegmentDistance(p0, p1, a, b)
+		if d < best {
+			best = d
+		}
+	}
+	if pointInPolygonMM(poly, a[0], a[1]) || pointInPolygonMM(poly, b[0], b[1]) {
+		return 0
+	}
+	return best
+}
+
+func polyCircleGap(poly []core.Point, c [2]float64, radius float64) float64 {
+	if pointInPolygonMM(poly, c[0], c[1]) {
+		return -radius
+	}
+	best := math.Inf(1)
+	n := len(poly)
+	for i := 0; i < n; i++ {
+		d := pointSegmentDistance(c, ptMM(poly[i]), ptMM(poly[(i+1)%n]))
+		if d < best {
+			best = d
+		}
+	}
+	return best - radius
+}
+
+func polyRectGapFull(poly []core.Point, r core.Rect) float64 {
+	if len(poly) < 3 {
+		return math.Inf(1)
+	}
+	if pointInPolygonMM(poly, r.Min.X.ToMM(), r.Min.Y.ToMM()) ||
+		pointInPolygonMM(poly, r.Max.X.ToMM(), r.Min.Y.ToMM()) ||
+		pointInPolygonMM(poly, r.Max.X.ToMM(), r.Max.Y.ToMM()) ||
+		pointInPolygonMM(poly, r.Min.X.ToMM(), r.Max.Y.ToMM()) {
+		return 0
+	}
+	for _, p := range poly {
+		if r.ContainsPoint(p) {
+			return 0
+		}
+	}
+	best := math.Inf(1)
+	n := len(poly)
+	for i := 0; i < n; i++ {
+		d := segmentAABBDistance(ptMM(poly[i]), ptMM(poly[(i+1)%n]), r)
+		if d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+func checkImpedance(board *core.Board, sch *core.Schematic, rep *Report) {
+	if sch == nil {
+		return
+	}
+	seen := map[string]bool{}
+	consider := func(net string) {
+		if net == "" || seen[net] {
+			return
+		}
+		clsName := ""
+		if n := sch.Nets[net]; n != nil && n.Class != "" {
+			clsName = n.Class
+		}
+		if clsName == "" && sch.NetToClass != nil {
+			clsName = sch.NetToClass[net]
+		}
+		if clsName == "" {
+			return
+		}
+		cls := sch.NetClasses[clsName]
+		if cls == nil || cls.ImpedanceOhms <= 0 {
+			return
+		}
+		seen[net] = true
+		r, err := impedance.AnalyzeNet(board, sch, net)
+		if err != nil {
+			rep.add(Violation{
+				Kind: KindImpedanceMismatch, Severity: SeverityWarning,
+				Message: err.Error(),
+				Net:     net,
+			})
+			return
+		}
+		if r.WidthMM <= 0 || r.RequiredWMM <= 0 {
+			return
+		}
+		pct := math.Abs(r.WidthMM-r.RequiredWMM) / r.RequiredWMM
+		if pct > 0.10 {
+			rep.add(Violation{
+				Kind: KindImpedanceMismatch, Severity: SeverityWarning,
+				Message: fmt.Sprintf("net %s width %.3f mm vs %.3f mm for %.0f Ω (%+.0f%%)",
+					net, r.WidthMM, r.RequiredWMM, r.TargetOhms, 100*(r.WidthMM-r.RequiredWMM)/r.RequiredWMM),
+				Net: net,
+			})
+		}
+	}
+	for name := range sch.Nets {
+		consider(name)
+	}
+	for name := range sch.NetToClass {
+		consider(name)
+	}
+	if board != nil {
+		for i := range board.Traces {
+			consider(board.Traces[i].Net)
+		}
+	}
 }

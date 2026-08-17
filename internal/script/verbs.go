@@ -2,10 +2,12 @@ package script
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/mentasystems/fragua/internal/core"
+	"github.com/mentasystems/fragua/internal/impedance"
 	"github.com/mentasystems/fragua/internal/placer"
 	"github.com/mentasystems/fragua/internal/router"
 )
@@ -745,6 +747,7 @@ func cmdNetClass(p *core.Project, args string) (string, error) {
 	}
 	name := fields[0]
 	cls := core.NetClass{Name: name}
+	widthSet := false
 	for _, t := range fields[1:] {
 		if strings.HasPrefix(t, "clearance=") {
 			v, _ := strconv.ParseFloat(strings.TrimPrefix(t, "clearance="), 64)
@@ -753,6 +756,7 @@ func cmdNetClass(p *core.Project, args string) (string, error) {
 		if strings.HasPrefix(t, "width=") {
 			v, _ := strconv.ParseFloat(strings.TrimPrefix(t, "width="), 64)
 			cls.TraceWidthMM = v
+			widthSet = true
 		}
 		if strings.HasPrefix(t, "impedance=") {
 			v, _ := strconv.ParseFloat(strings.TrimPrefix(t, "impedance="), 64)
@@ -762,13 +766,97 @@ func cmdNetClass(p *core.Project, args string) (string, error) {
 			cls.DiffPair = strings.TrimPrefix(t, "diff=")
 		}
 	}
+	var zNote string
+	if cls.ImpedanceOhms > 0 {
+		p.RLock()
+		stack := p.Board().StackupOrDefault()
+		p.RUnlock()
+		params, err := impedance.LineParams(stack, 0)
+		if err != nil {
+			zNote = fmt.Sprintf(" impedance=%.0f Ω (width not computed: %s)", cls.ImpedanceOhms, err)
+		} else {
+			w, err := impedance.WidthForZ(params, cls.ImpedanceOhms)
+			if err != nil {
+				zNote = fmt.Sprintf(" impedance=%.0f Ω (width not computed: %s)", cls.ImpedanceOhms, err)
+			} else {
+				if !widthSet {
+					cls.TraceWidthMM = w
+				}
+				zNote = fmt.Sprintf(" impedance=%.0f Ω → %s width %.3f mm (H=%.3f mm Er=%.2f)",
+					cls.ImpedanceOhms, params.Kind, w, params.HMM, params.Er)
+			}
+		}
+	}
 	p.MutateSchematic(func(s *core.Schematic) {
 		if s.NetClasses == nil {
 			s.NetClasses = map[string]*core.NetClass{}
 		}
 		s.NetClasses[name] = &cls
 	})
-	return fmt.Sprintf("class %s", name), nil
+	return fmt.Sprintf("class %s%s", name, zNote), nil
+}
+
+func cmdTeardrop(p *core.Project, args string) (string, error) {
+	a := strings.ToLower(strings.TrimSpace(args))
+	switch a {
+	case "on", "true", "1":
+		p.MutateBoard(func(b *core.Board) { b.Teardrops = true })
+		return "teardrop on", nil
+	case "off", "false", "0", "":
+		p.MutateBoard(func(b *core.Board) { b.Teardrops = false })
+		return "teardrop off", nil
+	default:
+		return "", fmt.Errorf("teardrop on|off")
+	}
+}
+
+func cmdImpedance(p *core.Project, args string) (string, error) {
+	fields := strings.Fields(args)
+	p.RLock()
+	defer p.RUnlock()
+	b := p.Board()
+	sch := p.Schematic()
+	if len(fields) == 0 {
+		var nets []string
+		seen := map[string]bool{}
+		for name, n := range sch.Nets {
+			if n != nil && (n.Class != "" || sch.NetToClass[name] != "") {
+				nets = append(nets, name)
+				seen[name] = true
+			}
+		}
+		for name := range sch.NetToClass {
+			if !seen[name] {
+				nets = append(nets, name)
+			}
+		}
+		for _, t := range b.Traces {
+			if !seen[t.Net] {
+				nets = append(nets, t.Net)
+				seen[t.Net] = true
+			}
+		}
+		if len(nets) == 0 {
+			return "", fmt.Errorf("impedance NET  (no class-assigned or routed nets)")
+		}
+		sort.Strings(nets)
+		var lines []string
+		for _, n := range nets {
+			r, err := impedance.AnalyzeNet(b, sch, n)
+			if err != nil {
+				lines = append(lines, n+": "+err.Error())
+				continue
+			}
+			lines = append(lines, r.Format(n))
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+	net := fields[0]
+	r, err := impedance.AnalyzeNet(b, sch, net)
+	if err != nil {
+		return "", err
+	}
+	return r.Format(net), nil
 }
 
 // tiny xorshift for place-legal (not the placer RNG — keep packages decoupled).

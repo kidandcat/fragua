@@ -163,7 +163,7 @@ func TestViaBridgesLayersInConnectivity(t *testing.T) {
 		Layer:    top,
 		Pads: []core.Pad{{
 			Number: "1", Offset: core.Origin,
-			Size: [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Size:  [2]core.Length{core.FromMM(1), core.FromMM(1)},
 			Layer: top, Net: netPtr("SIG"),
 		}},
 	})
@@ -173,7 +173,7 @@ func TestViaBridgesLayersInConnectivity(t *testing.T) {
 		Layer:    bot,
 		Pads: []core.Pad{{
 			Number: "1", Offset: core.Origin,
-			Size: [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Size:  [2]core.Length{core.FromMM(1), core.FromMM(1)},
 			Layer: bot, Net: netPtr("SIG"),
 		}},
 	})
@@ -192,7 +192,7 @@ func TestViaBridgesLayersInConnectivity(t *testing.T) {
 		Width: core.FromMM(0.25), Net: "SIG",
 	})
 	b.Vias = append(b.Vias, core.Via{
-		ID: core.NewID(),
+		ID:       core.NewID(),
 		Position: core.NewPoint(core.FromMM(15), core.FromMM(10)),
 		Drill:    core.FromMM(0.3),
 		Diameter: core.FromMM(0.6),
@@ -398,5 +398,38 @@ func TestHoleToHoleTooClose(t *testing.T) {
 	rep := Check(b, nil, DefaultOptions())
 	if countKind(rep, KindHoleToHole) == 0 {
 		t.Fatalf("expected hole_to_hole, got %+v", rep.Violations)
+	}
+}
+
+func TestTeardropSameNetNoClearanceHit(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.Teardrops = true
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "VCC")}))
+	addTrace(b, "VCC", 10.0, 10.0, 25.0, 10.0, 0.25)
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindTeardropClearance) != 0 {
+		t.Fatalf("same-net teardrop must not self-clearance: %+v", rep.Violations)
+	}
+	if countKind(rep, KindTracePadClearance) != 0 {
+		t.Fatalf("same-net pad/trace: %+v", rep.Violations)
+	}
+	if countKind(rep, KindUnconnectedPad) != 0 {
+		t.Fatalf("teardrop board should stay connected: %+v", rep.Violations)
+	}
+}
+
+func TestImpedanceMismatchWarning(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	addTrace(b, "USB", 5.0, 10.0, 20.0, 10.0, 0.25) // far from 50 Ω ~3 mm
+	sch := core.NewSchematic()
+	sch.Nets["USB"] = &core.Net{Name: "USB", Class: "USB50"}
+	sch.NetClasses["USB50"] = &core.NetClass{Name: "USB50", ImpedanceOhms: 50}
+	rep := Check(b, sch, DefaultOptions())
+	if countKind(rep, KindImpedanceMismatch) == 0 {
+		t.Fatalf("expected impedance warning for 0.25 mm vs ~3 mm: %+v", rep.Violations)
 	}
 }

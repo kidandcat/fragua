@@ -264,7 +264,7 @@ func TestMaxSecondsRespected(t *testing.T) {
 
 func TestParseOptions(t *testing.T) {
 	o := DefaultOptions()
-	o = ParseOptions(o, "max_seconds=1.5 cell=0.3 via_cost=10 clearance=0.15 organic=false fine_escape=true")
+	o = ParseOptions(o, "max_seconds=1.5 cell=0.3 via_cost=10 clearance=0.15 organic=false fine_escape=true teardrop=true")
 	if o.MaxSeconds != 1.5 {
 		t.Fatalf("max_seconds: got %v", o.MaxSeconds)
 	}
@@ -282,6 +282,9 @@ func TestParseOptions(t *testing.T) {
 	}
 	if !o.FineEscape {
 		t.Fatal("fine_escape should be true")
+	}
+	if !o.Teardrops || !o.TeardropsSet {
+		t.Fatal("teardrop=true should set Teardrops")
 	}
 }
 

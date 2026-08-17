@@ -91,6 +91,9 @@ func WriteFabPack(board *core.Board, name, outDir string) ([]string, error) {
 	if err := write(stem+"-netlist.txt", writeNetlist(board)); err != nil {
 		return paths, err
 	}
+	if err := write(stem+"-ipc-d-356.ipc", writeIPCD356(board, stem)); err != nil {
+		return paths, err
+	}
 	if err := write("README.txt", writeREADME(board, stem)); err != nil {
 		return paths, err
 	}
@@ -144,7 +147,8 @@ func writeREADME(board *core.Board, stem string) string {
 	fmt.Fprintf(&b, "  %s-NPTH.drl      Non-plated holes (mounting)\n", stem)
 	fmt.Fprintf(&b, "  %s-bom.csv       BOM (Comment, Designator, Footprint, LCSC Part #, Manufacturer, MPN, Quantity)\n", stem)
 	fmt.Fprintf(&b, "  %s-pos.csv       Pick-and-place / JLC coordinate file\n", stem)
-	fmt.Fprintf(&b, "  %s-netlist.txt   Net → pads (simple netlist; not IPC-D-356)\n", stem)
+	fmt.Fprintf(&b, "  %s-netlist.txt   Net → pads (simple netlist)\n", stem)
+	fmt.Fprintf(&b, "  %s-ipc-d-356.ipc IPC-D-356A electrical test netlist (CUST 0 = 0.0001 in)\n", stem)
 	fmt.Fprintf(&b, "\nFab rules (%s):\n", fab.Preset)
 	fmt.Fprintf(&b, "  min trace/space: %.3f mm\n", fab.MinTraceWidthMM)
 	fmt.Fprintf(&b, "  min via drill: %.3f mm\n", fab.MinViaDrillMM)

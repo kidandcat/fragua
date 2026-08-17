@@ -31,7 +31,7 @@ Script verbs (line-oriented, agent-first):
   lib KEY … + indented pad NUMBER X Y W H
   sym REF KIND … + indented pin for generic_ic
   net NAME REF.PIN …
-  class NAME [clearance=N] [width=N]
+  class NAME [clearance=N] [width=N] [impedance=Z]
   net-class NET CLASS
   palette REF KEY | palette list
   list-lib
@@ -42,7 +42,7 @@ Script verbs (line-oriented, agent-first):
   move REF X Y | rotate REF DEG
   unplace REF | delete REF | clear-board
   auto-place [REF...] [seed=N] [iters=N]
-  route [max_seconds=N] [organic=true]
+  route [max_seconds=N] [organic=true] [teardrop=true]
   clear-route | clear-net NET | delete-trace ID | delete-via ID
   trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
   via NET x y [drill=0.3] [dia=0.6]
@@ -52,16 +52,17 @@ Script verbs (line-oriented, agent-first):
   stitch                      (grid + pad vias that tie pour islands)
   nc REF.PIN [REF.PIN...]     (mark unused MCU pins; no floating_pin)
   fiducial X Y [ref=FID1]
-  diff NETA NETB              (diff-pair data; no field solver)
-  class NAME [clearance=N] [width=N] [impedance=Z]
+  diff NETA NETB              (diff-pair data; single-ended Z only)
+  impedance [NET]             (closed-form microstrip/stripline; not FEM)
+  teardrop on|off             (copper fillets at pad/via junctions)
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
   fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
   escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
-  layer list|add|remove|rename
+  layer list|add|remove|rename|dielectric
   drc / erc
   compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [aspect=keep|free]
-  pack [fab=jlcpcb] [out=DIR] | export DIR   (fails on ERC errors)
+  pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)
   screenshot PATH
   save [PATH] | view | status | reset | help
 

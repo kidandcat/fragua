@@ -356,6 +356,10 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return cmdReset(p, args)
 	case "class", "net-class", "net_class":
 		return cmdNetClass(p, args)
+	case "teardrop", "teardrops":
+		return cmdTeardrop(p, args)
+	case "impedance":
+		return cmdImpedance(p, args)
 	default:
 		return "", fmt.Errorf("unknown verb %q — see GET /help", tool)
 	}
@@ -506,6 +510,10 @@ func packBoard(p *core.Project, args string) (string, error) {
 			provider = strings.TrimPrefix(f, "fab=")
 		} else if strings.HasPrefix(f, "out=") {
 			out = strings.TrimPrefix(f, "out=")
+		} else if strings.HasPrefix(f, "teardrop=") || strings.HasPrefix(f, "teardrops=") {
+			v := strings.TrimPrefix(strings.TrimPrefix(f, "teardrops="), "teardrop=")
+			on := v == "true" || v == "1" || v == "on"
+			p.MutateBoard(func(b *core.Board) { b.Teardrops = on })
 		} else if !strings.Contains(f, "=") && out == "" {
 			out = f
 		}
@@ -1173,7 +1181,7 @@ func setFabRules(p *core.Project, args string) (string, error) {
 		MinAnnularRingMM: rules.MinAnnularRingMM, MinViaDiameterMM: rules.MinViaDiameterMM,
 		MinEdgeClearanceMM: rules.MinEdgeClearanceMM,
 		MinHoleToHoleMM:    rules.MinHoleToHoleMM, MinSliverMM: rules.MinSliverMM,
-		MaxBoardSizeMM:     maxSz,
+		MaxBoardSizeMM: maxSz,
 	})
 	return fmt.Sprintf(
 		"fab rules `%s`: trace %.3f mm, space %.3f mm, via drill %.3f mm, via dia %.3f mm",
@@ -1241,14 +1249,21 @@ func layerCmd(p *core.Project, args string) (string, error) {
 			return "", fmt.Errorf("layer add: unknown kind %q", fields[2])
 		}
 		thickness := 0.035
+		dielH, dielEr := 0.0, 0.0
 		for _, t := range fields[3:] {
 			if strings.HasPrefix(t, "thickness=") {
 				fmt.Sscanf(t, "thickness=%f", &thickness)
 			}
+			if strings.HasPrefix(t, "dielectric=") {
+				fmt.Sscanf(t, "dielectric=%f", &dielH)
+			}
+			if strings.HasPrefix(t, "er=") {
+				fmt.Sscanf(t, "er=%f", &dielEr)
+			}
 		}
 		p.MutateBoard(func(b *core.Board) {
 			s := b.StackupOrDefault()
-			slab := core.Dielectric{ThicknessMM: 1.5, Er: 4.5}
+			slab := core.Dielectric{ThicknessMM: 1.5, Er: 4.6}
 			if len(s.Dielectrics) > 0 {
 				var sumT, sumE float64
 				for _, d := range s.Dielectrics {
@@ -1257,6 +1272,15 @@ func layerCmd(p *core.Project, args string) (string, error) {
 				}
 				n := float64(len(s.Dielectrics))
 				slab = core.Dielectric{ThicknessMM: sumT / n, Er: sumE / n}
+				if slab.Er <= 0 {
+					slab.Er = 4.6
+				}
+			}
+			if dielH > 0 {
+				slab.ThicknessMM = dielH
+			}
+			if dielEr > 0 {
+				slab.Er = dielEr
 			}
 			oz := thickness / 0.035
 			if oz <= 0 {
@@ -1348,8 +1372,47 @@ func layerCmd(p *core.Project, args string) (string, error) {
 	case "4", "4l", "4layer":
 		p.MutateBoard(func(b *core.Board) { b.Apply4Layer() })
 		return "stackup: 4-layer (F.Cu / In1.Cu / In2.Cu / B.Cu)", nil
+	case "dielectric":
+		// layer dielectric [i] [thickness=N] [er=N]
+		idx := 0
+		th, er := 0.0, 0.0
+		for _, t := range fields[1:] {
+			if strings.HasPrefix(t, "thickness=") {
+				fmt.Sscanf(t, "thickness=%f", &th)
+				continue
+			}
+			if strings.HasPrefix(t, "er=") {
+				fmt.Sscanf(t, "er=%f", &er)
+				continue
+			}
+			fmt.Sscanf(t, "%d", &idx)
+		}
+		var err error
+		p.MutateBoard(func(b *core.Board) {
+			s := b.StackupOrDefault()
+			if idx < 0 || idx >= len(s.Dielectrics) {
+				err = fmt.Errorf("layer dielectric: index %d out of range (%d slabs)", idx, len(s.Dielectrics))
+				return
+			}
+			if th > 0 {
+				s.Dielectrics[idx].ThicknessMM = th
+			}
+			if er > 0 {
+				s.Dielectrics[idx].Er = er
+			}
+			if s.Dielectrics[idx].ThicknessMM <= 0 || s.Dielectrics[idx].Er <= 0 {
+				err = fmt.Errorf("layer dielectric: thickness and Er must both be set (got H=%.3f Er=%.2f)",
+					s.Dielectrics[idx].ThicknessMM, s.Dielectrics[idx].Er)
+				return
+			}
+			b.Stackup = &s
+		})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("dielectric[%d] updated", idx), nil
 	default:
-		return "", fmt.Errorf("layer: unknown subcommand `%s` (list|add|remove|rename|4layer)", fields[0])
+		return "", fmt.Errorf("layer: unknown subcommand `%s` (list|add|remove|rename|dielectric|4layer)", fields[0])
 	}
 }
 

@@ -28,15 +28,15 @@ func TestFabPackFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 15 {
-		t.Fatalf("files: %d want 15", len(paths))
+	if len(paths) != 16 {
+		t.Fatalf("files: %d want 16", len(paths))
 	}
 	want := []string{
 		"demo-F_Cu.gbr", "demo-B_Cu.gbr", "demo-F_Mask.gbr", "demo-B_Mask.gbr",
 		"demo-F_SilkS.gbr", "demo-B_SilkS.gbr", "demo-F_Paste.gbr", "demo-B_Paste.gbr",
 		"demo-Edge_Cuts.gbr",
 		"demo-PTH.drl", "demo-NPTH.drl", "demo-bom.csv", "demo-pos.csv",
-		"demo-netlist.txt", "README.txt",
+		"demo-netlist.txt", "demo-ipc-d-356.ipc", "README.txt",
 	}
 	for i, p := range paths {
 		base := filepath.Base(p)
@@ -466,7 +466,7 @@ func TestBOMHasLCSCColumnNoLibraryPrefix(t *testing.T) {
 	b.AddFootprint(&core.Footprint{
 		ID: core.NewID(), Reference: "C2", Value: "100n", Library: "library:c_0603",
 		Position: core.NewPoint(core.FromMM(8), core.FromMM(4)),
-		Layer: core.LayerTop,
+		Layer:    core.LayerTop,
 		Pads: []core.Pad{
 			{Number: "1", Offset: core.NewPoint(core.FromMM(-0.8), 0), Size: [2]core.Length{core.FromMM(0.8), core.FromMM(0.9)}, Layer: core.LayerTop},
 		},
@@ -558,5 +558,127 @@ func TestNetlistAndFiducial(t *testing.T) {
 	pos, _ := os.ReadFile(filepath.Join(dir, "nl-pos.csv"))
 	if !strings.Contains(string(pos), "FID1") {
 		t.Fatalf("fiducial should be in CPL:\n%s", pos)
+	}
+}
+
+func padTraceBoard(teardrops bool) *core.Board {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	b.Teardrops = teardrops
+	n := "SIG"
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1", Value: "1k", Library: "R_0805",
+		Position: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		Layer:    core.LayerTop,
+		Pads: []core.Pad{{
+			Number: "1", Size: [2]core.Length{core.FromMM(1.2), core.FromMM(1.2)},
+			Layer: core.LayerTop, Net: &n,
+		}},
+	})
+	b.Traces = []core.Trace{{
+		ID: core.NewID(), Layer: core.LayerTop, Net: n,
+		Start: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		End:   core.NewPoint(core.FromMM(25), core.FromMM(10)),
+		Width: core.FromMM(0.25),
+	}}
+	return b
+}
+
+func TestTeardropsGrowCopperInGerber(t *testing.T) {
+	offDir := t.TempDir()
+	onDir := t.TempDir()
+	if _, err := WriteFabPack(padTraceBoard(false), "off", offDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteFabPack(padTraceBoard(true), "on", onDir); err != nil {
+		t.Fatal(err)
+	}
+	offCu, err := os.ReadFile(filepath.Join(offDir, "off-F_Cu.gbr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	onCu, err := os.ReadFile(filepath.Join(onDir, "on-F_Cu.gbr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(offCu), "G36*") {
+		t.Fatalf("teardrops off must not emit a copper region:\n%s", offCu)
+	}
+	if !strings.Contains(string(onCu), "G36*") {
+		t.Fatal("teardrops on must emit a G36 copper region at the joint")
+	}
+	// Flare vertices sit off the pad centre / trace centreline (Y ≠ 10 mm).
+	if !strings.Contains(string(onCu), "Y10600000") && !strings.Contains(string(onCu), "Y9400000") {
+		t.Fatalf("expected teardrop vertices at pad half-width (Y=10.6 / 9.4 mm):\n%s", onCu)
+	}
+	if strings.Contains(string(offCu), "Y10600000") {
+		t.Fatal("off gerber must not contain teardrop vertices")
+	}
+}
+
+func TestIPCD356InPack(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(20)))
+	b.Outline = &o
+	n := "GND"
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1", Value: "10k", Library: "r_0603",
+		Position: core.NewPoint(core.FromMM(5), core.FromMM(5)),
+		Layer:    core.LayerTop,
+		Pads: []core.Pad{{
+			Number: "1", Offset: core.NewPoint(core.FromMM(-0.8), 0),
+			Size:  [2]core.Length{core.FromMM(0.8), core.FromMM(0.9)},
+			Layer: core.LayerTop, Net: &n,
+		}},
+	})
+	dir := t.TempDir()
+	if _, err := WriteFabPack(b, "ipc", dir); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "ipc-ipc-d-356.ipc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"C  IPC-D-356A",
+		"P  JOB   ipc",
+		"P  VER   IPC-D-356A",
+		"P  CODE 00",
+		"P  UNITS CUST 0",
+		"999",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("IPC-D-356A missing %q:\n%s", want, s)
+		}
+	}
+	// 327 SMD record: net GND, ref R1, pin 1.
+	var rec string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "327") {
+			rec = line
+			break
+		}
+	}
+	if rec == "" {
+		t.Fatalf("no 327 SMD record:\n%s", s)
+	}
+	if !strings.Contains(rec[:17], "GND") {
+		t.Fatalf("327 net name: %q", rec)
+	}
+	if !strings.Contains(rec, "R1") || !strings.Contains(rec, "-1") {
+		t.Fatalf("327 ref/pin: %q", rec)
+	}
+	if !strings.Contains(rec, "A01") {
+		t.Fatalf("327 access (top SMD=01): %q", rec)
+	}
+	// Pad centre is (4.2, 5.0) mm → 1654 / 1969 decimils.
+	if !strings.Contains(rec, "X+001654") || !strings.Contains(rec, "Y+001969") {
+		t.Fatalf("327 coords (want X+001654 Y+001969 for 4.2,5.0 mm): %q", rec)
+	}
+	readme, _ := os.ReadFile(filepath.Join(dir, "README.txt"))
+	if !strings.Contains(string(readme), "ipc-d-356.ipc") {
+		t.Fatalf("README missing IPC-D-356A file: %s", readme)
 	}
 }

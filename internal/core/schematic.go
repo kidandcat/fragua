@@ -137,25 +137,26 @@ type Net struct {
 }
 
 // NetClass holds physical rules for a class of nets.
-// ImpedanceOhms is stored for later; DRC does not field-solve it.
+// ImpedanceOhms is a closed-form target (microstrip / stripline);
+// there is no 2D field solver.
 type NetClass struct {
-	Name               string  `json:"name"`
-	TraceWidthMM       float64 `json:"trace_width_mm,omitempty"`
-	ClearanceMM        float64 `json:"clearance_mm,omitempty"`
-	LengthToleranceMM  float64 `json:"length_tolerance_mm,omitempty"`
-	ViaDrillMM         float64 `json:"via_drill_mm,omitempty"`
-	ViaDiameterMM      float64 `json:"via_diameter_mm,omitempty"`
-	ImpedanceOhms      float64 `json:"impedance_ohms,omitempty"`
-	DiffPair           string  `json:"diff_pair,omitempty"`
+	Name              string  `json:"name"`
+	TraceWidthMM      float64 `json:"trace_width_mm,omitempty"`
+	ClearanceMM       float64 `json:"clearance_mm,omitempty"`
+	LengthToleranceMM float64 `json:"length_tolerance_mm,omitempty"`
+	ViaDrillMM        float64 `json:"via_drill_mm,omitempty"`
+	ViaDiameterMM     float64 `json:"via_diameter_mm,omitempty"`
+	ImpedanceOhms     float64 `json:"impedance_ohms,omitempty"`
+	DiffPair          string  `json:"diff_pair,omitempty"`
 }
 
 // Schematic is the netlist + layout hints.
 type Schematic struct {
-	Symbols      map[string]*Symbol   `json:"symbols"`
-	SymbolOrder  []string             `json:"symbol_order"`
-	Nets         map[string]*Net      `json:"nets"`
-	NetClasses   map[string]*NetClass `json:"net_classes"`
-	NetToClass   map[string]string    `json:"net_to_class"`
+	Symbols     map[string]*Symbol   `json:"symbols"`
+	SymbolOrder []string             `json:"symbol_order"`
+	Nets        map[string]*Net      `json:"nets"`
+	NetClasses  map[string]*NetClass `json:"net_classes"`
+	NetToClass  map[string]string    `json:"net_to_class"`
 }
 
 // NewSchematic returns an empty schematic.

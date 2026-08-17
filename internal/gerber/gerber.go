@@ -358,6 +358,16 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 		}
 	}
 
+	var tearVoids [][]core.Point
+	if hasPour {
+		for _, td := range core.BuildTeardrops(board) {
+			if td.Layer.Index != layer.Index || pourNets[td.Net] {
+				continue
+			}
+			tearVoids = append(tearVoids, expandPolyMM(td.Poly, pourClearance.ToMM()))
+		}
+	}
+
 	var flashes []flashOp
 	var draws []drawOp
 	for _, fp := range footprintsInOrder(board) {
@@ -388,6 +398,13 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 		flashes = append(flashes, flashOp{id, v.Position})
 	}
 
+	var tearOnLayer []core.Teardrop
+	for _, td := range core.BuildTeardrops(board) {
+		if td.Layer.Index == layer.Index {
+			tearOnLayer = append(tearOnLayer, td)
+		}
+	}
+
 	b.WriteString(writeApertures(&table))
 
 	if hasPour && board.Outline != nil {
@@ -412,6 +429,14 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 			}
 			b.WriteString(moveTo(d.a))
 			b.WriteString(lineTo(d.b))
+		}
+		for _, poly := range tearVoids {
+			if len(poly) < 3 {
+				continue
+			}
+			b.WriteString("G36*\n")
+			writeClosedPoly(&b, poly)
+			b.WriteString("G37*\n")
 		}
 		b.WriteString("%LPD*%\n")
 		cur = 0
@@ -441,8 +466,50 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 		b.WriteString(moveTo(d.a))
 		b.WriteString(lineTo(d.b))
 	}
+	for _, td := range tearOnLayer {
+		if len(td.Poly) < 3 {
+			continue
+		}
+		b.WriteString("G36*\n")
+		writeClosedPoly(&b, td.Poly)
+		b.WriteString("G37*\n")
+	}
 	b.WriteString(footer())
 	return b.String()
+}
+
+// expandPolyMM grows a convex polygon by marginMM along vertex normals.
+func expandPolyMM(poly []core.Point, marginMM float64) []core.Point {
+	n := len(poly)
+	if n < 3 || marginMM == 0 {
+		return poly
+	}
+	out := make([]core.Point, n)
+	for i := 0; i < n; i++ {
+		prev := poly[(i+n-1)%n]
+		cur := poly[i]
+		next := poly[(i+1)%n]
+		ax := cur.X.ToMM() - prev.X.ToMM()
+		ay := cur.Y.ToMM() - prev.Y.ToMM()
+		bx := next.X.ToMM() - cur.X.ToMM()
+		by := next.Y.ToMM() - cur.Y.ToMM()
+		al := math.Hypot(ax, ay)
+		bl := math.Hypot(bx, by)
+		if al < 1e-12 || bl < 1e-12 {
+			out[i] = cur
+			continue
+		}
+		// Outward normals (poly is CCW or CW — average both).
+		nx := -ay/al + -by/bl
+		ny := ax/al + bx/bl
+		nl := math.Hypot(nx, ny)
+		if nl < 1e-12 {
+			out[i] = cur
+			continue
+		}
+		out[i] = core.NewPoint(core.FromMM(cur.X.ToMM()+marginMM*nx/nl), core.FromMM(cur.Y.ToMM()+marginMM*ny/nl))
+	}
+	return out
 }
 
 // --- mask -------------------------------------------------------------------

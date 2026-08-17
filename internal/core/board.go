@@ -212,6 +212,9 @@ type Board struct {
 	MountHoles []MountHole   `json:"mount_holes,omitempty"`
 	Holes      []MountHole   `json:"holes,omitempty"` // legacy alias
 	Stackup    *LayerStackup `json:"stackup,omitempty"`
+	// Teardrops, when true, adds tapered copper at trace↔pad and
+	// trace↔via junctions (gerber G36 regions). Off by default.
+	Teardrops bool `json:"teardrops,omitempty"`
 }
 
 // NewBoard returns an empty 2-layer board with a persisted default stackup.
