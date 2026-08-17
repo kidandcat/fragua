@@ -254,3 +254,100 @@ func TestMultiSegmentRouteConnectsPads(t *testing.T) {
 		t.Fatalf("pads must be touched, UnconnectedPad=%d: %+v", n, rep.Violations)
 	}
 }
+
+func TestViaTooCloseToForeignPad(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// 1×1.2 pad at (10,10); via 0.6 dia at x=10.9 → gap 0.10 < 0.20 clearance.
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "A")}))
+	b.Vias = append(b.Vias, core.Via{
+		ID:       core.NewID(),
+		Position: core.NewPoint(core.FromMM(10.9), core.FromMM(10.0)),
+		Drill:    core.FromMM(0.3),
+		Diameter: core.FromMM(0.6),
+		Net:      "B",
+	})
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindViaPadClearance) == 0 {
+		t.Fatalf("expected via-pad clearance, got %+v", rep.Violations)
+	}
+}
+
+func TestViaSameNetMayTouchPad(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "A")}))
+	b.Vias = append(b.Vias, core.Via{
+		ID:       core.NewID(),
+		Position: core.NewPoint(core.FromMM(11.0), core.FromMM(10.0)),
+		Drill:    core.FromMM(0.3),
+		Diameter: core.FromMM(0.6),
+		Net:      "A",
+	})
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindViaPadClearance) != 0 {
+		t.Fatalf("same-net via must not flag via-pad: %+v", rep.Violations)
+	}
+}
+
+func TestAnnularRingTooSmall(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// (0.45-0.30)/2 = 0.075 < 0.15
+	b.Vias = append(b.Vias, core.Via{
+		ID:       core.NewID(),
+		Position: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		Drill:    core.FromMM(0.3),
+		Diameter: core.FromMM(0.45),
+		Net:      "GND",
+	})
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindAnnularRing) == 0 {
+		t.Fatalf("expected annular_ring, got %+v", rep.Violations)
+	}
+}
+
+func TestCourtyardOverlap(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// Two 1×1.2 pads whose courtyards (pad + 0.25 mm) overlap.
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "A")}))
+	b.AddFootprint(fp("R2", 11.2, 10.0, []core.Pad{pad("1", 0, 0, "B")}))
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindCourtyardOverlap) == 0 {
+		t.Fatalf("expected courtyard overlap, got %+v", rep.Violations)
+	}
+}
+
+func TestPourCoversPadOnlyWhenInsideIsland(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// Pad near the edge, inside outline but outside the 0.3 mm pour inset
+	// (pad center at 0.2, 10) — pour must NOT claim coverage.
+	b.AddFootprint(fp("R1", 0.2, 10.0, []core.Pad{pad("1", 0, 0, "GND")}))
+	b.Pours = []core.Pour{{Net: "GND", Layer: core.LayerTop}}
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindUnconnectedPad) == 0 {
+		t.Fatalf("pad outside pour island must stay unconnected, got %+v", rep.Violations)
+	}
+	// Pad well inside the board is covered by the outline pour.
+	b2 := core.NewBoard()
+	b2.Outline = &o
+	b2.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "GND")}))
+	b2.Pours = []core.Pour{{Net: "GND", Layer: core.LayerTop}}
+	rep2 := Check(b2, nil, DefaultOptions())
+	if countKind(rep2, KindUnconnectedPad) != 0 {
+		t.Fatalf("pad inside pour should be connected: %+v", rep2.Violations)
+	}
+}
+
+func TestDefaultMinDrillIs03(t *testing.T) {
+	if DefaultOptions().MinDrill.ToMM() < 0.299 {
+		t.Fatalf("default min drill %v want 0.3", DefaultOptions().MinDrill.ToMM())
+	}
+}

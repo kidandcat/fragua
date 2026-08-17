@@ -110,6 +110,9 @@ func metrics(p *core.Project, label string) map[string]any {
 		if fab.MinViaDrillMM > 0 {
 			drcOpts.MinDrill = core.FromMM(fab.MinViaDrillMM)
 		}
+		if fab.MinAnnularRingMM > 0 {
+			drcOpts.MinAnnularRing = core.FromMM(fab.MinAnnularRingMM)
+		}
 		if fab.MinEdgeClearanceMM > 0 {
 			drcOpts.EdgeClearance = core.FromMM(fab.MinEdgeClearanceMM)
 		}

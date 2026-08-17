@@ -291,7 +291,7 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 	case "stackup":
 		if strings.TrimSpace(args) == "4" || strings.TrimSpace(args) == "4l" || strings.TrimSpace(args) == "4layer" {
 			p.MutateBoard(func(b *core.Board) { b.Apply4Layer() })
-			return "stackup: 4-layer (F / In1 GND / In2 +3V3 / B)", nil
+			return "stackup: 4-layer (F.Cu / In1.Cu / In2.Cu / B.Cu)", nil
 		}
 		return "", fmt.Errorf("stackup 4")
 	case "compact":
@@ -603,7 +603,7 @@ func addSymbol(p *core.Project, args string, pins []core.SchPin) (string, error)
 	if err != nil {
 		return "", err
 	}
-	var key, value, desc string
+	var key, value, desc, lcsc, mpn, mfr string
 	var rot, xMM, yMM float64
 	var hasPos bool
 	for _, t := range fields[2:] {
@@ -626,6 +626,16 @@ func addSymbol(p *core.Project, args string, pins []core.SchPin) (string, error)
 			desc = strings.TrimPrefix(t, "desc=")
 		case strings.HasPrefix(t, "description="):
 			desc = strings.TrimPrefix(t, "description=")
+		case strings.HasPrefix(t, "lcsc="):
+			lcsc = strings.TrimPrefix(t, "lcsc=")
+		case strings.HasPrefix(t, "mpn="):
+			mpn = strings.TrimPrefix(t, "mpn=")
+		case strings.HasPrefix(t, "manufacturer="), strings.HasPrefix(t, "mfr="):
+			if strings.HasPrefix(t, "mfr=") {
+				mfr = strings.TrimPrefix(t, "mfr=")
+			} else {
+				mfr = strings.TrimPrefix(t, "manufacturer=")
+			}
 		}
 	}
 	if kind == "generic_ic" && len(pins) == 0 {
@@ -652,6 +662,7 @@ func addSymbol(p *core.Project, args string, pins []core.SchPin) (string, error)
 			ID: id, Reference: ref, Value: value, Kind: sk,
 			Position: core.NewPoint(core.FromMM(xMM), core.FromMM(yMM)),
 			Rotation: rot, Key: key, Description: desc,
+			LcscID: lcsc, MPN: mpn, Manufacturer: mfr,
 		}
 		// replace existing by reference
 		for k, old := range s.Symbols {
@@ -713,6 +724,10 @@ func addLibrary(p *core.Project, args string, pads []core.LibraryPad) (string, e
 		case strings.HasPrefix(t, "mpn="):
 			s := strings.TrimPrefix(t, "mpn=")
 			entry.MPN = &s
+		case strings.HasPrefix(t, "manufacturer="), strings.HasPrefix(t, "mfr="):
+			s := strings.TrimPrefix(t, "manufacturer=")
+			s = strings.TrimPrefix(s, "mfr=")
+			entry.Manufacturer = &s
 		}
 	}
 	if _, err := p.PutLibrary(entry); err != nil {
@@ -842,6 +857,20 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 
 	fp := entry.ToFootprint(ref, value, layer, rot)
 	fp.Description = desc
+	if sym != nil {
+		if sym.LcscID != "" {
+			fp.LcscID = sym.LcscID
+		}
+		if sym.MPN != "" {
+			fp.MPN = sym.MPN
+		}
+		if sym.Manufacturer != "" {
+			fp.Manufacturer = sym.Manufacturer
+		}
+		if fp.Value == "" && sym.Value != "" {
+			fp.Value = sym.Value
+		}
+	}
 	for i := range fp.Pads {
 		if n := netForPin(fp.Pads[i].Number); n != nil {
 			fp.Pads[i].Net = n
@@ -947,6 +976,14 @@ func addVia(p *core.Project, args string) (string, error) {
 		return "", fmt.Errorf("via: bad coordinates")
 	}
 	drill, dia := 0.3, 0.6
+	p.RLock()
+	if fab := core.ActiveFabRules(p.Board()); fab.MinViaDrillMM > 0 {
+		drill = fab.MinViaDrillMM
+		if fab.MinViaDiameterMM > 0 {
+			dia = fab.MinViaDiameterMM
+		}
+	}
+	p.RUnlock()
 	for _, t := range fields[3:] {
 		switch {
 		case strings.HasPrefix(t, "drill="):
@@ -1098,7 +1135,7 @@ func setFabRules(p *core.Project, args string) (string, error) {
 	// fab-rules PRESET | clear | list
 	fields := strings.Fields(args)
 	if len(fields) < 1 {
-		return "", fmt.Errorf("fab-rules jlcpcb|jlcpcb-4l|clear|list")
+		return "", fmt.Errorf("fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list")
 	}
 	key := strings.ToLower(fields[0])
 	switch key {
@@ -1106,11 +1143,11 @@ func setFabRules(p *core.Project, args string) (string, error) {
 		p.MutateBoard(func(b *core.Board) { b.FabRules = nil })
 		return "fab rules cleared", nil
 	case "list":
-		return "fab-rules presets: jlcpcb-2l, jlcpcb-4l", nil
+		return "fab-rules presets: jlcpcb-2l (via 0.30/0.60 standard), jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02", nil
 	}
 	rules := core.FabRulesPreset(key)
 	if rules == nil {
-		return "", fmt.Errorf("fab-rules: unknown preset %q (have jlcpcb-2l, jlcpcb-4l)", fields[0])
+		return "", fmt.Errorf("fab-rules: unknown preset %q (have jlcpcb-2l, jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02)", fields[0])
 	}
 	p.MutateBoard(func(b *core.Board) { b.FabRules = rules })
 	// also set session profile for pack/drc
@@ -1144,7 +1181,7 @@ func layerCmd(p *core.Project, args string) (string, error) {
 		defer p.RUnlock()
 		s := p.Board().StackupOrDefault()
 		var b strings.Builder
-		fmt.Fprintf(&b, "%d copper layer(s):", len(s.Layers))
+		fmt.Fprintf(&b, "%d copper layer(s), %.2f mm stack:", len(s.Layers), s.TotalThicknessMM())
 		for i, ls := range s.Layers {
 			kind := string(ls.Kind)
 			if kind == "" {
@@ -1154,7 +1191,23 @@ func layerCmd(p *core.Project, args string) (string, error) {
 			if name == "" {
 				name = core.Layer{Index: uint8(i)}.LegacyName()
 			}
-			fmt.Fprintf(&b, "\n  [%d] %s (%s)", i, name, kind)
+			oz := s.CopperOz(i)
+			fmt.Fprintf(&b, "\n  [%d] %s (%s, %.0f oz)", i, name, kind, oz)
+			if ls.AssignedNet != "" {
+				fmt.Fprintf(&b, " net=%s", ls.AssignedNet)
+			}
+		}
+		if len(s.Dielectrics) > 0 {
+			b.WriteString("\n  dielectric:")
+			for i, d := range s.Dielectrics {
+				if i > 0 {
+					b.WriteString(" /")
+				}
+				fmt.Fprintf(&b, " %.3f mm", d.ThicknessMM)
+				if d.Er > 0 {
+					fmt.Fprintf(&b, " (er=%.1f)", d.Er)
+				}
+			}
 		}
 		return b.String(), nil
 	case "add":
@@ -1281,7 +1334,7 @@ func layerCmd(p *core.Project, args string) (string, error) {
 		return fmt.Sprintf("renamed layer `%s` → `%s`", oldN, newN), nil
 	case "4", "4l", "4layer":
 		p.MutateBoard(func(b *core.Board) { b.Apply4Layer() })
-		return "stackup: 4-layer (F / In1 GND / In2 +3V3 / B)", nil
+		return "stackup: 4-layer (F.Cu / In1.Cu / In2.Cu / B.Cu)", nil
 	default:
 		return "", fmt.Errorf("layer: unknown subcommand `%s` (list|add|remove|rename|4layer)", fields[0])
 	}

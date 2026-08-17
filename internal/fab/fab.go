@@ -40,7 +40,25 @@ func ProfileByName(name string) (Profile, error) {
 	case Jlcpcb, "jlcpcb-2l", "jlc":
 		return Profile{
 			Name: "jlcpcb", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
-			MinDrillMM: 0.2, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
+			MinDrillMM: 0.30, MinAnnularRingMM: 0.15, MinViaDiameterMM: 0.60,
+			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+		}, nil
+	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2":
+		return Profile{
+			Name: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
+			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
+			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+		}, nil
+	case "jlcpcb-4l":
+		return Profile{
+			Name: "jlcpcb-4l", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
+			MinDrillMM: 0.30, MinAnnularRingMM: 0.15, MinViaDiameterMM: 0.60,
+			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
+		}, nil
+	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2":
+		return Profile{
+			Name: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
+			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
 			MinEdgeClearanceMM: 0.3, MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
 	case Pcbway:
@@ -106,6 +124,9 @@ func Pack(p *core.Project, provider, outDir string) (*PackResult, error) {
 		if fab.MinViaDrillMM > 0 {
 			drcOpts.MinDrill = core.FromMM(fab.MinViaDrillMM)
 		}
+		if fab.MinAnnularRingMM > 0 {
+			drcOpts.MinAnnularRing = core.FromMM(fab.MinAnnularRingMM)
+		}
 		if fab.MinEdgeClearanceMM > 0 {
 			drcOpts.EdgeClearance = core.FromMM(fab.MinEdgeClearanceMM)
 		}
@@ -122,12 +143,22 @@ func Pack(p *core.Project, provider, outDir string) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// README
-	readme := fmt.Sprintf("Fragua fab pack\nprovider=%s\nerc_errors=%d drc_errors=%d\n",
-		prof.Name, ercRep.Errors, drcRep.Errors)
+	// Append ERC/DRC status to the gerber README (do not replace the layer map).
 	rp := filepath.Join(work, "README.txt")
-	_ = os.WriteFile(rp, []byte(readme), 0o644)
-	files = append(files, rp)
+	existing, _ := os.ReadFile(rp)
+	status := fmt.Sprintf("\nPack status\nprovider=%s\nerc_errors=%d drc_errors=%d\n",
+		prof.Name, ercRep.Errors, drcRep.Errors)
+	_ = os.WriteFile(rp, append(existing, []byte(status)...), 0o644)
+	has := false
+	for _, f := range files {
+		if filepath.Base(f) == "README.txt" {
+			has = true
+			break
+		}
+	}
+	if !has {
+		files = append(files, rp)
+	}
 
 	zipPath := filepath.Join(outDir, name+"-"+prof.Name+".zip")
 	if err := zipDir(work, zipPath); err != nil {

@@ -59,7 +59,7 @@ func ActiveFabRules(b *Board) FabRules {
 	if p := FabRulesPreset("jlcpcb-2l"); p != nil {
 		return *p
 	}
-	return FabRules{MinClearanceMM: 0.127, MinTraceWidthMM: 0.127, MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13}
+	return FabRules{MinClearanceMM: 0.127, MinTraceWidthMM: 0.127, MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15, MinEdgeClearanceMM: 0.30}
 }
 
 // ClampToFab raises any value that would be illegal at the fab.

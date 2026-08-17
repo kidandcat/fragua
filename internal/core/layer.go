@@ -121,6 +121,7 @@ type LayerKind string
 const (
 	LayerKindSignal     LayerKind = "signal"
 	LayerKindPower      LayerKind = "power"
+	LayerKindPlane      LayerKind = "plane"
 	LayerKindMixed      LayerKind = "mixed"
 	LayerKindDielectric LayerKind = "dielectric"
 )
@@ -130,8 +131,26 @@ type LayerSpec struct {
 	Name           string    `json:"name,omitempty"`
 	Kind           LayerKind `json:"kind,omitempty"`
 	ThicknessUM    float64   `json:"thickness_um,omitempty"`
-	CopperWeightOz float64   `json:"copper_weight_oz,omitempty"`
+	CopperWeightOz float64   `json:"copper_oz,omitempty"`
 	DielectricEr   float64   `json:"dielectric_er,omitempty"`
+	// AssignedNet is the pour/plane net (e.g. GND) — not a layer name.
+	AssignedNet string `json:"assigned_net,omitempty"`
+}
+
+// UnmarshalJSON accepts copper_oz and the older copper_weight_oz tag.
+func (l *LayerSpec) UnmarshalJSON(b []byte) error {
+	type alias LayerSpec
+	aux := struct {
+		*alias
+		LegacyOz float64 `json:"copper_weight_oz,omitempty"`
+	}{alias: (*alias)(l)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if l.CopperWeightOz == 0 && aux.LegacyOz > 0 {
+		l.CopperWeightOz = aux.LegacyOz
+	}
+	return nil
 }
 
 // Dielectric describes a dielectric sheet.
@@ -157,13 +176,15 @@ func Default2Layer() LayerStackup {
 	}
 }
 
-// Default4Layer is a JLCPCB-class 1.6 mm stack: signal / GND plane / power plane / signal.
+// Default4Layer is a plausible JLCPCB 1.6 mm 4-layer stack:
+// F.Cu / In1.Cu / In2.Cu / B.Cu. Inner layers are planes; assigned nets
+// (GND / a power rail) are filled in by Apply4Layer when those nets exist.
 func Default4Layer() LayerStackup {
 	return LayerStackup{
 		Layers: []LayerSpec{
 			{Name: "F.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
-			{Name: "In1.Cu", Kind: LayerKindPower, CopperWeightOz: 1},
-			{Name: "In2.Cu", Kind: LayerKindPower, CopperWeightOz: 1},
+			{Name: "In1.Cu", Kind: LayerKindPlane, CopperWeightOz: 1},
+			{Name: "In2.Cu", Kind: LayerKindPlane, CopperWeightOz: 1},
 			{Name: "B.Cu", Kind: LayerKindSignal, CopperWeightOz: 1},
 		},
 		Dielectrics: []Dielectric{
@@ -179,7 +200,35 @@ func (s LayerStackup) IsPlane(i int) bool {
 	if i < 0 || i >= len(s.Layers) {
 		return false
 	}
-	return s.Layers[i].Kind == LayerKindPower
+	k := s.Layers[i].Kind
+	return k == LayerKindPower || k == LayerKindPlane
+}
+
+// CopperOz returns the copper weight in oz for layer i (default 1).
+func (s LayerStackup) CopperOz(i int) float64 {
+	if i < 0 || i >= len(s.Layers) {
+		return 1
+	}
+	oz := s.Layers[i].CopperWeightOz
+	if oz <= 0 {
+		return 1
+	}
+	return oz
+}
+
+// TotalThicknessMM is copper + dielectric, approximating 1 oz = 0.035 mm.
+func (s LayerStackup) TotalThicknessMM() float64 {
+	t := 0.0
+	for i, l := range s.Layers {
+		if l.Kind == LayerKindDielectric {
+			continue
+		}
+		t += s.CopperOz(i) * 0.035
+	}
+	for _, d := range s.Dielectrics {
+		t += d.ThicknessMM
+	}
+	return t
 }
 
 // CopperCount returns the number of copper layers (defaults to 2).

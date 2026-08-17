@@ -35,7 +35,10 @@ const (
 	KindBodyOffBoard           Kind = "body_off_board"
 	KindRoutingInefficient     Kind = "routing_inefficient"
 	KindRuleBelowFabLimit      Kind = "rule_below_fab_limit"
-	KindAnnularRing            Kind = "annular_ring" // used only with fab profile annular checks if present
+	KindAnnularRing            Kind = "annular_ring"
+	KindViaPadClearance        Kind = "via_pad_clearance"
+	KindViaTraceClearance      Kind = "via_trace_clearance"
+	KindCourtyardOverlap       Kind = "courtyard_overlap"
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -60,17 +63,19 @@ type Options struct {
 	EdgeClearance           core.Length
 	MinTraceWidth           core.Length
 	MinDrill                core.Length
+	MinAnnularRing          core.Length
 	RoutingInefficientRatio float64
 	FabProfile              *core.FabProfileHandle
 }
 
-// DefaultOptions matches Rust baseline (0.2 mm clearance).
+// DefaultOptions: 0.2 mm clearance, 0.3 mm min drill (JLCPCB standard via).
 func DefaultOptions() Options {
 	return Options{
 		MinClearance:            core.FromMM(0.2),
 		EdgeClearance:           core.FromMM(0.3),
 		MinTraceWidth:           core.FromMM(0.1),
-		MinDrill:                core.FromMM(0.2),
+		MinDrill:                core.FromMM(0.3),
+		MinAnnularRing:          core.FromMM(0.15),
 		RoutingInefficientRatio: 1.5,
 	}
 }
@@ -202,19 +207,37 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 
 	pads := collectPads(board)
 
+	minAnnularMM := opts.MinAnnularRing.ToMM()
+	if opts.FabProfile != nil && opts.FabProfile.MinAnnularRingMM > 0 {
+		if opts.FabProfile.MinAnnularRingMM > minAnnularMM {
+			minAnnularMM = opts.FabProfile.MinAnnularRingMM
+		}
+	}
+	if board.FabRules != nil && board.FabRules.MinAnnularRingMM > 0 {
+		if board.FabRules.MinAnnularRingMM > minAnnularMM {
+			minAnnularMM = board.FabRules.MinAnnularRingMM
+		}
+	}
+	if board.FabRules != nil && board.FabRules.MinViaDrillMM > 0 && board.FabRules.MinViaDrillMM > minDrillMM {
+		minDrillMM = board.FabRules.MinViaDrillMM
+	}
+
 	checkPadPad(pads, resolver, &rep)
 	checkTraceTrace(board, resolver, &rep)
 	checkTracePad(board, pads, resolver, &rep)
-	// Note: Rust has no ViaPadClearance kind — vias participate in connectivity only.
+	checkViaPad(board, pads, resolver, &rep)
+	checkViaTrace(board, resolver, &rep)
 	if board.Outline != nil {
 		checkEdge(board, pads, *board.Outline, edgeClMM, &rep)
 		checkBodyOffBoard(board, *board.Outline, &rep)
 	}
+	checkCourtyardOverlap(board, &rep)
 	checkUnconnectedPads(board, pads, &rep)
 	checkSmallComponentDangling(board, pads, &rep)
 	checkNetContinuity(board, pads, &rep)
 	checkNarrowTraces(board, resolver, &rep)
 	checkSmallDrills(board, minDrillMM, &rep)
+	checkAnnularRing(board, minAnnularMM, &rep)
 	checkRoutingInefficient(board, opts, &rep)
 	checkRuleAreasVsFab(board, &rep)
 
@@ -304,6 +327,155 @@ func checkTraceTrace(board *core.Board, res *core.RuleResolver, rep *Report) {
 					Net:     a.Net, XMM: sx, YMM: sy,
 				})
 			}
+		}
+	}
+}
+
+func checkViaPad(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {
+	for _, v := range board.Vias {
+		vr := v.Diameter.ToMM() / 2
+		c := ptMM(v.Position)
+		for _, pad := range pads {
+			if pad.net != "" && pad.net == v.Net {
+				continue // same net may touch
+			}
+			gap := pointRectDistance(c, pad.rect) - vr
+			sx, sy := rectCenterMM(pad.rect)
+			clr := clearanceMM(res, v.Net, pad.net, c[0], c[1])
+			if gap+0.001 < clr {
+				rep.add(Violation{
+					Kind: KindViaPadClearance, Severity: SeverityError,
+					Message: fmt.Sprintf("via %s – pad %s: %.3f mm < %.3f mm", v.Net, pad.label(), gap, clr),
+					Net:     v.Net, XMM: sx, YMM: sy,
+				})
+			}
+		}
+	}
+}
+
+func checkViaTrace(board *core.Board, res *core.RuleResolver, rep *Report) {
+	for _, v := range board.Vias {
+		vr := v.Diameter.ToMM() / 2
+		c := ptMM(v.Position)
+		for _, tr := range board.Traces {
+			if tr.Net == v.Net {
+				continue
+			}
+			gap := pointSegmentDistance(c, ptMM(tr.Start), ptMM(tr.End)) - vr - tr.Width.ToMM()/2
+			clr := clearanceMM(res, v.Net, tr.Net, c[0], c[1])
+			if gap+0.001 < clr {
+				rep.add(Violation{
+					Kind: KindViaTraceClearance, Severity: SeverityError,
+					Message: fmt.Sprintf("via %s – trace %s: %.3f mm < %.3f mm", v.Net, tr.Net, gap, clr),
+					Net:     v.Net, XMM: c[0], YMM: c[1],
+				})
+			}
+		}
+	}
+}
+
+func checkAnnularRing(board *core.Board, minAnnularMM float64, rep *Report) {
+	if minAnnularMM <= 0 {
+		return
+	}
+	for _, v := range board.Vias {
+		ring := (v.Diameter.ToMM() - v.Drill.ToMM()) / 2
+		if ring+1e-6 < minAnnularMM {
+			rep.add(Violation{
+				Kind: KindAnnularRing, Severity: SeverityError,
+				Message: fmt.Sprintf("via %s annular %.3f mm < min %.3f mm", v.Net, ring, minAnnularMM),
+				Net:     v.Net, XMM: v.Position.X.ToMM(), YMM: v.Position.Y.ToMM(),
+			})
+		}
+	}
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Drill == nil {
+				continue
+			}
+			w, h := core.PadWorldSize(fp, pad)
+			minDim := w.ToMM()
+			if h.ToMM() < minDim {
+				minDim = h.ToMM()
+			}
+			ring := (minDim - pad.Drill.ToMM()) / 2
+			if ring+1e-6 < minAnnularMM {
+				c := core.PadWorldCenter(fp, pad)
+				net := ""
+				if pad.Net != nil {
+					net = *pad.Net
+				}
+				rep.add(Violation{
+					Kind: KindAnnularRing, Severity: SeverityError,
+					Message: fmt.Sprintf("PTH %s.%s annular %.3f mm < min %.3f mm", fp.Reference, pad.Number, ring, minAnnularMM),
+					Net:     net, XMM: c.X.ToMM(), YMM: c.Y.ToMM(),
+				})
+			}
+		}
+	}
+}
+
+func checkCourtyardOverlap(board *core.Board, rep *Report) {
+	type body struct {
+		ref      string
+		rect     core.Rect
+		elevated bool
+	}
+	var bodies []body
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		r, ok := core.CourtyardWorld(fp)
+		if !ok {
+			continue
+		}
+		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated})
+	}
+	seen := map[string]bool{}
+	for _, id := range board.FootprintOrder {
+		seen[id] = true
+	}
+	var extras []string
+	for id := range board.Footprints {
+		if !seen[id] {
+			extras = append(extras, id)
+		}
+	}
+	sort.Strings(extras)
+	for _, id := range extras {
+		fp := board.Footprints[id]
+		if fp == nil {
+			continue
+		}
+		r, ok := core.CourtyardWorld(fp)
+		if !ok {
+			continue
+		}
+		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated})
+	}
+	for i := 0; i < len(bodies); i++ {
+		for j := i + 1; j < len(bodies); j++ {
+			a, b := bodies[i], bodies[j]
+			if a.elevated != b.elevated {
+				continue // elevated body may overlap a low one
+			}
+			if !a.rect.Intersects(b.rect) {
+				continue
+			}
+			cx := (a.rect.Min.X.ToMM() + a.rect.Max.X.ToMM() + b.rect.Min.X.ToMM() + b.rect.Max.X.ToMM()) / 4
+			cy := (a.rect.Min.Y.ToMM() + a.rect.Max.Y.ToMM() + b.rect.Min.Y.ToMM() + b.rect.Max.Y.ToMM()) / 4
+			rep.add(Violation{
+				Kind: KindCourtyardOverlap, Severity: SeverityError,
+				Message: fmt.Sprintf("courtyard overlap %s – %s", a.ref, b.ref),
+				XMM:     cx, YMM: cy,
+			})
 		}
 	}
 }
@@ -757,12 +929,50 @@ func viaTouchesPad(board *core.Board, pad padGeom, net string) bool {
 }
 
 func pourCoversPad(board *core.Board, pad padGeom, net string) bool {
+	cx, cy := rectCenterMM(pad.rect)
 	for _, p := range board.Pours {
-		if p.Net == net && pad.occupiesLayer(p.Layer) {
+		if p.Net != net || !pad.occupiesLayer(p.Layer) {
+			continue
+		}
+		if pointInPour(board, p, cx, cy) {
 			return true
 		}
 	}
 	return false
+}
+
+// pourEdgeInsetMM matches gerber pourEdgeClearance (0.3 mm) for outline pours.
+const pourEdgeInsetMM = 0.3
+
+func pointInPour(board *core.Board, p core.Pour, x, y float64) bool {
+	if len(p.Polygon) >= 3 {
+		return pointInPolygonMM(p.Polygon, x, y)
+	}
+	if board.Outline == nil {
+		return false
+	}
+	r := *board.Outline
+	inset := pourEdgeInsetMM
+	return x >= r.Min.X.ToMM()+inset && x <= r.Max.X.ToMM()-inset &&
+		y >= r.Min.Y.ToMM()+inset && y <= r.Max.Y.ToMM()-inset
+}
+
+func pointInPolygonMM(poly []core.Point, x, y float64) bool {
+	n := len(poly)
+	if n < 3 {
+		return false
+	}
+	inside := false
+	j := n - 1
+	for i := 0; i < n; i++ {
+		xi, yi := poly[i].X.ToMM(), poly[i].Y.ToMM()
+		xj, yj := poly[j].X.ToMM(), poly[j].Y.ToMM()
+		if (yi > y) != (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi)+xi {
+			inside = !inside
+		}
+		j = i
+	}
+	return inside
 }
 
 // ---------------------------------------------------------------------------
@@ -790,6 +1000,8 @@ type copperElem struct {
 	// via
 	c [2]float64
 	r float64
+	// pour
+	pour *core.Pour
 	// meta
 	isPad  bool
 	label  string
@@ -835,22 +1047,45 @@ func buildCopperElems(board *core.Board, pads []padGeom) []copperElem {
 			label: "via", center: c,
 		})
 	}
-	for _, pr := range board.Pours {
+	for i := range board.Pours {
+		pr := &board.Pours[i]
 		l := pr.Layer
 		elems = append(elems, copperElem{
-			net: pr.Net, layer: &l, kind: cuPour, label: "pour",
+			net: pr.Net, layer: &l, kind: cuPour, pour: pr, label: "pour",
 		})
 	}
 	return elems
 }
 
-func elemsTouch(a, b *copperElem) bool {
+func pourTouchesElem(board *core.Board, pour *copperElem, o *copperElem) bool {
+	if pour.pour == nil {
+		return false
+	}
+	switch o.kind {
+	case cuPad:
+		cx, cy := rectCenterMM(o.rect)
+		return pointInPour(board, *pour.pour, cx, cy)
+	case cuVia:
+		return pointInPour(board, *pour.pour, o.c[0], o.c[1])
+	case cuTrace:
+		return pointInPour(board, *pour.pour, o.a[0], o.a[1]) ||
+			pointInPour(board, *pour.pour, o.b[0], o.b[1])
+	case cuPour:
+		// Two outline pours on the same layer/net overlap.
+		return true
+	}
+	return false
+}
+
+func elemsTouch(board *core.Board, a, b *copperElem) bool {
 	if !layersOverlap(a.layer, b.layer) {
 		return false
 	}
-	// Normalize so a.kind <= b.kind for fewer cases — handle pairs explicitly.
-	if a.kind == cuPour || b.kind == cuPour {
-		return true
+	if a.kind == cuPour {
+		return pourTouchesElem(board, a, b)
+	}
+	if b.kind == cuPour {
+		return pourTouchesElem(board, b, a)
 	}
 	switch {
 	case a.kind == cuPad && b.kind == cuPad:
@@ -948,7 +1183,7 @@ func checkNetContinuity(board *core.Board, pads []padGeom, rep *Report) {
 		for ai := 0; ai < len(idxs); ai++ {
 			for bi := ai + 1; bi < len(idxs); bi++ {
 				ia, ib := idxs[ai], idxs[bi]
-				if elemsTouch(&elems[ia], &elems[ib]) {
+				if elemsTouch(board, &elems[ia], &elems[ib]) {
 					uf.union(ia, ib)
 					touched[ia] = true
 					touched[ib] = true

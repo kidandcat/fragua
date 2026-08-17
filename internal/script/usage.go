@@ -52,7 +52,7 @@ Script verbs (line-oriented, agent-first):
   stitch                      (via-tie isolated pour pads)
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
-  fab-rules jlcpcb|jlcpcb-4l|clear|list
+  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
   escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
   layer list|add|remove|rename
   drc / erc

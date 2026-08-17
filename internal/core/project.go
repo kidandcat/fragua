@@ -145,6 +145,10 @@ func LoadFromPath(path string) (*Project, error) {
 		if p.board.Footprints == nil {
 			p.board.Footprints = make(map[string]*Footprint)
 		}
+		if p.board.Stackup == nil || len(p.board.Stackup.Layers) == 0 {
+			s := Default2Layer()
+			p.board.Stackup = &s
+		}
 	}
 	if pf.Schematic != nil {
 		p.schematic = pf.Schematic
@@ -309,22 +313,37 @@ func (s *LayerStackup) RemoveNamed(name string) bool {
 	return true
 }
 
-// FabRulesPreset returns a built-in fab floor (jlcpcb / jlcpcb-4l).
+// FabRulesPreset returns a built-in fab floor.
+//
+// jlcpcb / jlcpcb-2l is JLCPCB *standard* 2-layer (via 0.30 / 0.60).
+// jlcpcb-2l-via02 is the 0.20 mm via capability (extra, not the default).
+// jlcpcb-4l uses the same standard via; jlcpcb-4l-via02 is the 4L opt-in.
 func FabRulesPreset(name string) *FabRules {
+	sz := [2]float64{500, 500}
 	switch strings.ToLower(name) {
 	case "jlcpcb-2l", "jlcpcb_2l", "jlcpcb-2", "jlcpcb", "jlc":
-		sz := [2]float64{100, 100}
 		return &FabRules{
 			Preset: "jlcpcb-2l", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
+			MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15,
+			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+		}
+	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2", "jlcpcb_2l_via02":
+		return &FabRules{
+			Preset: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
 			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.20, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
 		}
 	case "jlcpcb-4l", "jlcpcb_4l", "jlcpcb-4":
-		sz := [2]float64{100, 100}
 		return &FabRules{
 			Preset: "jlcpcb-4l", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
+			MinViaDrillMM: 0.30, MinViaDiameterMM: 0.60, MinAnnularRingMM: 0.15,
+			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
+		}
+	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2", "jlcpcb_4l_via02":
+		return &FabRules{
+			Preset: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
 			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
-			MinEdgeClearanceMM: 0.20, MaxBoardSizeMM: &sz,
+			MinEdgeClearanceMM: 0.30, MaxBoardSizeMM: &sz,
 		}
 	default:
 		return nil

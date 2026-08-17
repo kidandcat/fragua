@@ -10,8 +10,7 @@ import (
 )
 
 // Generation software version stamped into X2 attributes.
-// Matches crates/pcb-gerber workspace version when possible.
-const genVersion = "1.1.0"
+const genVersion = core.Version
 
 // Mask clearance applied per side when expanding pad apertures (0.05 mm).
 const maskClearance = core.Length(50_000)
@@ -45,6 +44,13 @@ func (s side) silkLayer() core.SilkLayer {
 		return core.SilkTop
 	}
 	return core.SilkBottom
+}
+
+func (s side) pasteLabel() string {
+	if s == sideTop {
+		return "F.Paste"
+	}
+	return "B.Paste"
 }
 
 // copperLayerForSide returns the copper layer index used for mask/silk
@@ -97,11 +103,16 @@ func roundAp(d core.Length) aperture   { return aperture{kind: apRound, d: d} }
 // --- header / primitives ----------------------------------------------------
 
 func writeHeader(label string) string {
+	return writeHeaderFn(label, fileFunction(label, 0, 2))
+}
+
+func writeHeaderFn(label, fileFn string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "G04 pcb %s*\n", label)
-	fmt.Fprintf(&b, "%%TF.GenerationSoftware,pcb,pcb-gerber,%s*%%\n", genVersion)
-	if fn, ok := fileFunction(label); ok {
-		fmt.Fprintf(&b, "%%TF.FileFunction,%s*%%\n", fn)
+	fmt.Fprintf(&b, "G04 Fragua %s*\n", label)
+	fmt.Fprintf(&b, "%%TF.GenerationSoftware,Fragua,%s*%%\n", genVersion)
+	b.WriteString("%TF.Part,Single*%\n")
+	if fileFn != "" {
+		fmt.Fprintf(&b, "%%TF.FileFunction,%s*%%\n", fileFn)
 		b.WriteString("%TF.FilePolarity,Positive*%\n")
 	}
 	b.WriteString("%FSLAX46Y46*%\n")
@@ -110,25 +121,38 @@ func writeHeader(label string) string {
 	return b.String()
 }
 
-func fileFunction(label string) (string, bool) {
+// fileFunction returns the Gerber X2 FileFunction for a layer label.
+// copperIndex is 0-based among copper layers; copperCount is the stack size
+// (2 → B.Cu is L2, 4 → B.Cu is L4).
+func fileFunction(label string, copperIndex, copperCount int) string {
 	switch label {
 	case "F.Cu":
-		return "Copper,L1,Top", true
+		return "Copper,L1,Top"
 	case "B.Cu":
-		return "Copper,L2,Bot", true
+		n := copperCount
+		if n < 2 {
+			n = 2
+		}
+		return fmt.Sprintf("Copper,L%d,Bot", n)
 	case "F.Mask":
-		return "Soldermask,Top", true
+		return "Soldermask,Top"
 	case "B.Mask":
-		return "Soldermask,Bot", true
+		return "Soldermask,Bot"
 	case "F.SilkS":
-		return "Legend,Top", true
+		return "Legend,Top"
 	case "B.SilkS":
-		return "Legend,Bot", true
+		return "Legend,Bot"
+	case "F.Paste":
+		return "Paste,Top"
+	case "B.Paste":
+		return "Paste,Bot"
 	case "Edge.Cuts":
-		return "Profile,NP", true
-	default:
-		return "", false
+		return "Profile,NP"
 	}
+	if strings.HasPrefix(label, "In") && copperIndex > 0 {
+		return fmt.Sprintf("Copper,L%d,Inr", copperIndex+1)
+	}
+	return ""
 }
 
 func writeApertures(t *apertureTable) string {
@@ -219,27 +243,32 @@ func footprintsInOrder(board *core.Board) []*core.Footprint {
 // --- copper -----------------------------------------------------------------
 
 func writeCopperLayer(board *core.Board, layer core.Layer, label string) string {
+	stack := board.StackupOrDefault()
+	nCu := stack.CopperCount()
 	// Outer layers use the standard F.Cu / B.Cu labels for X2 attributes.
-	bottom := board.StackupOrDefault().BottomLayer()
+	bottom := stack.BottomLayer()
 	if layer.IsTop() {
-		return writeCopper(board, layer, "F.Cu")
+		return writeCopper(board, layer, "F.Cu", fileFunction("F.Cu", 0, nCu))
 	}
 	if layer.Index == bottom.Index {
-		return writeCopper(board, layer, "B.Cu")
+		return writeCopper(board, layer, "B.Cu", fileFunction("B.Cu", int(layer.Index), nCu))
 	}
 	if label == "" {
 		label = fmt.Sprintf("In%d.Cu", layer.Index)
 	}
-	return writeCopper(board, layer, label)
+	return writeCopper(board, layer, label, fileFunction(label, int(layer.Index), nCu))
 }
 
 const pourClearance = core.Length(200_000)     // 0.2 mm
 const pourEdgeClearance = core.Length(300_000) // 0.3 mm
 const spokeOverlap = core.Length(50_000)       // 0.05 mm
 
-func writeCopper(board *core.Board, layer core.Layer, label string) string {
+func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) string {
 	var b strings.Builder
-	b.WriteString(writeHeader(label))
+	if fileFn == "" {
+		fileFn = fileFunction(label, int(layer.Index), board.StackupOrDefault().CopperCount())
+	}
+	b.WriteString(writeHeaderFn(label, fileFn))
 
 	var table apertureTable
 	type flashOp struct {
@@ -420,7 +449,7 @@ func writeCopper(board *core.Board, layer core.Layer, label string) string {
 
 func writeMask(board *core.Board, s side) string {
 	var b strings.Builder
-	b.WriteString(writeHeader(s.maskLabel()))
+	b.WriteString(writeHeaderFn(s.maskLabel(), fileFunction(s.maskLabel(), 0, 2)))
 	layer := copperLayerForSide(board, s)
 
 	var table apertureTable
@@ -459,7 +488,7 @@ func writeMask(board *core.Board, s side) string {
 
 func writeSilk(board *core.Board, s side) string {
 	var b strings.Builder
-	b.WriteString(writeHeader(s.silkLabel()))
+	b.WriteString(writeHeaderFn(s.silkLabel(), fileFunction(s.silkLabel(), 0, 2)))
 	sl := s.silkLayer()
 
 	var table apertureTable
@@ -702,9 +731,50 @@ func localToWorld(fp *core.Footprint, p core.Point) core.Point {
 
 // --- edge cuts --------------------------------------------------------------
 
+func writePaste(board *core.Board, s side) string {
+	var b strings.Builder
+	label := s.pasteLabel()
+	b.WriteString(writeHeaderFn(label, fileFunction(label, 0, 2)))
+	layer := copperLayerForSide(board, s)
+
+	var table apertureTable
+	type flashOp struct {
+		id uint32
+		p  core.Point
+	}
+	var flashes []flashOp
+
+	for _, fp := range footprintsInOrder(board) {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Drill != nil {
+				continue // no paste on PTH / vias
+			}
+			if pad.Layer.Index != layer.Index {
+				continue
+			}
+			pw, ph := padWorldSize(fp, pad)
+			id := table.intern(rectAp(pw, ph))
+			flashes = append(flashes, flashOp{id, core.PadWorldCenter(fp, pad)})
+		}
+	}
+
+	b.WriteString(writeApertures(&table))
+	var current uint32
+	for _, f := range flashes {
+		if f.id != current {
+			b.WriteString(selectAp(f.id))
+			current = f.id
+		}
+		b.WriteString(flash(f.p))
+	}
+	b.WriteString(footer())
+	return b.String()
+}
+
 func writeEdgeCuts(board *core.Board) string {
 	var b strings.Builder
-	b.WriteString(writeHeader("Edge.Cuts"))
+	b.WriteString(writeHeaderFn("Edge.Cuts", fileFunction("Edge.Cuts", 0, 2)))
 	var table apertureTable
 	id := table.intern(roundAp(edgeStroke))
 	b.WriteString(writeApertures(&table))

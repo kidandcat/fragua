@@ -102,14 +102,17 @@ func (k SymbolKind) Pins() []SchPin {
 
 // Symbol is a schematic symbol instance.
 type Symbol struct {
-	ID          ID         `json:"id"`
-	Reference   string     `json:"reference"`
-	Value       string     `json:"value"`
-	Kind        SymbolKind `json:"kind"`
-	Position    Point      `json:"position"`
-	Rotation    float64    `json:"rotation"`
-	Key         string     `json:"key"`
-	Description string     `json:"description"`
+	ID           ID         `json:"id"`
+	Reference    string     `json:"reference"`
+	Value        string     `json:"value"`
+	Kind         SymbolKind `json:"kind"`
+	Position     Point      `json:"position"`
+	Rotation     float64    `json:"rotation"`
+	Key          string     `json:"key"`
+	Description  string     `json:"description"`
+	LcscID       string     `json:"lcsc_id,omitempty"`
+	MPN          string     `json:"mpn,omitempty"`
+	Manufacturer string     `json:"manufacturer,omitempty"`
 }
 
 // NetConnection links a symbol pin to a net.

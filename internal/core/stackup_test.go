@@ -56,8 +56,44 @@ func TestApply4LayerRemapsBottomPour(t *testing.T) {
 			pwrIn = true
 		}
 	}
-	if !gndIn || !pwrIn {
-		t.Fatalf("inner pours missing: gnd=%v 3v3=%v pours=%+v", gndIn, pwrIn, b.Pours)
+	if !gndIn {
+		t.Fatalf("GND plane pour missing on In1: pours=%+v", b.Pours)
+	}
+	if pwrIn {
+		t.Fatalf("must not invent a +3V3 plane when that net is absent: pours=%+v", b.Pours)
+	}
+	if b.Stackup.Layers[0].Name != "F.Cu" || b.Stackup.Layers[1].Name != "In1.Cu" ||
+		b.Stackup.Layers[2].Name != "In2.Cu" || b.Stackup.Layers[3].Name != "B.Cu" {
+		t.Fatalf("4L names: %+v", b.Stackup.Layers)
+	}
+	if b.Stackup.Layers[1].AssignedNet != "GND" {
+		t.Fatalf("In1 assigned net %q want GND", b.Stackup.Layers[1].AssignedNet)
+	}
+	if b.Stackup.Layers[2].AssignedNet != "" {
+		t.Fatalf("In2 must not invent a power net, got %q", b.Stackup.Layers[2].AssignedNet)
+	}
+}
+
+func TestApply4LayerAssignsExistingPowerNet(t *testing.T) {
+	b := NewBoard()
+	n := "+3V3"
+	b.AddFootprint(&Footprint{
+		ID: NewID(), Reference: "C1",
+		Position: NewPoint(FromMM(5), FromMM(5)),
+		Pads:     []Pad{{Number: "1", Size: [2]Length{FromMM(1), FromMM(1)}, Net: &n}},
+	})
+	b.Apply4Layer()
+	if b.Stackup.Layers[2].AssignedNet != "+3V3" {
+		t.Fatalf("In2 assigned %q want +3V3", b.Stackup.Layers[2].AssignedNet)
+	}
+	found := false
+	for _, p := range b.Pours {
+		if p.Net == "+3V3" && p.Layer.Index == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected +3V3 pour on In2: %+v", b.Pours)
 	}
 }
 

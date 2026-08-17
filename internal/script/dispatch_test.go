@@ -183,6 +183,53 @@ status
 	}
 }
 
+func TestSymLcscReachesPackBOM(t *testing.T) {
+	p := core.NewProject("t-lcsc")
+	lib, err := core.OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetLibrary(lib)
+	out := t.TempDir()
+	rs := RunScript(p, `
+outline 20 20
+lib r_0603 lcsc=C25804 mpn=RC0603FR-0710KL manufacturer=Yageo value=10k
+  pad 1 -0.8 0 0.8 0.9
+  pad 2  0.8 0 0.8 0.9
+sym R1 resistor key=r_0603 value=10k lcsc=C25804
+palette R1 r_0603
+place R1 10 10
+fab-rules jlcpcb
+pack fab=jlcpcb out=`+out+`
+`)
+	allOK(t, rs)
+	fp := p.Board().FootprintByRef("R1")
+	if fp == nil || fp.LcscID != "C25804" {
+		t.Fatalf("lcsc not on footprint: %+v", fp)
+	}
+	bom, err := os.ReadFile(filepath.Join(out, "t-lcsc-fab", "t-lcsc-bom.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(bom)
+	if !strings.Contains(text, "LCSC Part #") || !strings.Contains(text, "C25804") {
+		t.Fatalf("BOM missing LCSC:\n%s", text)
+	}
+	if strings.Contains(text, "library:") {
+		t.Fatalf("library: prefix in BOM:\n%s", text)
+	}
+	if _, err := os.Stat(filepath.Join(out, "t-lcsc-fab", "t-lcsc-F_Paste.gbr")); err != nil {
+		t.Fatal("missing paste gerber")
+	}
+	readme, err := os.ReadFile(filepath.Join(out, "t-lcsc-fab", "README.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "F_Paste") || !strings.Contains(string(readme), "Fragua") {
+		t.Fatalf("README incomplete:\n%s", readme)
+	}
+}
+
 func TestListLib(t *testing.T) {
 	p := core.NewProject("t-lib-list")
 	lib, err := core.OpenAt(t.TempDir())
