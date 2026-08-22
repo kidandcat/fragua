@@ -11,15 +11,16 @@
     header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel); }
     header strong { color:var(--accent); letter-spacing:.04em; }
     header .stat { color:var(--muted); font-family: ui-monospace, monospace; }
-    main { display:grid; grid-template-columns: 1fr 320px; min-height:0; }
-    #canvas-wrap { overflow:auto; background:#111; display:flex; align-items:center; justify-content:center; }
-    #canvas-wrap img, #canvas-wrap object { max-width:100%; max-height:100%; }
-    aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+    main { display:grid; grid-template-columns: 1fr 320px; min-height:0; min-width:0; }
+    #canvas-wrap { overflow:auto; background:#0e1116; display:flex; align-items:center; justify-content:center; min-width:0; min-height:0; }
+    #board { max-width:100%; max-height:100%; object-fit:contain; display:block; background:#0e1116; }
+    aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; min-width:0; }
     #log { flex:1; overflow:auto; padding:10px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted); white-space:pre-wrap; }
     .row { display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); }
     textarea { flex:1; min-height:72px; background:#0c0e12; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; font:12px ui-monospace,monospace; resize:vertical; }
     button { background:var(--accent); color:#1a120c; border:0; border-radius:6px; padding:8px 12px; font-weight:600; cursor:pointer; }
     button.secondary { background:#2a3140; color:var(--text); }
+    button:disabled { opacity:0.55; cursor:wait; }
   </style>
 </head>
 <body>
@@ -32,7 +33,7 @@
     <button class="secondary" id="btn-route">Route</button>
   </header>
   <main>
-    <div id="canvas-wrap"><object id="svg" type="image/svg+xml" data="/screenshot" width="100%" height="100%">board</object></div>
+    <div id="canvas-wrap"><img id="board" alt="board"/></div>
     <aside>
       <div id="log"></div>
       <div class="row">
@@ -44,36 +45,78 @@
   <script>
     const logEl = document.getElementById('log');
     const statusEl = document.getElementById('status');
-    const svg = document.getElementById('svg');
+    const board = document.getElementById('board');
+    let refreshTimer = 0;
+    let refreshing = false;
+    let wantAgain = false;
+
     function log(line) {
       logEl.textContent += line + '\n';
       logEl.scrollTop = logEl.scrollHeight;
     }
+    function showBoard() {
+      // <img src> cache-bust is reliable; assigning HTMLObjectElement.data
+      // often leaves a blank nested document in Chromium.
+      board.src = '/screenshot?t=' + Date.now();
+    }
+    function statusFromScript(text) {
+      const lines = text.trim().split('\n');
+      const hit = lines.find((l) => /^ok status:\s*/.test(l));
+      return (hit || lines[0] || text.trim()).replace(/^ok status:\s*/, '');
+    }
     async function refresh() {
-      svg.data = '/screenshot?' + Date.now();
+      if (refreshing) { wantAgain = true; return; }
+      refreshing = true;
+      showBoard();
       try {
         const r = await fetch('/script', { method:'POST', headers:{'Content-Type':'text/plain'}, body:'status' });
         const t = await r.text();
-        statusEl.textContent = t.trim().replace(/^ok status:\s*/, '');
-      } catch (e) { statusEl.textContent = String(e); }
+        if (!r.ok) {
+          statusEl.textContent = 'status HTTP ' + r.status;
+        } else {
+          statusEl.textContent = statusFromScript(t);
+        }
+      } catch (e) {
+        statusEl.textContent = String(e);
+      } finally {
+        refreshing = false;
+        if (wantAgain) { wantAgain = false; scheduleRefresh(); }
+      }
+    }
+    function scheduleRefresh() {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refresh, 50);
     }
     async function runScript(body) {
-      const r = await fetch('/script', { method:'POST', headers:{'Content-Type':'text/plain'}, body });
-      const t = await r.text();
-      log(t.trim());
+      try {
+        const r = await fetch('/script', { method:'POST', headers:{'Content-Type':'text/plain'}, body });
+        const t = await r.text();
+        log(t.trim() || ('HTTP ' + r.status));
+      } catch (e) {
+        log(String(e));
+      }
       await refresh();
     }
     document.getElementById('btn-refresh').onclick = refresh;
     document.getElementById('btn-drc').onclick = () => runScript('drc');
     document.getElementById('btn-route').onclick = () => runScript('clear-route\nroute max_seconds=30');
     document.getElementById('btn-run').onclick = () => runScript(document.getElementById('script').value);
-    // SSE
-    try {
+    function connectEvents() {
       const es = new EventSource('/events');
-      es.onmessage = (ev) => { log('event ' + ev.data); refresh(); };
-    } catch (_) {}
+      es.onopen = () => { log('event stream connected'); };
+      es.onerror = () => {
+        if (statusEl.textContent === 'connecting…') statusEl.textContent = 'reconnecting…';
+      };
+      es.onmessage = (ev) => {
+        let kind = '';
+        try { kind = JSON.parse(ev.data).kind || ''; } catch (_) {}
+        if (kind && kind !== 'hello') log('event ' + ev.data);
+        scheduleRefresh();
+      };
+    }
+    try { connectEvents(); } catch (_) {}
     refresh();
-    setInterval(refresh, 5000);
+    setInterval(scheduleRefresh, 5000);
   </script>
 </body>
 </html>

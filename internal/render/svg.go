@@ -23,12 +23,17 @@ var tracePalette = []string{
 // names, drills, body outlines, dimension labels).
 func BoardSVG(board *core.Board) string {
 	if board == nil {
-		return `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"/>`
+		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300"><rect width="400" height="300" fill="#0e1116"/></svg>`
 	}
 	vx, vy, vw, vh := viewMM(board)
+	pw, ph := svgPixelSize(vw, vh)
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.3f" width="100%%" height="100%%">`,
-		vx, -(vy + vh), vw, vh)
+	// Pixel width/height (not 100%) so <img> / <object> get an intrinsic
+	// size. Percentage-only SVGs collapse to a blank replaced element in
+	// several browsers — the observer UI looked dead even when this
+	// payload was valid.
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.3f" width="%d" height="%d" preserveAspectRatio="xMidYMid meet">`,
+		vx, -(vy + vh), vw, vh, pw, ph)
 	b.WriteString(`<g transform="scale(1,-1)">`)
 	fmt.Fprintf(&b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" fill="#0e1116"/>`, vx, vy, vw, vh)
 	writeGrid(&b, vx, vy, vw, vh)
@@ -52,6 +57,10 @@ func BoardSVG(board *core.Board) string {
 
 	b.WriteString(`<g pointer-events="none" stroke="#d6905b" stroke-width="0.08" opacity="0.6"><line x1="-1.5" y1="0" x2="1.5" y2="0"/><line x1="0" y1="-1.5" x2="0" y2="1.5"/></g>`)
 	b.WriteString(`<g transform="translate(0.4,0.4) scale(1,-1)"><text x="0" y="0" font-family="ui-monospace, monospace" font-size="0.9" fill="#d6905b" opacity="0.7">0,0</text></g>`)
+	if board.Outline == nil {
+		fmt.Fprintf(&b, `<g transform="translate(%.3f,%.3f) scale(1,-1)"><text x="0" y="0" text-anchor="middle" dominant-baseline="middle" font-family="ui-monospace, monospace" font-size="2.4" fill="#9aa3b2">empty board</text></g>`,
+			vx+vw/2, vy+vh/2)
+	}
 
 	// Bottom copper first, then footprints (pads + names), then top copper, then vias.
 	for _, tr := range board.Traces {
@@ -98,11 +107,41 @@ func BoardSVG(board *core.Board) string {
 
 func viewMM(board *core.Board) (x, y, w, h float64) {
 	if o := board.Outline; o != nil {
-		px := o.Width().ToMM() / 10
-		py := o.Height().ToMM() / 10
-		return o.Min.X.ToMM() - px, o.Min.Y.ToMM() - py, o.Width().ToMM() + 2*px, o.Height().ToMM() + 2*py
+		ow, oh := o.Width().ToMM(), o.Height().ToMM()
+		if ow > 0 && oh > 0 {
+			px := ow / 10
+			py := oh / 10
+			return o.Min.X.ToMM() - px, o.Min.Y.ToMM() - py, ow + 2*px, oh + 2*py
+		}
 	}
 	return -5, -5, 60, 60
+}
+
+func svgPixelSize(vw, vh float64) (w, h int) {
+	const pxPerMM = 16.0
+	const maxPx = 1600.0
+	if vw < 1 {
+		vw = 1
+	}
+	if vh < 1 {
+		vh = 1
+	}
+	scale := pxPerMM
+	if vw*scale > maxPx {
+		scale = maxPx / vw
+	}
+	if vh*scale > maxPx {
+		scale = maxPx / vh
+	}
+	w = int(math.Round(vw * scale))
+	h = int(math.Round(vh * scale))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h
 }
 
 func writeGrid(b *strings.Builder, vx, vy, vw, vh float64) {
