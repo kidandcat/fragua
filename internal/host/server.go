@@ -28,17 +28,9 @@ var embeddedUI embed.FS
 
 // Run starts the HTTP API, optionally loads path, opens browser, blocks until signal.
 func Run(projectPath string) error {
-	var (
-		p   *core.Project
-		err error
-	)
-	if projectPath != "" {
-		p, err = core.LoadFromPath(projectPath)
-		if err != nil {
-			return fmt.Errorf("load %s: %w", projectPath, err)
-		}
-	} else {
-		p = core.NewProject("untitled")
+	p, err := loadProject(projectPath)
+	if err != nil {
+		return err
 	}
 
 	addr := os.Getenv("FRAGUA_API_ADDR")
@@ -46,6 +38,51 @@ func Run(projectPath string) error {
 		addr = "127.0.0.1:7878"
 	}
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: Handler(p), ReadHeaderTimeout: 10 * time.Second}
+
+	fmt.Printf("Fragua (Go) — API on http://%s  ·  UI http://%s/ui/  ·  GET /help for the script reference\n", addr, addr)
+	if projectPath != "" {
+		fmt.Printf("Opened %s\n", projectPath)
+	}
+
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "http: %v\n", err)
+		}
+	}()
+
+	if os.Getenv("FRAGUA_NO_BROWSER") == "" {
+		openBrowser("http://" + addr + "/ui/")
+	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return srv.Shutdown(ctx)
+}
+
+func loadProject(projectPath string) (*core.Project, error) {
+	if projectPath == "" {
+		return core.NewProject("untitled"), nil
+	}
+	p, err := core.LoadFromPath(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", projectPath, err)
+	}
+	return p, nil
+}
+
+// Handler serves the agent HTTP API and the observer UI for p.
+func Handler(p *core.Project) http.Handler {
+	if p == nil {
+		p = core.NewProject("untitled")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/help" {
@@ -72,15 +109,20 @@ func Run(projectPath string) error {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
 		ch := p.Events().Subscribe(32)
 		defer p.Events().Unsubscribe(ch)
-		// initial ping
 		fmt.Fprintf(w, "data: {\"kind\":\"hello\"}\n\n")
 		flusher.Flush()
+		keepalive := time.NewTicker(15 * time.Second)
+		defer keepalive.Stop()
 		for {
 			select {
 			case <-r.Context().Done():
 				return
+			case <-keepalive.C:
+				fmt.Fprintf(w, ": keepalive\n\n")
+				flusher.Flush()
 			case ev, ok := <-ch:
 				if !ok {
 					return
@@ -95,8 +137,8 @@ func Run(projectPath string) error {
 		p.RLock()
 		svg := render.BoardSVG(p.Board())
 		p.RUnlock()
-		// Prefer SVG until PNG pipeline is wired; agents accept either.
-		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		_, _ = io.WriteString(w, svg)
 	})
 	mux.HandleFunc("/script", func(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +163,7 @@ func Run(projectPath string) error {
 		}
 		rs := script.RunScript(p, src)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, script.FormatResults(rs))
 	})
 	mux.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
@@ -147,48 +190,26 @@ func Run(projectPath string) error {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintf(w, "saved %s\n", path)
 	})
-	// Static UI: on-disk internal/host/ui for live edit, else embed.
-	uiDir := findUIDir()
-	if uiDir != "" {
-		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir(uiDir))))
-	} else if sub, err := fs.Sub(embeddedUI, "ui"); err == nil {
-		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(sub))))
-	} else {
-		mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "UI not found", 404)
-		})
-	}
+	mountUI(mux)
 	mux.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusFound)
 	})
+	return withCORS(mux)
+}
 
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
+func mountUI(mux *http.ServeMux) {
+	uiDir := findUIDir()
+	if uiDir != "" {
+		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.Dir(uiDir))))
+		return
 	}
-	srv := &http.Server{Handler: withCORS(mux), ReadHeaderTimeout: 10 * time.Second}
-
-	fmt.Printf("Fragua (Go) — API on http://%s  ·  GET /help for the script reference\n", addr)
-	if projectPath != "" {
-		fmt.Printf("Opened %s\n", projectPath)
+	if sub, err := fs.Sub(embeddedUI, "ui"); err == nil {
+		mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(sub))))
+		return
 	}
-
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "http: %v\n", err)
-		}
-	}()
-
-	if os.Getenv("FRAGUA_NO_BROWSER") == "" {
-		openBrowser("http://" + addr + "/ui/")
-	}
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	return srv.Shutdown(ctx)
+	mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "UI not found", 404)
+	})
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -231,6 +252,7 @@ func findUIDir() string {
 		d := wd
 		for i := 0; i < 6; i++ {
 			candidates = append(candidates, filepath.Join(d, "internal", "host", "ui"))
+			candidates = append(candidates, filepath.Join(d, "ui"))
 			parent := filepath.Dir(d)
 			if parent == d {
 				break
