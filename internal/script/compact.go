@@ -50,6 +50,9 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 
 	p.RLock()
 	src := p.Board()
+	// The probe must route at the same per-net widths the final route
+	// uses, or it sizes the board against thinner copper than it gets.
+	sch := p.Schematic()
 	if src.Outline == nil {
 		p.RUnlock()
 		return "", fmt.Errorf("compact: board has no outline")
@@ -69,7 +72,7 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 	best := cand{w0, h0}
 	bestBoard := src.Clone()
 	// Prove the current size first (baseline).
-	if !compactFeasible(bestBoard, w0, h0, seed, placeIters, routeSec, allowFailed) {
+	if !compactFeasible(bestBoard, sch, w0, h0, seed, placeIters, routeSec, allowFailed) {
 		// Still try to shrink from a freshly cloned current board.
 		bestBoard = src.Clone()
 	}
@@ -85,7 +88,7 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 			h = minH
 		}
 		try := src.Clone()
-		if compactFeasible(try, w, h, seed+uint64(i), placeIters, routeSec, allowFailed) {
+		if compactFeasible(try, sch, w, h, seed+uint64(i), placeIters, routeSec, allowFailed) {
 			hi = mid
 			best = cand{w, h}
 			bestBoard = try
@@ -109,7 +112,7 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 					}
 				}
 				try := src.Clone()
-				if compactFeasible(try, w, h, seed+30+uint64(dim*10+k), placeIters, routeSec, allowFailed) {
+				if compactFeasible(try, sch, w, h, seed+30+uint64(dim*10+k), placeIters, routeSec, allowFailed) {
 					best = cand{w, h}
 					bestBoard = try
 				} else {
@@ -131,7 +134,7 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 	return fmt.Sprintf("compact %.1fx%.1f → %.1fx%.1f mm (%.0f%% area)", w0, h0, best.w, best.h, pct), nil
 }
 
-func compactFeasible(b *core.Board, w, h float64, seed uint64, iters int, routeSec float64, allowFailed int) bool {
+func compactFeasible(b *core.Board, sch *core.Schematic, w, h float64, seed uint64, iters int, routeSec float64, allowFailed int) bool {
 	if b.Outline == nil {
 		return false
 	}
@@ -159,6 +162,7 @@ func compactFeasible(b *core.Board, w, h float64, seed uint64, iters int, routeS
 	b.ClearRoute()
 	ropts := router.DefaultOptions()
 	ropts.MaxSeconds = routeSec
+	ropts.Schematic = sch
 	rep := router.Route(b, ropts)
 	if rep.Failed > allowFailed {
 		return false
