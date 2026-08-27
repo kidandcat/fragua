@@ -33,6 +33,7 @@ const (
 	KindDiffPairSkew       Kind = "diff_pair_skew"
 	KindViaBudget          Kind = "via_budget"
 	KindUnknownNet         Kind = "unknown_net"
+	KindNotRouted          Kind = "not_routed"
 )
 
 // pourEdgeInsetMM matches drc / gerber: an outline pour is inset from the
@@ -124,9 +125,12 @@ func Check(b *core.Board, sch *core.Schematic, opts Options) Report {
 	if len(opts.Nets) > 0 {
 		checkUnknownNets(b, sch, nets, &rep)
 	}
+	// Runs first: an unrouted net silently passes every other check, so
+	// without this a failed route reads as a clean board.
+	notRouted := checkNotRouted(b, sch, nets, &rep)
 	checkImpedance(b, sch, nets, opts, &rep)
 	checkReturnPath(b, nets, opts, &rep)
-	checkDiffPairSkew(b, sch, nets, opts, &rep)
+	checkDiffPairSkew(b, sch, nets, notRouted, opts, &rep)
 	checkViaBudget(b, nets, opts, &rep)
 	return rep
 }
@@ -200,6 +204,38 @@ func checkUnknownNets(b *core.Board, sch *core.Schematic, nets []string, rep *Re
 			Net:     net,
 		})
 	}
+}
+
+// checkNotRouted flags a net in scope that the schematic connects but the
+// board never routed. Every other check reads copper, so an unrouted net
+// passes them all vacuously — a failed route must not look like a clean SI
+// report. Returns the flagged set so the skew check can skip those pairs.
+// A net whose only copper is a pour counts as routed: a poured GND has a
+// return path even with no trace of its own.
+func checkNotRouted(b *core.Board, sch *core.Schematic, nets []string, rep *Report) map[string]bool {
+	if sch == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, net := range nets {
+		n := sch.Nets[net]
+		if n == nil {
+			continue // already reported as unknown_net; never both
+		}
+		if len(n.Connections) < 2 {
+			continue // a single-pin or dangling net has nothing to route
+		}
+		if netHasCopper(b, net) {
+			continue
+		}
+		out[net] = true
+		rep.add(Violation{
+			Kind: KindNotRouted, Severity: SeverityWarning,
+			Message: fmt.Sprintf("net %s has no routed copper; SI checks skipped", net),
+			Net:     net,
+		})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +599,8 @@ func cutoutPolys(b *core.Board) [][]core.Point {
 // 3. Diff-pair skew
 // ---------------------------------------------------------------------------
 
-func checkDiffPairSkew(b *core.Board, sch *core.Schematic, nets []string, opts Options, rep *Report) {
+func checkDiffPairSkew(b *core.Board, sch *core.Schematic, nets []string, notRouted map[string]bool,
+	opts Options, rep *Report) {
 	if sch == nil {
 		return
 	}
@@ -572,6 +609,9 @@ func checkDiffPairSkew(b *core.Board, sch *core.Schematic, nets []string, opts O
 		peer := diffPeer(sch, net)
 		if peer == "" || peer == net {
 			continue
+		}
+		if notRouted[net] || notRouted[peer] {
+			continue // skew against copper that does not exist says nothing
 		}
 		key := net + "\x00" + peer
 		if peer < net {

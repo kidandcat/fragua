@@ -64,6 +64,19 @@ func schWithClass(net, class string, cls core.NetClass) *core.Schematic {
 	return sch
 }
 
+// connect gives a net the pin connections a real netlist would have, so the
+// unrouted check can tell "nothing to route" from "route failed".
+func connect(sch *core.Schematic, net string, pins ...string) {
+	n := sch.Nets[net]
+	if n == nil {
+		n = &core.Net{Name: net}
+		sch.Nets[net] = n
+	}
+	for _, p := range pins {
+		n.Connections = append(n.Connections, core.NetConnection{SymbolID: core.NewID(), PinNumber: p})
+	}
+}
+
 func countKind(rep Report, k Kind) int {
 	n := 0
 	for _, v := range rep.Violations {
@@ -83,6 +96,125 @@ func firstOfKind(t *testing.T, rep Report, k Kind) Violation {
 	}
 	t.Fatalf("no %s violation in %+v", k, rep.Violations)
 	return Violation{}
+}
+
+// ---------------------------------------------------------------------------
+// unrouted nets
+// ---------------------------------------------------------------------------
+
+// The blind spot: every other check reads copper, so a net the router failed
+// to route passed them all and the board looked clean.
+func TestUnroutedNetInScopeWarns(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	sch := schWithClass("USB_DP", "hs", core.NetClass{ImpedanceOhms: 90})
+	connect(sch, "USB_DP", "1", "2")
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNotRouted); n != 1 {
+		t.Fatalf("expected 1 not_routed warning, got %d: %+v", n, rep.Violations)
+	}
+	if len(rep.Violations) != 1 {
+		t.Fatalf("not_routed should be the only finding: %+v", rep.Violations)
+	}
+	v := firstOfKind(t, rep, KindNotRouted)
+	if v.Severity != SeverityWarning || v.Net != "USB_DP" {
+		t.Fatalf("severity/net: %+v", v)
+	}
+	if !strings.Contains(v.Message, "no routed copper") {
+		t.Fatalf("message: %s", v.Message)
+	}
+	if rep.Errors != 0 || rep.Warnings != 1 {
+		t.Fatalf("summary: %s", rep.Summary())
+	}
+}
+
+func TestRoutedNetGetsNoNotRouted(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	connect(sch, "CLK", "1", "2")
+	rep := Check(b, sch, DefaultOptions())
+	if countKind(rep, KindNotRouted) != 0 {
+		t.Fatalf("a routed net is not unrouted: %+v", rep.Violations)
+	}
+	if len(rep.Violations) != 0 {
+		t.Fatalf("expected a clean report: %+v", rep.Violations)
+	}
+}
+
+// Vias alone are copper: a net escaped to another layer is not "unrouted".
+func TestNetWithOnlyViasIsRouted(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addVia(b, "CLK", 10, 10)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	connect(sch, "CLK", "1", "2")
+	if rep := Check(b, sch, DefaultOptions()); countKind(rep, KindNotRouted) != 0 {
+		t.Fatalf("via copper counts as routed: %+v", rep.Violations)
+	}
+}
+
+// A net with fewer than two connections has nothing to route.
+func TestSinglePinNetIsNotFlagged(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	connect(sch, "CLK", "1")
+	if rep := Check(b, sch, DefaultOptions()); countKind(rep, KindNotRouted) != 0 {
+		t.Fatalf("single-pin net has nothing to route: %+v", rep.Violations)
+	}
+}
+
+// unknown_net and not_routed are mutually exclusive.
+func TestUnknownNetDoesNotAlsoGetNotRouted(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	opts := DefaultOptions()
+	opts.Nets = []string{"TYPO"}
+	rep := Check(b, core.NewSchematic(), opts)
+	if countKind(rep, KindUnknownNet) != 1 || countKind(rep, KindNotRouted) != 0 {
+		t.Fatalf("expected unknown_net only: %+v", rep.Violations)
+	}
+}
+
+// An unrouted diff-pair half must not also produce a skew number against
+// copper that does not exist.
+func TestUnroutedDiffPairHalfSkipsSkew(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "D_P", 0, 5, 5, 25, 5, 0.2) // routed; D_N never routed
+	sch := diffPairSchematic(0.5)
+	connect(sch, "D_P", "1", "2")
+	connect(sch, "D_N", "1", "2")
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNotRouted); n != 1 {
+		t.Fatalf("expected 1 not_routed (D_N), got %d: %+v", n, rep.Violations)
+	}
+	if countKind(rep, KindDiffPairSkew) != 0 {
+		t.Fatalf("skew against no copper says nothing: %+v", rep.Violations)
+	}
+	if v := firstOfKind(t, rep, KindNotRouted); v.Net != "D_N" {
+		t.Fatalf("wrong half flagged: %+v", v)
+	}
+}
+
+// not_routed lands before the findings of the other checks.
+func TestNotRoutedIsReportedFirst(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "SCK", 0, 5, 5, 20, 5, 0.22) // SCK routed and off-target
+	sch := schWithClass("SCK", "hs", core.NetClass{ImpedanceOhms: 50})
+	sch.Nets["USB_DP"] = &core.Net{Name: "USB_DP", Class: "hs"}
+	connect(sch, "SCK", "1", "2")
+	connect(sch, "USB_DP", "1", "2")
+	rep := Check(b, sch, DefaultOptions())
+	if len(rep.Violations) != 2 {
+		t.Fatalf("expected not_routed + impedance deviation: %+v", rep.Violations)
+	}
+	if rep.Violations[0].Kind != KindNotRouted {
+		t.Fatalf("not_routed must come first: %+v", rep.Violations)
+	}
 }
 
 // ---------------------------------------------------------------------------

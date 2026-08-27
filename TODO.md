@@ -5,17 +5,27 @@
 Physics-aware verification beyond geometric DRC, staged so the cheap 80%
 lands first and full-wave simulation stays an external tool.
 
-**v1 (native Go, in progress):** a `si-check` script verb that reports
-findings DRC-style, built from what the codebase already has (stackup +
-closed-form impedance from #30):
+**v1 (native Go) — SHIPPED** (internal/si + `si-check` verb): impedance
+audit per net class (coalesced per net/layer/width), return-path check
+against plane layers or — on planeless 2L stacks — pours as de-facto
+reference, diff-pair skew, via budget, `not_routed`/`unknown_net` guards.
+Shipped alongside: router resolves per-net trace width
+(impedance-derived > class TraceWidthMM > default; internal/router/width.go),
+compact's probe uses the same widths, and layer-name resolution is
+stackup-aware (pour/auto-pour/trace landed on wrong inner layers of 4L+).
 
-- Impedance audit per net class: compute microstrip/stripline Z0 for the
-  layers a net actually uses and flag deviation from a target (e.g.
-  `si-check ANT 50` → every segment of ANT vs 50 Ω ±10%).
-- Return-path check: flag segments whose reference plane has a gap/split
-  directly under them (pure geometry against pours/planes).
-- Diff-pair length matching / intra-pair skew beyond a tolerance.
-- Stub and via-count budget on nets marked high-speed/RF.
+Validated against fecha-gateway-v3 (2L: return path fully covered by the
+GND pours; 123 Ω on 0.25 mm traces is expected 2L physics, harmless at
+SPI/UART speeds) and a 4L ESP32-S3 USB board (caught router ignoring
+impedance widths, missing inner-plane pours, diff-pair skew).
+
+**Open (router):** impedance-width nets (e.g. USB at 0.414 mm on the
+default 4L stack) can become unroutable through fine-pitch congestion the
+0.089 mm default squeezed through. Needs impedance-aware necking (allow
+short necked escapes, keep nominal width elsewhere) or a routability
+fallback with an explicit report line. Also: `impedance.LineParams`
+refuses the asymmetric default 4L stack on inner layers, so impedance
+nets are only width-controlled on F/B there.
 
 **v2 (external, later):** full-wave FDTD for the rare GHz/antenna cases via
 gerber2ems (Antmicro) + openEMS over the fab pack Fragua already emits —
