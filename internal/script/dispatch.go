@@ -232,6 +232,8 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		opts = router.ParseOptions(opts, args)
 		var rep router.Report
 		p.MutateBoard(func(b *core.Board) {
+			// Net classes drive per-net width (impedance target first).
+			opts.Schematic = p.Schematic()
 			rep = router.Route(b, opts)
 		})
 		return rep.Summary(), nil
@@ -786,7 +788,7 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 	ref, key := fields[0], fields[1]
 	var value string
 	rot := 0.0
-	layer := core.LayerTop
+	layerTok := "Top"
 	for _, t := range fields[2:] {
 		switch {
 		case strings.HasPrefix(t, "rot="):
@@ -796,11 +798,12 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 		case strings.HasPrefix(t, "value="):
 			value = strings.TrimPrefix(t, "value=")
 		case strings.HasPrefix(t, "layer="):
-			layer = parseLayerToken(strings.TrimPrefix(t, "layer="))
+			layerTok = strings.TrimPrefix(t, "layer=")
 		}
 	}
 
 	p.Lock()
+	layer := parseLayerTokenOn(layerTok, p.Board().StackupOrDefault())
 	entry, found := p.FindLibrary(key)
 	sch := p.Schematic()
 	var sym *core.Symbol
@@ -916,7 +919,7 @@ func addTrace(p *core.Project, args string) (string, error) {
 	if len(fields) < 5 {
 		return "", fmt.Errorf("trace NET x1 y1 x2 y2 [layer=...] [width=...]")
 	}
-	layer := core.LayerTop
+	layerTok := "Top"
 	width := 0.15
 	var net string
 	var x1, y1, x2, y2 float64
@@ -924,7 +927,7 @@ func addTrace(p *core.Project, args string) (string, error) {
 
 	// Detect Rust form: first token is layer name and second is net
 	if isLayerToken(fields[0]) && len(fields) >= 6 {
-		layer = parseLayerToken(fields[0])
+		layerTok = fields[0]
 		net = fields[1]
 		x1, err = strconv.ParseFloat(fields[2], 64)
 		if err != nil {
@@ -968,21 +971,25 @@ func addTrace(p *core.Project, args string) (string, error) {
 		}
 		for _, t := range fields[5:] {
 			if strings.HasPrefix(t, "layer=") {
-				layer = parseLayerToken(strings.TrimPrefix(t, "layer="))
+				layerTok = strings.TrimPrefix(t, "layer=")
 			} else if strings.HasPrefix(t, "width=") {
 				fmt.Sscanf(t, "width=%f", &width)
 			}
 		}
 	}
 	id := core.NewID()
+	layerName := ""
 	p.MutateBoard(func(b *core.Board) {
+		stack := b.StackupOrDefault()
+		layer := parseLayerTokenOn(layerTok, stack)
+		layerName = stack.LayerName(int(layer.Index))
 		b.Traces = append(b.Traces, core.Trace{
 			ID: id, Layer: layer, Net: net, Width: core.FromMM(width),
 			Start: core.NewPoint(core.FromMM(x1), core.FromMM(y1)),
 			End:   core.NewPoint(core.FromMM(x2), core.FromMM(y2)),
 		})
 	})
-	return fmt.Sprintf("trace %s on %s (%s)", id.String(), layer.LegacyName(), net), nil
+	return fmt.Sprintf("trace %s on %s (%s)", id.String(), layerName, net), nil
 }
 
 func addVia(p *core.Project, args string) (string, error) {
@@ -1210,10 +1217,7 @@ func layerCmd(p *core.Project, args string) (string, error) {
 			if kind == "" {
 				kind = "signal"
 			}
-			name := ls.Name
-			if name == "" {
-				name = core.Layer{Index: uint8(i)}.LegacyName()
-			}
+			name := s.LayerName(i)
 			oz := s.CopperOz(i)
 			fmt.Fprintf(&b, "\n  [%d] %s (%s, %.0f oz)", i, name, kind, oz)
 			if ls.AssignedNet != "" {
@@ -1590,31 +1594,12 @@ func isLayerToken(s string) bool {
 	}
 }
 
-func parseLayerToken(s string) core.Layer {
-	return parseLayerTokenOn(s, nil)
-}
-
-func parseLayerTokenOn(s string, board *core.Board) core.Layer {
-	switch strings.ToLower(s) {
-	case "top", "f.cu":
-		return core.LayerTop
-	case "bottom", "b.cu":
-		if board != nil {
-			return board.StackupOrDefault().BottomLayer()
-		}
-		return core.LayerBottom
-	default:
-		low := strings.ToLower(s)
-		if strings.HasPrefix(low, "in") {
-			rest := s[2:]
-			if i := strings.IndexByte(rest, '.'); i >= 0 {
-				rest = rest[:i]
-			}
-			n, err := strconv.Atoi(rest)
-			if err == nil && n >= 1 {
-				return core.Layer{Index: uint8(n)}
-			}
-		}
-		return core.LayerTop
+// parseLayerTokenOn resolves a layer token against the board stackup, so
+// `layer=In1.Cu` / `layer=B.Cu` land on the right copper whatever the stack
+// depth. Unknown tokens fall back to the top layer, as they always have.
+func parseLayerTokenOn(s string, stack core.LayerStackup) core.Layer {
+	if l, ok := stack.ResolveLayerName(s); ok {
+		return l
 	}
+	return core.LayerTop
 }

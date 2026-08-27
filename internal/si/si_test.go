@@ -274,16 +274,81 @@ func TestReturnPathNoPourOnPlaneLayer(t *testing.T) {
 	}
 }
 
+// No plane and no pour anywhere: nothing to reference against, one warning
+// per net rather than per segment.
 func TestReturnPathNoPlaneInStackup(t *testing.T) {
 	b := board2L() // Default2Layer: both layers are signal
 	addTrace(b, "CLK", 0, 5, 5, 20, 5, 2.7)
+	addTrace(b, "CLK", 0, 20, 5, 30, 5, 2.7)
 	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
 	rep := Check(b, sch, DefaultOptions())
 	if n := countKind(rep, KindNoReferencePlane); n != 1 {
-		t.Fatalf("expected 1 no-plane warning, got %d: %+v", n, rep.Violations)
+		t.Fatalf("expected 1 no-reference warning, got %d: %+v", n, rep.Violations)
 	}
-	if v := firstOfKind(t, rep, KindNoReferencePlane); v.Severity != SeverityWarning {
-		t.Fatalf("no-plane is a warning: %+v", v)
+	v := firstOfKind(t, rep, KindNoReferencePlane)
+	if v.Severity != SeverityWarning {
+		t.Fatalf("no-reference is a warning: %+v", v)
+	}
+	if !strings.Contains(v.Message, "no reference plane or pour") {
+		t.Fatalf("message must mention pours too: %q", v.Message)
+	}
+	if countKind(rep, KindReferencePlaneGap) != 0 {
+		t.Fatalf("nothing to check against, so no gaps: %+v", rep.Violations)
+	}
+}
+
+// A pour on the trace's own layer is not a reference — the return current
+// needs the copper on the other side of the dielectric.
+func TestReturnPathPourOnSameLayerIsNotAReference(t *testing.T) {
+	b := board2L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 2.7)
+	addPour(b, "GND", 0) // outline pour on F.Cu, same layer as the trace
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNoReferencePlane); n != 1 {
+		t.Fatalf("expected 1 no-reference warning, got %d: %+v", n, rep.Violations)
+	}
+}
+
+// The 2-layer case that matters: no plane in the stackup, but a full GND pour
+// on the opposite copper is the de-facto reference and covers the trace.
+func TestReturnPathPourIsReferenceWithoutPlane(t *testing.T) {
+	b := board2L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 2.7)
+	addPour(b, "GND", 1, [2]float64{0, 0}, [2]float64{40, 0}, [2]float64{40, 30}, [2]float64{0, 30})
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNoReferencePlane); n != 0 {
+		t.Fatalf("the pour is the reference, no warning expected: %+v", rep.Violations)
+	}
+	if n := countKind(rep, KindReferencePlaneGap); n != 0 {
+		t.Fatalf("the pour covers the whole trace: %+v", rep.Violations)
+	}
+}
+
+// Same 2-layer setup, but the pour stops short of the trace.
+func TestReturnPathPourGapWithoutPlane(t *testing.T) {
+	b := board2L()
+	// Trace runs x=5→20 at y=5; the B.Cu pour stops at x=10.
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 2.7)
+	addPour(b, "GND", 1, [2]float64{0, 0}, [2]float64{10, 0}, [2]float64{10, 30}, [2]float64{0, 30})
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNoReferencePlane); n != 0 {
+		t.Fatalf("a pour exists, so no no-reference warning: %+v", rep.Violations)
+	}
+	if n := countKind(rep, KindReferencePlaneGap); n != 1 {
+		t.Fatalf("expected 1 return-path gap, got %d: %+v", n, rep.Violations)
+	}
+	v := firstOfKind(t, rep, KindReferencePlaneGap)
+	if v.Severity != SeverityError {
+		t.Fatalf("a return-path gap is an error: %+v", v)
+	}
+	if v.XMM < 10 || v.XMM > 20 {
+		t.Fatalf("gap should be reported past x=10: %+v", v)
+	}
+	if !strings.Contains(v.Message, "reference pour on B.Cu") {
+		t.Fatalf("message must name the reference pour layer: %q", v.Message)
 	}
 }
 

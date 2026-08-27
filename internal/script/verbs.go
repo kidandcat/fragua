@@ -53,13 +53,13 @@ func cmdPour(p *core.Project, args string) (string, error) {
 		return "", fmt.Errorf("pour NET [layer=Top] [relief=spokes4|solid] [stitch=true]")
 	}
 	net := fields[0]
-	layer := core.LayerTop
+	layerTok := "Top"
 	relief := "spokes4"
 	var stitch *core.StitchPolicy
 	for _, t := range fields[1:] {
 		switch {
 		case strings.HasPrefix(t, "layer="):
-			layer = parseLayerToken(strings.TrimPrefix(t, "layer="))
+			layerTok = strings.TrimPrefix(t, "layer=")
 		case strings.HasPrefix(t, "relief="):
 			relief = strings.TrimPrefix(t, "relief=")
 		case strings.HasPrefix(t, "stitch="):
@@ -76,7 +76,14 @@ func cmdPour(p *core.Project, args string) (string, error) {
 			stitch.PitchMM = pitch
 		}
 	}
+	// The layer only means something against the stackup: on a 4-layer board
+	// In1.Cu is index 1 and B.Cu index 3, neither of which the 2-layer
+	// shorthand can name.
+	layerName := ""
 	p.MutateBoard(func(b *core.Board) {
+		stack := b.StackupOrDefault()
+		layer := parseLayerTokenOn(layerTok, stack)
+		layerName = stack.LayerName(int(layer.Index))
 		out := b.Pours[:0]
 		for _, pr := range b.Pours {
 			if !(pr.Net == net && pr.Layer.Index == layer.Index) {
@@ -88,7 +95,7 @@ func cmdPour(p *core.Project, args string) (string, error) {
 			ID: core.NewID(), Net: net, Layer: layer, ThermalRelief: &tr, Stitching: stitch,
 		})
 	})
-	return fmt.Sprintf("pour %s on %s", net, layer.LegacyName()), nil
+	return fmt.Sprintf("pour %s on %s", net, layerName), nil
 }
 
 func cmdAutoPour(p *core.Project, args string) (string, error) {

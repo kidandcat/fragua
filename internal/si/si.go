@@ -333,61 +333,80 @@ func checkReturnPath(b *core.Board, nets []string, opts Options, rep *Report) {
 			break
 		}
 	}
+	// No plane layer in the stackup — the usual 2-layer signal/signal board —
+	// so the pours on the other copper are the de-facto reference and get
+	// checked exactly like a plane would. Pour nets are not filtered: a power
+	// pour is a perfectly good AC return.
+	var pourLayers map[int][]*core.Pour
+	if !anyPlane {
+		pourLayers = poursByLayer(b)
+	}
 	for _, net := range nets {
-		if !anyPlane {
-			if netHasTraces(b, net) {
-				rep.add(Violation{
-					Kind: KindNoReferencePlane, Severity: SeverityWarning,
-					Message: fmt.Sprintf("net %s: no reference plane in stackup", net),
-					Net:     net,
-				})
-			}
-			continue
-		}
 		reportedNoPour := map[int]bool{}
 		// Gap locations matter, so they stay per-segment — but a net routed
 		// entirely off the plane would bury the report, hence the cap.
 		gaps, suppressed := 0, 0
+		referenced := false
 		for i := range b.Traces {
 			tr := &b.Traces[i]
 			if tr.Net != net {
 				continue
 			}
 			sig := int(tr.Layer.Index)
-			if sig >= stack.CopperCount() || stack.IsPlane(sig) {
-				continue // plane copper references itself
-			}
-			plane, ok := referencePlane(stack, sig)
-			if !ok {
+			if sig >= stack.CopperCount() {
 				continue
 			}
-			pours := poursOnLayer(b, plane)
-			if len(pours) == 0 {
-				if !reportedNoPour[plane] {
-					reportedNoPour[plane] = true
-					mx, my := segMidMM(tr)
-					rep.add(Violation{
-						Kind: KindReferencePlaneGap, Severity: SeverityError,
-						Message: fmt.Sprintf("net %s references %s, which has no pour (no return path)",
-							net, layerName(stack, plane)),
-						Net: net, XMM: mx, YMM: my,
-					})
+			ref, pours, isPour := 0, []*core.Pour(nil), false
+			if anyPlane {
+				if stack.IsPlane(sig) {
+					continue // plane copper references itself
 				}
-				continue
-			}
-			if x, y, gap := firstUncovered(b, pours, tr, opts.SampleStepMM); gap {
-				if gaps >= maxGapsPerNet {
-					suppressed++
+				plane, ok := referencePlane(stack, sig)
+				if !ok {
 					continue
 				}
-				gaps++
-				rep.add(Violation{
-					Kind: KindReferencePlaneGap, Severity: SeverityError,
-					Message: fmt.Sprintf("reference plane gap under %s at (%.2f, %.2f) mm on %s",
-						net, x, y, layerName(stack, plane)),
-					Net: net, XMM: x, YMM: y,
-				})
+				ref = plane
+				pours = poursOnLayer(b, plane)
+				if len(pours) == 0 {
+					if !reportedNoPour[ref] {
+						reportedNoPour[ref] = true
+						mx, my := segMidMM(tr)
+						rep.add(Violation{
+							Kind: KindReferencePlaneGap, Severity: SeverityError,
+							Message: fmt.Sprintf("net %s references %s, which has no pour (no return path)",
+								net, layerName(stack, ref)),
+							Net: net, XMM: mx, YMM: my,
+						})
+					}
+					continue
+				}
+			} else {
+				pourLayer, ok := referencePourLayer(pourLayers, stack, sig)
+				if !ok {
+					continue
+				}
+				ref, pours, isPour = pourLayer, pourLayers[pourLayer], true
 			}
+			referenced = true
+			x, y, gap := firstUncovered(b, pours, tr, opts.SampleStepMM)
+			if !gap {
+				continue
+			}
+			if gaps >= maxGapsPerNet {
+				suppressed++
+				continue
+			}
+			gaps++
+			msg := fmt.Sprintf("reference plane gap under %s at (%.2f, %.2f) mm on %s",
+				net, x, y, layerName(stack, ref))
+			if isPour {
+				msg = fmt.Sprintf("return path gap under %s at (%.2f, %.2f) mm (reference pour on %s)",
+					net, x, y, layerName(stack, ref))
+			}
+			rep.add(Violation{
+				Kind: KindReferencePlaneGap, Severity: SeverityError,
+				Message: msg, Net: net, XMM: x, YMM: y,
+			})
 		}
 		if suppressed > 0 {
 			rep.add(Violation{
@@ -396,7 +415,41 @@ func checkReturnPath(b *core.Board, nets []string, opts Options, rep *Report) {
 				Net:     net,
 			})
 		}
+		// Nothing to reference against: no plane, and no pour on any layer
+		// other than the ones this net is routed on.
+		if !anyPlane && !referenced && netHasTraces(b, net) {
+			rep.add(Violation{
+				Kind: KindNoReferencePlane, Severity: SeverityWarning,
+				Message: fmt.Sprintf("net %s: no reference plane or pour in stackup", net),
+				Net:     net,
+			})
+		}
 	}
+}
+
+// referencePourLayer is the nearest copper layer other than sig carrying a
+// pour. Ties go up, like referencePlane.
+func referencePourLayer(byLayer map[int][]*core.Pour, s core.LayerStackup, sig int) (int, bool) {
+	n := s.CopperCount()
+	for d := 1; d < n; d++ {
+		if up := sig - d; up >= 0 && len(byLayer[up]) > 0 {
+			return up, true
+		}
+		if dn := sig + d; dn < n && len(byLayer[dn]) > 0 {
+			return dn, true
+		}
+	}
+	return 0, false
+}
+
+// poursByLayer indexes the board pours by copper layer.
+func poursByLayer(b *core.Board) map[int][]*core.Pour {
+	out := map[int][]*core.Pour{}
+	for i := range b.Pours {
+		l := int(b.Pours[i].Layer.Index)
+		out[l] = append(out[l], &b.Pours[i])
+	}
+	return out
 }
 
 // referencePlane is the nearest plane copper layer to sig. Ties (a plane one
@@ -416,10 +469,7 @@ func referencePlane(s core.LayerStackup, sig int) (int, bool) {
 }
 
 func layerName(s core.LayerStackup, i int) string {
-	if i >= 0 && i < len(s.Layers) && s.Layers[i].Name != "" {
-		return s.Layers[i].Name
-	}
-	return fmt.Sprintf("L%d", i+1)
+	return s.LayerName(i)
 }
 
 func poursOnLayer(b *core.Board, layer int) []*core.Pour {

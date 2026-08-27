@@ -37,6 +37,12 @@ type Options struct {
 	SearchClearMM   float64 // pad-edge search gap; 0 → fab ceiling
 	Teardrops       bool    // add copper teardrops at pad/via junctions
 	TeardropsSet    bool    // true if teardrop= was in the script args
+	// Schematic supplies the net classes that drive per-net trace width
+	// (impedance target, then class width). nil → TraceWidthMM everywhere.
+	Schematic *core.Schematic
+
+	// widths is derived from Schematic + stackup inside Route.
+	widths *netWidths
 }
 
 // DefaultOptions returns Rust-aligned 2-layer Grid defaults.
@@ -214,6 +220,9 @@ func Route(board *core.Board, opts Options) Report {
 	// 2. Fine-pitch: tighten cell/trace/via so a 0.4 mm QFN can escape,
 	// then staggered dogbone fanout, then grid with all copper stamped.
 	opts = applyFabCeiling(board, opts)
+	// Per-net width comes from the class after the fab ceiling: the fab
+	// floor is a floor for class widths too, never a ceiling.
+	opts.widths = newNetWidths(board, opts)
 	_ = planFanout(board, opts)
 	g := newGrid(board, opts)
 
@@ -791,6 +800,12 @@ func existingNetSources(board *core.Board, g *grid, net string, pads []padLoc, c
 }
 
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	// This net's nominal width drives planning clearance and the grid's
+	// own-net paint; each segment then takes its own layer's width.
+	opts.TraceWidthMM = opts.netWidthMax(name)
+	defer func(w float64) { g.opts.TraceWidthMM = w }(g.opts.TraceWidthMM)
+	g.opts.TraceWidthMM = opts.TraceWidthMM
+
 	if d := routeDirect(board, g, name, pads, opts); d.Status == "ok" {
 		return d
 	}
@@ -863,7 +878,6 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 	if span > 25 {
 		return Outcome{Status: "failed", Reason: "direct-span"}
 	}
-	w := core.FromMM(opts.TraceWidthMM)
 	connected := map[int]bool{0: true}
 	var segs []core.Trace
 	length := 0.0
@@ -885,6 +899,7 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 		}
 		a, b := pads[bestI].p, pads[bestJ].p
 		layer := pads[bestJ].layer
+		w := core.FromMM(opts.widthFor(name, layer))
 		ax, ay := a.X.ToMM(), a.Y.ToMM()
 		bx, by := b.X.ToMM(), b.Y.ToMM()
 		var path [][2]float64
@@ -981,7 +996,6 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 		}
 		sites = append(sites, site{pad: p, via: *chosen})
 	}
-	w := core.FromMM(opts.TraceWidthMM)
 	// Stubs + vias first so A* can use them as sources.
 	var stubs []core.Trace
 	var vias []core.Via
@@ -992,7 +1006,8 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 			Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
 		})
 		stubs = append(stubs, core.Trace{
-			ID: core.NewID(), Layer: core.Layer{Index: s.pad.layer}, Net: name, Width: w,
+			ID: core.NewID(), Layer: core.Layer{Index: s.pad.layer}, Net: name,
+			Width: core.FromMM(opts.widthFor(name, s.pad.layer)),
 			Start: s.pad.p, End: s.via,
 		})
 		if cx, cy, ok := g.worldToCell(s.via.X, s.via.Y); ok {
@@ -1038,7 +1053,8 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 				continue
 			}
 			hops = append(hops, core.Trace{
-				ID: core.NewID(), Layer: core.Layer{Index: a.layer}, Net: name, Width: w,
+				ID: core.NewID(), Layer: core.Layer{Index: a.layer}, Net: name,
+				Width: core.FromMM(opts.widthFor(name, a.layer)),
 				Start: core.NewPoint(a.x, a.y), End: core.NewPoint(b.x, b.y),
 			})
 		}
@@ -1083,7 +1099,6 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 		return connected, 0, 0
 	}
 	need := opts.TraceWidthMM/2 + opts.padClear()
-	w := core.FromMM(opts.TraceWidthMM)
 	parent := make([]int, len(pads))
 	for i := range parent {
 		parent[i] = i
@@ -1127,6 +1142,7 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 		}
 		a, b := pads[pr.i].p, pads[pr.j].p
 		layer := pads[pr.i].layer
+		w := core.FromMM(opts.widthFor(name, layer))
 		ax, ay := a.X.ToMM(), a.Y.ToMM()
 		bx, by := b.X.ToMM(), b.Y.ToMM()
 		var path [][2]float64
@@ -1301,7 +1317,6 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		// Do NOT rewrite path ends to pad centres: a Theta* parent
 		// 10 mm away would then chord through a neighbour pad
 		// (fecha NRESET/NSS vs U2 header, 0.16 mm DRC).
-		w := core.FromMM(opts.TraceWidthMM)
 		for k := 0; k < len(path)-1; k++ {
 			a, b := path[k], path[k+1]
 			if a.layer != b.layer {
@@ -1326,7 +1341,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 				Layer: core.Layer{Index: a.layer},
 				Start: core.NewPoint(a.x, a.y),
 				End:   core.NewPoint(b.x, b.y),
-				Width: w,
+				Width: core.FromMM(opts.widthFor(name, a.layer)),
 				Net:   name,
 			}})
 			c0x, c0y, ok0 := g.worldToCell(a.x, a.y)
@@ -1365,7 +1380,8 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			if g.segmentPadClear(fx, fy, px, py, goalLayer, name, need) {
 				pendT = append(pendT, pendingTrace{tr: core.Trace{
 					ID: core.NewID(), Layer: core.Layer{Index: goalLayer},
-					Start: core.NewPoint(from.x, from.y), End: padP, Width: w, Net: name,
+					Start: core.NewPoint(from.x, from.y), End: padP,
+					Width: core.FromMM(opts.widthFor(name, goalLayer)), Net: name,
 				}})
 				segs++
 				length += hypotMM(core.NewPoint(from.x, from.y), padP)

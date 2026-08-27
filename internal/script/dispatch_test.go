@@ -359,6 +359,81 @@ func TestLayerAddInsertsBeforeBottom(t *testing.T) {
 	}
 }
 
+// Layer tokens are resolved against the stackup: on a 4-layer board In1.Cu is
+// copper 1, In2.Cu copper 2 and B.Cu copper 3 — the 2-layer shorthand used to
+// answer "Bottom" for In1.Cu and "In1" for In2.Cu, and put B.Cu on copper 1.
+func TestPourResolvesLayerNamesOn4Layer(t *testing.T) {
+	p := core.NewProject("t-pour-4l")
+	rs := RunScript(p, `
+outline 20 20
+stackup 4
+pour GND layer=In1.Cu
+pour +3V3 layer=In2.Cu
+pour SHIELD layer=B.Cu
+pour SIG layer=F.Cu
+`)
+	allOK(t, rs)
+	wantMsg := []string{"pour GND on In1.Cu", "pour +3V3 on In2.Cu", "pour SHIELD on B.Cu", "pour SIG on F.Cu"}
+	for i, want := range wantMsg {
+		if got := rs[i+2].Result; got != want {
+			t.Fatalf("result %d = %q, want %q", i+2, got, want)
+		}
+	}
+	p.RLock()
+	defer p.RUnlock()
+	b := p.Board()
+	got := map[string]uint8{}
+	for _, pr := range b.Pours {
+		got[pr.Net] = pr.Layer.Index
+	}
+	want := map[string]uint8{"SIG": 0, "GND": 1, "+3V3": 2, "SHIELD": 3}
+	for net, idx := range want {
+		if got[net] != idx {
+			t.Fatalf("pour %s on copper %d, want %d (all: %+v)", net, got[net], idx, got)
+		}
+	}
+	if len(b.Pours) != len(want) {
+		t.Fatalf("expected %d pours, got %d: %+v", len(want), len(b.Pours), got)
+	}
+}
+
+// auto-pour asks for Top and Bottom by name, so it must follow the stackup too.
+func TestAutoPourHitsRealBottomOn4Layer(t *testing.T) {
+	p := core.NewProject("t-autopour-4l")
+	rs := RunScript(p, "outline 20 20\nstackup 4\nauto-pour GND\n")
+	allOK(t, rs)
+	p.RLock()
+	defer p.RUnlock()
+	var layers []uint8
+	for _, pr := range p.Board().Pours {
+		if pr.Net == "GND" {
+			layers = append(layers, pr.Layer.Index)
+		}
+	}
+	if len(layers) != 2 || layers[0] != 0 || layers[1] != 3 {
+		t.Fatalf("auto-pour GND landed on %v, want [0 3]", layers)
+	}
+}
+
+// A trace asks for the same layer names, from the same helper.
+func TestTraceResolvesInnerLayerOn4Layer(t *testing.T) {
+	p := core.NewProject("t-trace-4l")
+	rs := RunScript(p, "outline 20 20\nstackup 4\ntrace SIG 1 1 5 1 layer=In2.Cu\ntrace SIG2 1 2 5 2 layer=B.Cu\n")
+	allOK(t, rs)
+	if !strings.Contains(rs[2].Result, "on In2.Cu") {
+		t.Fatalf("trace result: %s", rs[2].Result)
+	}
+	p.RLock()
+	defer p.RUnlock()
+	got := map[string]uint8{}
+	for _, tr := range p.Board().Traces {
+		got[tr.Net] = tr.Layer.Index
+	}
+	if got["SIG"] != 2 || got["SIG2"] != 3 {
+		t.Fatalf("trace layers %+v, want SIG=2 SIG2=3", got)
+	}
+}
+
 func TestFabRulesAndScreenshot(t *testing.T) {
 	p := core.NewProject("t6")
 	dir := t.TempDir()

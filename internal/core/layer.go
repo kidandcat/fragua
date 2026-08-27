@@ -22,7 +22,9 @@ var (
 // IsTop reports index 0.
 func (l Layer) IsTop() bool { return l.Index == 0 }
 
-// LegacyName returns a short display name.
+// LegacyName returns a short display name. It only knows the 2-layer
+// shorthand, so on deeper stacks use LayerStackup.LayerName instead — index 1
+// is In1.Cu on a 4-layer board, not the bottom.
 func (l Layer) LegacyName() string {
 	switch l.Index {
 	case 0:
@@ -193,6 +195,63 @@ func Default4Layer() LayerStackup {
 			{ThicknessMM: 0.21, Er: 4.6},
 		},
 	}
+}
+
+// LayerName is the display name of copper index i: the stackup's own name when
+// it has one, otherwise the canonical name for that index on a stack this deep.
+func (s LayerStackup) LayerName(i int) string {
+	if i >= 0 && i < len(s.Layers) && s.Layers[i].Name != "" {
+		return s.Layers[i].Name
+	}
+	return CopperLayerName(i, s.CopperCount())
+}
+
+// CopperLayerName is the canonical name of copper index i on a stack of n
+// copper layers: F.Cu, In1.Cu … In(n-2).Cu, B.Cu.
+func CopperLayerName(i, n int) string {
+	switch {
+	case i <= 0:
+		return "F.Cu"
+	case n >= 2 && i >= n-1:
+		return "B.Cu"
+	default:
+		return fmt.Sprintf("In%d.Cu", i)
+	}
+}
+
+// ResolveLayerName maps a layer token to a copper index on this stack. A name
+// from the stackup wins (case-insensitive), then the Top/F.Cu and Bottom/B.Cu
+// shorthands, then InN. "Bottom" and InN only mean index 1 on a 2-layer stack:
+// resolving them without the stackup is what put pours on the wrong copper.
+func (s LayerStackup) ResolveLayerName(name string) (Layer, bool) {
+	tok := strings.TrimSpace(name)
+	if tok == "" {
+		return Layer{}, false
+	}
+	for i, ls := range s.Layers {
+		if ls.Name != "" && strings.EqualFold(ls.Name, tok) {
+			return Layer{Index: uint8(i)}, true
+		}
+	}
+	switch strings.ToLower(tok) {
+	case "top", "f.cu":
+		return LayerTop, true
+	case "bottom", "b.cu":
+		return s.BottomLayer(), true
+	}
+	if strings.HasPrefix(strings.ToLower(tok), "in") {
+		rest := tok[2:]
+		if i := strings.IndexByte(rest, '.'); i >= 0 {
+			rest = rest[:i]
+		}
+		if k, err := strconv.Atoi(rest); err == nil && k >= 1 {
+			if k >= s.CopperCount() {
+				return s.BottomLayer(), true // deeper than this stack goes
+			}
+			return Layer{Index: uint8(k)}, true
+		}
+	}
+	return Layer{}, false
 }
 
 // IsPlane reports whether copper index i is a power/plane layer.
