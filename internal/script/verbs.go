@@ -10,6 +10,7 @@ import (
 	"github.com/mentasystems/fragua/internal/impedance"
 	"github.com/mentasystems/fragua/internal/placer"
 	"github.com/mentasystems/fragua/internal/router"
+	"github.com/mentasystems/fragua/internal/si"
 )
 
 func splitRefsKV(args string) (refs []string, kv string) {
@@ -857,6 +858,37 @@ func cmdImpedance(p *core.Project, args string) (string, error) {
 		return "", err
 	}
 	return r.Format(net), nil
+}
+
+func cmdSICheck(p *core.Project, args string) (string, error) {
+	// si-check [NET...] [tol=0.10] [max_vias=N]
+	nets, kv := splitRefsKV(args)
+	opts := si.DefaultOptions()
+	if v, ok := kvFloat(kv, "tol"); ok {
+		if v <= 0 || v >= 1 {
+			return "", fmt.Errorf("si-check: tol must be in (0, 1)")
+		}
+		opts.Tolerance = v
+	}
+	if v, ok := kvFloat(kv, "max_vias"); ok {
+		if v < 0 {
+			return "", fmt.Errorf("si-check: max_vias must be >= 0")
+		}
+		opts.MaxVias = int(v)
+	}
+	opts.Nets = nets
+	p.RLock()
+	rep := si.Check(p.Board(), p.Schematic(), opts)
+	p.RUnlock()
+	lines := []string{rep.Summary()}
+	for _, v := range rep.Violations {
+		line := fmt.Sprintf("  %s %s net=%s", v.Kind, v.Severity, v.Net)
+		if v.XMM != 0 || v.YMM != 0 {
+			line += fmt.Sprintf(" @%.2f,%.2f", v.XMM, v.YMM)
+		}
+		lines = append(lines, line+"  "+v.Message)
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // tiny xorshift for place-legal (not the placer RNG — keep packages decoupled).

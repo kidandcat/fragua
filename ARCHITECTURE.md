@@ -38,7 +38,7 @@ pcb/   (repo: mentasystems/fragua)
 │   ├── script/            DSL parse + tool dispatch + help text
 │   ├── router/            Theta*, fanout/slots, RR&R, negotiate, organic, stitch
 │   ├── placer/            SA legalisation + decoupling ring + edge snap
-│   ├── drc/  erc/
+│   ├── drc/  erc/  si/
 │   ├── fab/  gerber/  odb/
 │   ├── render/            board SVG
 │   └── host/              HTTP API + UI
@@ -71,6 +71,12 @@ edge-mount snap. Deterministic for a fixed seed.
 ### `internal/drc` / `internal/erc`
 Geometric DRC (clearance, drill, edge, net split, unconnected pads) and
 schematic ERC (floating pins, drivers, power rails) plus heuristics.
+
+### `internal/si`
+Signal-integrity audit behind the `si-check` verb: impedance deviation per
+routed segment (closed form, via `internal/impedance`), return-path gaps
+against the nearest plane layer, diff-pair skew and via budget. Read-only,
+same `Report`/`Violation` shape as DRC/ERC.
 
 ### `internal/fab` + `internal/gerber` + `internal/odb`
 `pack fab=jlcpcb` writes Gerber + Excellon + BOM/CPL zip. DRC for the pack

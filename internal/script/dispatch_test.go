@@ -478,3 +478,57 @@ func TestImpedanceMissingErErrors(t *testing.T) {
 		t.Fatalf("error should mention Er: %s", rs[0].Result)
 	}
 }
+
+func TestSICheckVerb(t *testing.T) {
+	p := core.NewProject("t-si")
+	rs := RunScript(p, `
+outline 40 30
+stackup 4
+class hs impedance=50
+net-class CLK hs
+pour GND layer=In1
+trace CLK 5 5 20 5 layer=Top width=0.22
+via CLK 6 5
+via CLK 7 5
+si-check
+si-check CLK tol=0.50
+si_check max_vias=1
+`)
+	allOK(t, rs)
+	var runs []string
+	var budget string
+	for _, r := range rs {
+		switch r.Tool {
+		case "si-check":
+			runs = append(runs, r.Result)
+		case "si_check": // alias
+			budget = r.Result
+		}
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 si-check results, got %d", len(runs))
+	}
+	plain, widened := runs[0], runs[1]
+	// 0.22 mm on the 4-layer top microstrip is ≈62 Ω against a 50 Ω target:
+	// past 2× the default ±10% ⇒ an error, one line per finding.
+	if !strings.Contains(plain, "si: 1 errors, 0 warnings (1 findings)") {
+		t.Fatalf("si-check summary: %s", plain)
+	}
+	if !strings.Contains(plain, "impedance_deviation error net=CLK") {
+		t.Fatalf("si-check detail line: %s", plain)
+	}
+	if !strings.Contains(widened, "si: 0 errors, 0 warnings (0 findings)") {
+		t.Fatalf("tol=0.50 should absorb the deviation: %s", widened)
+	}
+	if !strings.Contains(budget, "via_budget warning net=CLK") {
+		t.Fatalf("max_vias=1 with 2 vias: %s", budget)
+	}
+}
+
+func TestSICheckRejectsBadTolerance(t *testing.T) {
+	p := core.NewProject("t-si-bad")
+	rs := RunScript(p, "outline 40 30\nsi-check tol=0\n")
+	if len(rs) != 2 || rs[1].OK {
+		t.Fatalf("tol=0 must error: %+v", rs)
+	}
+}

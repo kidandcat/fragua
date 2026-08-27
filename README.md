@@ -28,10 +28,11 @@ Cross-compile: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o fragua-linux .
 Agent loop: schematic → board → JLCPCB-ready zip.
 
 - `internal/core`: project model (schematic, board, library, pours, rule areas, stackup), nm fixed-point geometry, JSON persistence (`.fragua`; legacy `.json` still loads).
-- `internal/script`: line-oriented agent DSL — `lib`, `sym`, `net`, `place`, `auto-place`, `route`, `compact`, `rule-area`, `fab-rules`, `layer`, `escape`, `erc`, `drc`, `pack`, …
+- `internal/script`: line-oriented agent DSL — `lib`, `sym`, `net`, `place`, `auto-place`, `route`, `compact`, `rule-area`, `fab-rules`, `layer`, `escape`, `erc`, `drc`, `si-check`, `pack`, …
 - `internal/router`: Theta* any-angle grid, QFN escape-slot matching, RR&R, PathFinder-lite negotiate, organic string-pull, pour stitch. 2- and 4-layer (F / GND / +3V3 / +1V1). JLCPCB mins are the working ceiling.
 - `internal/placer`: simulated-annealing legalisation, decoupling-ring seating, edge snap.
 - `internal/drc` / `internal/erc`: geometric DRC and schematic ERC.
+- `internal/si`: signal-integrity audit (`si-check`) — impedance deviation, return-path plane gaps, diff-pair skew, via budget.
 - `internal/fab` + `internal/gerber` + `internal/odb`: JLCPCB / PCBWay / generic pack (Gerber + Excellon + BOM/CPL) and ODB++.
 - `internal/render`: board SVG (substrate, copper, silk, pad names, drills).
 - `internal/host` + `cmd/fragua`: HTTP API + embedded browser UI.

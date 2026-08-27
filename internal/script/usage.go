@@ -54,6 +54,8 @@ Script verbs (line-oriented, agent-first):
   fiducial X Y [ref=FID1]
   diff NETA NETB              (diff-pair data; single-ended Z only)
   impedance [NET]             (closed-form microstrip/stripline; not FEM)
+  si-check [NET...] [tol=0.10] [max_vias=N]
+                              (impedance, return path, diff skew, via budget)
   teardrop on|off             (copper fillets at pad/via junctions)
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …

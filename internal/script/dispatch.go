@@ -360,6 +360,8 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return cmdTeardrop(p, args)
 	case "impedance":
 		return cmdImpedance(p, args)
+	case "si-check", "si_check", "sicheck":
+		return cmdSICheck(p, args)
 	default:
 		return "", fmt.Errorf("unknown verb %q — see GET /help", tool)
 	}

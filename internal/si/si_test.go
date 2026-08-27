@@ -1,0 +1,399 @@
+package si
+
+import (
+	"testing"
+
+	"github.com/mentasystems/fragua/internal/core"
+)
+
+// board4L is a 4-layer board (F.Cu / In1.Cu plane / In2.Cu plane / B.Cu)
+// with a 40x30 mm outline — the stack the impedance numbers below assume.
+func board4L() *core.Board {
+	b := core.NewBoard()
+	s := core.Default4Layer()
+	b.Stackup = &s
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	return b
+}
+
+func board2L() *core.Board {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	return b
+}
+
+func addTrace(b *core.Board, net string, layer uint8, x0, y0, x1, y1, widthMM float64) {
+	b.Traces = append(b.Traces, core.Trace{
+		ID:    core.NewID(),
+		Layer: core.Layer{Index: layer},
+		Start: core.NewPoint(core.FromMM(x0), core.FromMM(y0)),
+		End:   core.NewPoint(core.FromMM(x1), core.FromMM(y1)),
+		Width: core.FromMM(widthMM),
+		Net:   net,
+	})
+}
+
+func addVia(b *core.Board, net string, x, y float64) {
+	b.Vias = append(b.Vias, core.Via{
+		ID:       core.NewID(),
+		Position: core.NewPoint(core.FromMM(x), core.FromMM(y)),
+		Drill:    core.FromMM(0.3),
+		Diameter: core.FromMM(0.6),
+		Net:      net,
+	})
+}
+
+// addPour adds a pour on layer; an empty rect (all zeros) means outline pour.
+func addPour(b *core.Board, net string, layer uint8, poly ...[2]float64) {
+	p := core.Pour{ID: core.NewID(), Net: net, Layer: core.Layer{Index: layer}}
+	for _, pt := range poly {
+		p.Polygon = append(p.Polygon, core.NewPoint(core.FromMM(pt[0]), core.FromMM(pt[1])))
+	}
+	b.Pours = append(b.Pours, p)
+}
+
+// schWithClass wires net → class with an impedance target.
+func schWithClass(net, class string, cls core.NetClass) *core.Schematic {
+	sch := core.NewSchematic()
+	cls.Name = class
+	sch.NetClasses[class] = &cls
+	sch.Nets[net] = &core.Net{Name: net, Class: class}
+	return sch
+}
+
+func countKind(rep Report, k Kind) int {
+	n := 0
+	for _, v := range rep.Violations {
+		if v.Kind == k {
+			n++
+		}
+	}
+	return n
+}
+
+func firstOfKind(t *testing.T, rep Report, k Kind) Violation {
+	t.Helper()
+	for _, v := range rep.Violations {
+		if v.Kind == k {
+			return v
+		}
+	}
+	t.Fatalf("no %s violation in %+v", k, rep.Violations)
+	return Violation{}
+}
+
+// ---------------------------------------------------------------------------
+// impedance
+// ---------------------------------------------------------------------------
+
+func TestImpedanceOnTargetIsClean(t *testing.T) {
+	b := board4L()
+	// 0.34 mm on 0.21 mm FR-4 microstrip ≈ 50 Ω.
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	addPour(b, "GND", 1) // In1.Cu reference plane, full outline
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if countKind(rep, KindImpedanceDeviation) != 0 {
+		t.Fatalf("expected no deviation, got %+v", rep.Violations)
+	}
+	if rep.Errors != 0 || rep.Warnings != 0 {
+		t.Fatalf("expected a clean report, got %s %+v", rep.Summary(), rep.Violations)
+	}
+}
+
+func TestImpedanceTooNarrowWarnsThenErrors(t *testing.T) {
+	b := board4L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25)  // ≈58 Ω → +16% → warning
+	addTrace(b, "CLK", 0, 20, 5, 30, 5, 0.22) // ≈62 Ω → +23% → error (>2×tol)
+	addPour(b, "GND", 1)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindImpedanceDeviation); n != 2 {
+		t.Fatalf("expected 2 deviations, got %d: %+v", n, rep.Violations)
+	}
+	if rep.Errors != 1 || rep.Warnings != 1 {
+		t.Fatalf("expected 1 error + 1 warning, got %s: %+v", rep.Summary(), rep.Violations)
+	}
+	v := firstOfKind(t, rep, KindImpedanceDeviation)
+	if v.Net != "CLK" || v.XMM == 0 {
+		t.Fatalf("violation should carry net and location: %+v", v)
+	}
+}
+
+func TestImpedanceToleranceOptionWidens(t *testing.T) {
+	b := board4L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25) // +16%
+	addPour(b, "GND", 1)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	opts := DefaultOptions()
+	opts.Tolerance = 0.20
+	rep := Check(b, sch, opts)
+	if countKind(rep, KindImpedanceDeviation) != 0 {
+		t.Fatalf("tol=0.20 should absorb +16%%: %+v", rep.Violations)
+	}
+}
+
+// A stackup with no Er cannot feed the closed form: one warning for the net,
+// never a failed run and never a silent FR-4 guess.
+func TestMissingStackupDataWarnsOncePerNet(t *testing.T) {
+	b := board2L()
+	s := core.Default2Layer()
+	s.Dielectrics = []core.Dielectric{{ThicknessMM: 1.5}} // Er unset
+	b.Stackup = &s
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25)
+	addTrace(b, "CLK", 0, 20, 5, 30, 5, 0.25)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindStackupIncomplete); n != 1 {
+		t.Fatalf("expected exactly 1 stackup warning, got %d: %+v", n, rep.Violations)
+	}
+	if countKind(rep, KindImpedanceDeviation) != 0 {
+		t.Fatalf("no impedance verdict without stackup data: %+v", rep.Violations)
+	}
+	if rep.Errors != 0 {
+		t.Fatalf("missing stackup data is a warning, not an error: %+v", rep.Violations)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// return path
+// ---------------------------------------------------------------------------
+
+func TestReturnPathCoveredPlaneIsClean(t *testing.T) {
+	b := board4L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	addPour(b, "GND", 1, [2]float64{0, 0}, [2]float64{40, 0}, [2]float64{40, 30}, [2]float64{0, 30})
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if countKind(rep, KindReferencePlaneGap) != 0 {
+		t.Fatalf("plane covers the trace: %+v", rep.Violations)
+	}
+}
+
+func TestReturnPathGapUnderTrace(t *testing.T) {
+	b := board4L()
+	// Trace runs x=5→20 at y=5; the plane pour stops at x=10.
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	addPour(b, "GND", 1, [2]float64{0, 0}, [2]float64{10, 0}, [2]float64{10, 30}, [2]float64{0, 30})
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindReferencePlaneGap); n != 1 {
+		t.Fatalf("expected 1 plane gap, got %d: %+v", n, rep.Violations)
+	}
+	v := firstOfKind(t, rep, KindReferencePlaneGap)
+	if v.Severity != SeverityError {
+		t.Fatalf("plane gap must be an error: %+v", v)
+	}
+	if v.XMM < 10 || v.XMM > 20 {
+		t.Fatalf("gap should be reported past x=10: %+v", v)
+	}
+}
+
+func TestReturnPathNoPourOnPlaneLayer(t *testing.T) {
+	b := board4L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	addTrace(b, "CLK", 0, 20, 5, 30, 5, 0.34)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	// One per net, not one per segment.
+	if n := countKind(rep, KindReferencePlaneGap); n != 1 {
+		t.Fatalf("expected 1 no-pour violation, got %d: %+v", n, rep.Violations)
+	}
+	if rep.Errors != 1 {
+		t.Fatalf("expected 1 error: %s %+v", rep.Summary(), rep.Violations)
+	}
+}
+
+func TestReturnPathNoPlaneInStackup(t *testing.T) {
+	b := board2L() // Default2Layer: both layers are signal
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 2.7)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindNoReferencePlane); n != 1 {
+		t.Fatalf("expected 1 no-plane warning, got %d: %+v", n, rep.Violations)
+	}
+	if v := firstOfKind(t, rep, KindNoReferencePlane); v.Severity != SeverityWarning {
+		t.Fatalf("no-plane is a warning: %+v", v)
+	}
+}
+
+// A cutout removes the plane copper under the trace.
+func TestReturnPathCutoutIsAGap(t *testing.T) {
+	b := board4L()
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	addPour(b, "GND", 1) // outline pour
+	b.Cutouts = append(b.Cutouts, core.Cutout{ID: core.NewID(), Polygon: []core.Point{
+		core.NewPoint(core.FromMM(12), core.FromMM(3)),
+		core.NewPoint(core.FromMM(16), core.FromMM(3)),
+		core.NewPoint(core.FromMM(16), core.FromMM(7)),
+		core.NewPoint(core.FromMM(12), core.FromMM(7)),
+	}})
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	v := firstOfKind(t, rep, KindReferencePlaneGap)
+	if v.XMM < 12 || v.XMM > 16 {
+		t.Fatalf("gap should land inside the cutout: %+v", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// diff-pair skew
+// ---------------------------------------------------------------------------
+
+func diffPairSchematic(tolMM float64) *core.Schematic {
+	sch := core.NewSchematic()
+	sch.NetClasses["usb"] = &core.NetClass{Name: "usb", LengthToleranceMM: tolMM}
+	sch.Nets["D_P"] = &core.Net{Name: "D_P", Class: "usb", DiffPair: "D_N"}
+	sch.Nets["D_N"] = &core.Net{Name: "D_N", Class: "usb", DiffPair: "D_P"}
+	return sch
+}
+
+func TestDiffPairSkewWithinToleranceIsClean(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "D_P", 0, 5, 5, 15, 5, 0.2)
+	addTrace(b, "D_N", 0, 5, 6, 15.2, 6, 0.2)
+	rep := Check(b, diffPairSchematic(0.5), DefaultOptions())
+	if countKind(rep, KindDiffPairSkew) != 0 {
+		t.Fatalf("0.2 mm skew under 0.5 mm tolerance: %+v", rep.Violations)
+	}
+}
+
+func TestDiffPairSkewReportedOncePerPair(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "D_P", 0, 5, 5, 15, 5, 0.2) // 10 mm
+	addTrace(b, "D_N", 0, 5, 6, 16, 6, 0.2) // 11 mm → skew 1.0 mm
+	rep := Check(b, diffPairSchematic(0.5), DefaultOptions())
+	if n := countKind(rep, KindDiffPairSkew); n != 1 {
+		t.Fatalf("expected 1 skew finding for the pair, got %d: %+v", n, rep.Violations)
+	}
+	if v := firstOfKind(t, rep, KindDiffPairSkew); v.Severity != SeverityWarning {
+		t.Fatalf("1.0 mm vs 0.5 mm tolerance is a warning: %+v", v)
+	}
+}
+
+func TestDiffPairSkewBeyondTwiceToleranceIsError(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "D_P", 0, 5, 5, 15, 5, 0.2) // 10 mm
+	addTrace(b, "D_N", 0, 5, 6, 18, 6, 0.2) // 13 mm → skew 3.0 mm
+	rep := Check(b, diffPairSchematic(0.5), DefaultOptions())
+	if v := firstOfKind(t, rep, KindDiffPairSkew); v.Severity != SeverityError {
+		t.Fatalf("3.0 mm vs 0.5 mm tolerance is an error: %+v", v)
+	}
+}
+
+// No class tolerance ⇒ the 0.5 mm default applies.
+func TestDiffPairSkewDefaultTolerance(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "D_P", 0, 5, 5, 15, 5, 0.2)
+	addTrace(b, "D_N", 0, 5, 6, 15.8, 6, 0.2) // skew 0.8 mm
+	rep := Check(b, diffPairSchematic(0), DefaultOptions())
+	if n := countKind(rep, KindDiffPairSkew); n != 1 {
+		t.Fatalf("expected the 0.5 mm default to fire, got %d: %+v", n, rep.Violations)
+	}
+}
+
+func TestDiffPairUnroutedIsSkipped(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	rep := Check(b, diffPairSchematic(0.5), DefaultOptions())
+	if countKind(rep, KindDiffPairSkew) != 0 {
+		t.Fatalf("nothing routed yet: %+v", rep.Violations)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// via budget + net selection
+// ---------------------------------------------------------------------------
+
+func TestViaBudget(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.34)
+	for i := 0; i < 3; i++ {
+		addVia(b, "CLK", 6+float64(i), 5)
+	}
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+
+	opts := DefaultOptions()
+	if rep := Check(b, sch, opts); countKind(rep, KindViaBudget) != 0 {
+		t.Fatalf("max_vias=0 disables the budget: %+v", rep.Violations)
+	}
+	opts.MaxVias = 2
+	rep := Check(b, sch, opts)
+	if n := countKind(rep, KindViaBudget); n != 1 {
+		t.Fatalf("expected 1 via-budget warning, got %d: %+v", n, rep.Violations)
+	}
+	if v := firstOfKind(t, rep, KindViaBudget); v.Severity != SeverityWarning {
+		t.Fatalf("via budget is a warning: %+v", v)
+	}
+}
+
+// Without args the scope is class-impedance / diff-pair nets only.
+func TestNetSelectionIgnoresPlainNets(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25)   // in scope (impedance class)
+	addTrace(b, "LED", 0, 5, 10, 20, 10, 0.25) // no class → out of scope
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	sch.Nets["LED"] = &core.Net{Name: "LED"}
+	rep := Check(b, sch, DefaultOptions())
+	for _, v := range rep.Violations {
+		if v.Net == "LED" {
+			t.Fatalf("LED is out of scope: %+v", rep.Violations)
+		}
+	}
+	if countKind(rep, KindImpedanceDeviation) != 1 {
+		t.Fatalf("expected the CLK deviation: %+v", rep.Violations)
+	}
+}
+
+func TestExplicitNetsRestrictScope(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25)
+	addTrace(b, "D_P", 0, 5, 8, 15, 8, 0.2)
+	addTrace(b, "D_N", 0, 5, 9, 18, 9, 0.2)
+	sch := diffPairSchematic(0.5)
+	sch.NetClasses["hs"] = &core.NetClass{Name: "hs", ImpedanceOhms: 50}
+	sch.Nets["CLK"] = &core.Net{Name: "CLK", Class: "hs"}
+
+	opts := DefaultOptions()
+	opts.Nets = []string{"CLK"}
+	rep := Check(b, sch, opts)
+	if countKind(rep, KindDiffPairSkew) != 0 {
+		t.Fatalf("D_P/D_N are out of the requested scope: %+v", rep.Violations)
+	}
+	if countKind(rep, KindImpedanceDeviation) != 1 {
+		t.Fatalf("expected the CLK deviation: %+v", rep.Violations)
+	}
+}
+
+func TestUnknownExplicitNetWarns(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	opts := DefaultOptions()
+	opts.Nets = []string{"TYPO"}
+	rep := Check(b, core.NewSchematic(), opts)
+	if n := countKind(rep, KindUnknownNet); n != 1 {
+		t.Fatalf("expected an unknown-net warning, got %+v", rep.Violations)
+	}
+}
+
+func TestNilBoardAndEmptyScope(t *testing.T) {
+	if rep := Check(nil, nil, DefaultOptions()); len(rep.Violations) != 0 {
+		t.Fatalf("nil board must be empty: %+v", rep)
+	}
+	rep := Check(board4L(), nil, DefaultOptions())
+	if len(rep.Violations) != 0 {
+		t.Fatalf("no schematic ⇒ nothing in scope: %+v", rep)
+	}
+	if rep.Summary() != "si: 0 errors, 0 warnings (0 findings)" {
+		t.Fatalf("summary: %s", rep.Summary())
+	}
+}
