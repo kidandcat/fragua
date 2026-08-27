@@ -44,6 +44,17 @@ const pourEdgeInsetMM = 0.3
 // rest collapse into a single "… and N more gaps" line.
 const maxGapsPerNet = 10
 
+// A deviating width that covers only a sliver of the net is an escape neck,
+// not a broken line: the router necks down to leave a fine-pitch pad and
+// widens back in the open field, exactly as a human would lay it. Short is
+// both absolute and relative — under shortNeckMM of copper AND under
+// shortNeckFraction of the net — so it stays a warning however far off the
+// target impedance that stretch is.
+const (
+	shortNeckMM       = 2.0
+	shortNeckFraction = 0.10
+)
+
 // Violation is one SI finding.
 type Violation struct {
 	Kind     Kind     `json:"kind"`
@@ -264,6 +275,7 @@ type devGroup struct {
 	layerName string
 	widthMM   float64
 	count     int
+	lenMM     float64 // copper carrying this verdict
 	xMM, yMM  float64 // first offending segment midpoint
 }
 
@@ -336,10 +348,13 @@ func checkImpedance(b *core.Board, sch *core.Schematic, nets []string, opts Opti
 				order = append(order, key)
 			}
 			g.count++
+			g.lenMM += segLenMM(tr)
 			if sev == SeverityError {
 				g.sev = SeverityError // worst segment wins the group
 			}
 		}
+		// A group shorter than this is an escape neck: flag it, do not fail on it.
+		shortMM := math.Min(shortNeckMM, shortNeckFraction*netLengthMM(b, net))
 		for _, key := range order {
 			g := groups[key]
 			msg := fmt.Sprintf("net %s on %s: Z0 %.1f Ω vs target %.1f Ω (%+.1f%%, tol ±%.0f%%) at width %.3f mm",
@@ -348,8 +363,13 @@ func checkImpedance(b *core.Board, sch *core.Schematic, nets []string, opts Opti
 			if g.count > 1 {
 				msg += fmt.Sprintf(" (%d segments)", g.count)
 			}
+			sev := g.sev
+			if g.lenMM < shortMM {
+				sev = SeverityWarning
+				msg += " (short neck)"
+			}
 			rep.add(Violation{
-				Kind: KindImpedanceDeviation, Severity: g.sev,
+				Kind: KindImpedanceDeviation, Severity: sev,
 				Message: msg, Net: net, XMM: g.xMM, YMM: g.yMM,
 			})
 		}
@@ -721,6 +741,10 @@ func segMidMM(tr *core.Trace) (float64, float64) {
 	return (tr.Start.X.ToMM() + tr.End.X.ToMM()) / 2, (tr.Start.Y.ToMM() + tr.End.Y.ToMM()) / 2
 }
 
+func segLenMM(tr *core.Trace) float64 {
+	return math.Hypot(tr.End.X.ToMM()-tr.Start.X.ToMM(), tr.End.Y.ToMM()-tr.Start.Y.ToMM())
+}
+
 func netLengthMM(b *core.Board, net string) float64 {
 	total := 0.0
 	for i := range b.Traces {
@@ -728,7 +752,7 @@ func netLengthMM(b *core.Board, net string) float64 {
 		if tr.Net != net {
 			continue
 		}
-		total += math.Hypot(tr.End.X.ToMM()-tr.Start.X.ToMM(), tr.End.Y.ToMM()-tr.Start.Y.ToMM())
+		total += segLenMM(tr)
 	}
 	return total
 }

@@ -43,6 +43,13 @@ type Options struct {
 
 	// widths is derived from Schematic + stackup inside Route.
 	widths *netWidths
+	// neck is the escape plan of the net being routed: near its own pads the
+	// trace may narrow so a controlled-impedance width can leave a fine-pitch
+	// package. nil ⇒ nominal width everywhere (the first attempt).
+	neck *neckPlan
+	// overrideMM replaces the class width for the net being routed — the
+	// reduced tier a net falls back to when nothing else fits.
+	overrideMM float64
 }
 
 // DefaultOptions returns Rust-aligned 2-layer Grid defaults.
@@ -86,7 +93,7 @@ func ParseOptions(o Options, args string) Options {
 			continue
 		}
 		var x float64
-		fmt.Sscanf(v, "%f", &x)
+		fmt.Sscanf(v, "%f", &x) // safe-ignore: unparsable numeric options intentionally leave x=0 and fall through to defaults
 		switch k {
 		case "max_seconds":
 			o.MaxSeconds = x
@@ -116,6 +123,11 @@ type Outcome struct {
 	LengthMM      float64 `json:"length_mm,omitempty"`
 	LowerBoundMM  float64 `json:"lower_bound_mm,omitempty"`
 	Reason        string  `json:"reason,omitempty"`
+	// Necked: the net kept its nominal width but narrowed at a pad escape.
+	Necked bool `json:"necked,omitempty"`
+	// FallbackWidthMM: the nominal width did not fit even with escape necks,
+	// so the whole net routed one width tier down.
+	FallbackWidthMM float64 `json:"fallback_width_mm,omitempty"`
 }
 
 // Report summarises a route call.
@@ -136,16 +148,37 @@ type NetResult struct {
 	Outcome Outcome `json:"outcome"`
 }
 
-// Summary is agent-friendly text.
+// Summary is agent-friendly text. Width degradation is never silent: a net
+// that necked at its escapes, or fell back to a narrower tier, is counted in
+// the headline. The two counts are exclusive — a net that had to fall back is
+// reported as a fallback even if it also necked.
 func (r Report) Summary() string {
-	ok := 0
+	ok, necked, reduced := 0, 0, 0
 	for _, n := range r.PerNet {
-		if n.Outcome.Status == "ok" {
-			ok++
+		if n.Outcome.Status != "ok" {
+			continue
+		}
+		ok++
+		switch {
+		case n.Outcome.FallbackWidthMM > 0:
+			reduced++
+		case n.Outcome.Necked:
+			necked++
 		}
 	}
-	return fmt.Sprintf("route: %d/%d nets ok, %d traces, %d vias, %.1f mm copper, %d ms",
-		ok, len(r.PerNet), r.TraceCount, r.ViaCount, r.TotalLengthMM, r.ElapsedMS)
+	var notes []string
+	if necked > 0 {
+		notes = append(notes, fmt.Sprintf("%d necked at escapes", necked))
+	}
+	if reduced > 0 {
+		notes = append(notes, fmt.Sprintf("%d at reduced width", reduced))
+	}
+	widths := ""
+	if len(notes) > 0 {
+		widths = " (" + strings.Join(notes, ", ") + ")"
+	}
+	return fmt.Sprintf("route: %d/%d nets ok%s, %d traces, %d vias, %.1f mm copper, %d ms",
+		ok, len(r.PerNet), widths, r.TraceCount, r.ViaCount, r.TotalLengthMM, r.ElapsedMS)
 }
 
 type padLoc struct {
@@ -799,10 +832,66 @@ func existingNetSources(board *core.Board, g *grid, net string, pads []padLoc, c
 	return out
 }
 
+// routeNet lays one net, widening the search when its nominal width does not
+// fit through the escape: nominal everywhere → nominal with a short neck at
+// each pad escape → the next width tier down. Only a class net whose nominal
+// is wider than the router default ever gets past the first attempt, so every
+// other net routes exactly as it did before.
 func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	base := opts.TraceWidthMM // router default, already at the fab floor
+	nominal := opts.netWidthMax(name)
+	spent := func() bool { return hasDeadline && time.Now().After(deadline) }
+	attempt := func(o Options) Outcome {
+		snap := len(board.Traces)
+		out := routeNetAt(board, g, name, pads, o, deadline, hasDeadline)
+		if out.Status != "ok" || o.neck == nil {
+			return out
+		}
+		// Only claim a neck when narrow copper actually landed.
+		for _, tr := range board.Traces[snap:] {
+			if tr.Net == name && tr.Width.ToMM() < o.widthFor(name, tr.Layer.Index)-1e-6 {
+				out.Necked = true
+				break
+			}
+		}
+		return out
+	}
+
+	out := attempt(opts)
+	if out.Status == "ok" || nominal <= base+1e-9 {
+		return out
+	}
+	// Tier 2: keep the controlled width in the open field, neck the escapes.
+	if plan := newNeckPlan(pads, base, nominal); plan != nil && !spent() {
+		plan.net, plan.g = name, g
+		o := opts
+		o.neck = plan
+		if necked := attempt(o); necked.Status == "ok" {
+			return necked
+		}
+	}
+	// Tier 3: the width itself does not fit. Drop one tier and say so.
+	if fb := opts.fallbackWidth(name); fb < nominal-1e-9 && !spent() {
+		o := opts
+		o.overrideMM = fb
+		if plan := newNeckPlan(pads, base, fb); plan != nil {
+			plan.net, plan.g = name, g
+			o.neck = plan
+		}
+		if low := attempt(o); low.Status == "ok" {
+			low.FallbackWidthMM = fb
+			return low
+		}
+	}
+	return out
+}
+
+func routeNetAt(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	// This net's nominal width drives planning clearance and the grid's
 	// own-net paint; each segment then takes its own layer's width.
 	opts.TraceWidthMM = opts.netWidthMax(name)
+	defer func(p *neckPlan) { g.opts.neck = p }(g.opts.neck)
+	g.opts.neck = opts.neck
 	defer func(w float64) { g.opts.TraceWidthMM = w }(g.opts.TraceWidthMM)
 	g.opts.TraceWidthMM = opts.TraceWidthMM
 
@@ -865,7 +954,6 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 	if len(pads) < 2 || len(pads) > 6 {
 		return Outcome{Status: "failed", Reason: "direct"}
 	}
-	need := opts.TraceWidthMM/2 + opts.padClear()
 	span := 0.0
 	for i := range pads {
 		for j := i + 1; j < len(pads); j++ {
@@ -899,18 +987,17 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 		}
 		a, b := pads[bestI].p, pads[bestJ].p
 		layer := pads[bestJ].layer
-		w := core.FromMM(opts.widthFor(name, layer))
 		ax, ay := a.X.ToMM(), a.Y.ToMM()
 		bx, by := b.X.ToMM(), b.Y.ToMM()
 		var path [][2]float64
 		switch {
-		case g.segmentPadClear(ax, ay, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {bx, by}}
-		case g.segmentPadClear(ax, ay, bx, ay, layer, name, need) &&
-			g.segmentPadClear(bx, ay, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, bx, ay, layer, name, opts) &&
+			g.segmentPadClear(bx, ay, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {bx, ay}, {bx, by}}
-		case g.segmentPadClear(ax, ay, ax, by, layer, name, need) &&
-			g.segmentPadClear(ax, by, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, ax, by, layer, name, opts) &&
+			g.segmentPadClear(ax, by, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {ax, by}, {bx, by}}
 		default:
 			return Outcome{Status: "failed", Reason: "direct-block"}
@@ -918,9 +1005,7 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 		for k := 0; k+1 < len(path); k++ {
 			s := core.NewPoint(core.FromMM(path[k][0]), core.FromMM(path[k][1]))
 			e := core.NewPoint(core.FromMM(path[k+1][0]), core.FromMM(path[k+1][1]))
-			segs = append(segs, core.Trace{
-				ID: core.NewID(), Layer: core.Layer{Index: layer}, Net: name, Width: w, Start: s, End: e,
-			})
+			segs = append(segs, opts.escapeTraces(name, layer, s, e)...)
 			length += hypotMM(s, e)
 		}
 		connected[bestJ] = true
@@ -937,7 +1022,9 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 	return Outcome{Status: "ok", Reason: "direct", TraceSegments: len(segs), LengthMM: length, LowerBoundMM: lowerBoundMM(pads)}
 }
 
-func (g *grid) segmentPadClear(x0, y0, x1, y1 float64, layer uint8, net string, need float64) bool {
+// segmentPadClear walks a→b and asks for the gap the trace needs at every
+// sample — narrower inside an escape zone, nominal outside.
+func (g *grid) segmentPadClear(x0, y0, x1, y1 float64, layer uint8, net string, o Options) bool {
 	dx, dy := x1-x0, y1-y0
 	n := int(math.Hypot(dx, dy) / 0.08)
 	if n < 2 {
@@ -945,7 +1032,8 @@ func (g *grid) segmentPadClear(x0, y0, x1, y1 float64, layer uint8, net string, 
 	}
 	for i := 0; i <= n; i++ {
 		t := float64(i) / float64(n)
-		if g.nearForeignPad(x0+t*dx, y0+t*dy, layer, net, need) {
+		x, y := x0+t*dx, y0+t*dy
+		if g.nearForeignPad(x, y, layer, net, o.needAt(x, y)) {
 			return false
 		}
 	}
@@ -958,7 +1046,6 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 	if len(pads) < 2 {
 		return Outcome{Status: "failed", Reason: "jumper"}
 	}
-	need := opts.TraceWidthMM/2 + opts.padClear()
 	type site struct {
 		pad padLoc
 		via core.Point
@@ -980,11 +1067,11 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 			if board.Outline != nil && !outlineContains(board.Outline, x, y, 0.35) {
 				continue
 			}
-			if g.nearForeignPad(x, y, p.layer, name, need) {
+			if g.nearForeignPad(x, y, p.layer, name, opts.needAt(x, y)) {
 				continue
 			}
 			other := signalOtherLayer(g, p.layer)
-			if g.nearForeignPad(x, y, other, name, need) {
+			if g.nearForeignPad(x, y, other, name, opts.needAt(x, y)) {
 				continue
 			}
 			pt := core.NewPoint(core.FromMM(x), core.FromMM(y))
@@ -1005,11 +1092,7 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 			ID: core.NewID(), Net: name, Position: s.via,
 			Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
 		})
-		stubs = append(stubs, core.Trace{
-			ID: core.NewID(), Layer: core.Layer{Index: s.pad.layer}, Net: name,
-			Width: core.FromMM(opts.widthFor(name, s.pad.layer)),
-			Start: s.pad.p, End: s.via,
-		})
+		stubs = append(stubs, opts.escapeTraces(name, s.pad.layer, s.pad.p, s.via)...)
 		if cx, cy, ok := g.worldToCell(s.via.X, s.via.Y); ok {
 			for L := uint8(0); L < uint8(g.layers); L++ {
 				sources = append(sources, cellKey{cx, cy, L})
@@ -1052,11 +1135,8 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 			if a.layer != b.layer {
 				continue
 			}
-			hops = append(hops, core.Trace{
-				ID: core.NewID(), Layer: core.Layer{Index: a.layer}, Net: name,
-				Width: core.FromMM(opts.widthFor(name, a.layer)),
-				Start: core.NewPoint(a.x, a.y), End: core.NewPoint(b.x, b.y),
-			})
+			hops = append(hops, opts.escapeTraces(name, a.layer,
+				core.NewPoint(a.x, a.y), core.NewPoint(b.x, b.y))...)
 		}
 		if cx, cy, ok := g.worldToCell(sites[bestJ].via.X, sites[bestJ].via.Y); ok {
 			for L := uint8(0); L < uint8(g.layers); L++ {
@@ -1098,7 +1178,6 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 	if len(pads) < 2 {
 		return connected, 0, 0
 	}
-	need := opts.TraceWidthMM/2 + opts.padClear()
 	parent := make([]int, len(pads))
 	for i := range parent {
 		parent[i] = i
@@ -1142,18 +1221,17 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 		}
 		a, b := pads[pr.i].p, pads[pr.j].p
 		layer := pads[pr.i].layer
-		w := core.FromMM(opts.widthFor(name, layer))
 		ax, ay := a.X.ToMM(), a.Y.ToMM()
 		bx, by := b.X.ToMM(), b.Y.ToMM()
 		var path [][2]float64
 		switch {
-		case g.segmentPadClear(ax, ay, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {bx, by}}
-		case g.segmentPadClear(ax, ay, bx, ay, layer, name, need) &&
-			g.segmentPadClear(bx, ay, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, bx, ay, layer, name, opts) &&
+			g.segmentPadClear(bx, ay, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {bx, ay}, {bx, by}}
-		case g.segmentPadClear(ax, ay, ax, by, layer, name, need) &&
-			g.segmentPadClear(ax, by, bx, by, layer, name, need):
+		case g.segmentPadClear(ax, ay, ax, by, layer, name, opts) &&
+			g.segmentPadClear(ax, by, bx, by, layer, name, opts):
 			path = [][2]float64{{ax, ay}, {ax, by}, {bx, by}}
 		default:
 			continue
@@ -1162,9 +1240,7 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 		for k := 0; k+1 < len(path); k++ {
 			s := core.NewPoint(core.FromMM(path[k][0]), core.FromMM(path[k][1]))
 			e := core.NewPoint(core.FromMM(path[k+1][0]), core.FromMM(path[k+1][1]))
-			board.Traces = append(board.Traces, core.Trace{
-				ID: core.NewID(), Layer: core.Layer{Index: layer}, Net: name, Width: w, Start: s, End: e,
-			})
+			board.Traces = append(board.Traces, opts.escapeTraces(name, layer, s, e)...)
 		}
 		if !copperClearanceFrom(board, snapT, commitClearance(board)) {
 			board.Traces = board.Traces[:snapT]
@@ -1217,13 +1293,11 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		sources = append(sources, cellKey{sx, sy, pads[seed].layer})
 	}
 
-	type pendingTrace struct {
-		tr core.Trace
-	}
 	type pendingVia struct {
 		v core.Via
 	}
-	var pendT []pendingTrace
+	// One path run may split into a necked stretch and a nominal one.
+	var pendT []core.Trace
 	var pendV []pendingVia
 	type paintRec struct {
 		x, y int
@@ -1336,14 +1410,8 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 				}
 				continue
 			}
-			pendT = append(pendT, pendingTrace{tr: core.Trace{
-				ID:    core.NewID(),
-				Layer: core.Layer{Index: a.layer},
-				Start: core.NewPoint(a.x, a.y),
-				End:   core.NewPoint(b.x, b.y),
-				Width: core.FromMM(opts.widthFor(name, a.layer)),
-				Net:   name,
-			}})
+			pendT = append(pendT, opts.escapeTraces(name, a.layer,
+				core.NewPoint(a.x, a.y), core.NewPoint(b.x, b.y))...)
 			c0x, c0y, ok0 := g.worldToCell(a.x, a.y)
 			c1x, c1y, ok1 := g.worldToCell(b.x, b.y)
 			if ok0 || ok1 {
@@ -1374,15 +1442,11 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			from.layer = goalLayer
 		}
 		if from.x != padP.X || from.y != padP.Y {
-			need := opts.TraceWidthMM/2 + opts.padClear()
 			fx, fy := from.x.ToMM(), from.y.ToMM()
 			px, py := padP.X.ToMM(), padP.Y.ToMM()
-			if g.segmentPadClear(fx, fy, px, py, goalLayer, name, need) {
-				pendT = append(pendT, pendingTrace{tr: core.Trace{
-					ID: core.NewID(), Layer: core.Layer{Index: goalLayer},
-					Start: core.NewPoint(from.x, from.y), End: padP,
-					Width: core.FromMM(opts.widthFor(name, goalLayer)), Net: name,
-				}})
+			if g.segmentPadClear(fx, fy, px, py, goalLayer, name, opts) {
+				pendT = append(pendT, opts.escapeTraces(name, goalLayer,
+					core.NewPoint(from.x, from.y), padP)...)
 				segs++
 				length += hypotMM(core.NewPoint(from.x, from.y), padP)
 			}
@@ -1403,9 +1467,9 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 	// Commit copper and expand grid halos to full clearance so later nets
 	// treat this net as a foreign obstacle (search paint was bare half-width).
 	snapT, snapV := len(board.Traces), len(board.Vias)
-	for _, p := range pendT {
-		board.Traces = append(board.Traces, p.tr)
-		g.blockSegObstacle(p.tr.Start.X, p.tr.Start.Y, p.tr.End.X, p.tr.End.Y, p.tr.Layer.Index, p.tr.Net, p.tr.Width.ToMM()/2)
+	for _, tr := range pendT {
+		board.Traces = append(board.Traces, tr)
+		g.blockSegObstacle(tr.Start.X, tr.Start.Y, tr.End.X, tr.End.Y, tr.Layer.Index, tr.Net, tr.Width.ToMM()/2)
 	}
 	for _, p := range pendV {
 		board.Vias = append(board.Vias, p.v)
@@ -2480,7 +2544,33 @@ func (g *grid) searchClearanceOK(cx, cy int, layer uint8, net string) bool {
 
 func (g *grid) searchClearanceNeed(cx, cy int, layer uint8, net string, padClear float64) bool {
 	half := g.opts.TraceWidthMM / 2
-	need := half + padClear
+	if g.opts.neck != nil {
+		// Inside a pad escape zone the trace may neck down, so the search disk
+		// shrinks with it — that is what lets a controlled width leave a
+		// 0.4 mm-pitch package at all. Where the nominal turns out to fit, the
+		// emitted copper stays nominal (neckAt); the search is the permissive
+		// side of that pair.
+		wx, wy := g.cellToWorld(cx, cy)
+		half = g.opts.halfWidthAt(wx.ToMM(), wy.ToMM())
+	}
+	return g.clearanceForHalf(cx, cy, layer, net, half+padClear)
+}
+
+// widthFits reports whether a trace of half-width hw may sit at (x, y) in mm:
+// clear of foreign pads continuously, and of foreign copper on the grid.
+func (g *grid) widthFits(x, y float64, layer uint8, net string, hw float64) bool {
+	need := hw + g.opts.padClear()
+	if g.nearForeignPad(x, y, layer, net, need) {
+		return false
+	}
+	cx, cy, ok := g.worldToCell(core.FromMM(x), core.FromMM(y))
+	if !ok {
+		return false
+	}
+	return g.clearanceForHalf(cx, cy, layer, net, need)
+}
+
+func (g *grid) clearanceForHalf(cx, cy int, layer uint8, net string, need float64) bool {
 	r := int(math.Ceil(need / g.cellMM))
 	if r < 1 {
 		r = 1
@@ -2636,7 +2726,7 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 		if hasDeadline && expanded%deadlineEvery == 0 && time.Now().After(deadline) {
 			return nil, false
 		}
-		cur := heap.Pop(open).(*astNode)
+		cur := heap.Pop(open).(*astNode) // safe-ignore: astHeap only ever holds *astNode; a mismatch is a programmer error worth the panic
 		if cur.k.x == goal.x && cur.k.y == goal.y && cur.k.l == goal.l {
 			return g.reconstruct(came, cur.k), true
 		}
@@ -2826,15 +2916,15 @@ func (g *grid) lineOfSight(a, b cellKey, net string) bool {
 	// neighbour pad the discrete disk never entered.
 	ax, ay := g.cellToWorld(a.x, a.y)
 	bx, by := g.cellToWorld(b.x, b.y)
-	need := g.opts.TraceWidthMM/2 + g.opts.padClear()
-	return g.segmentPadClear(ax.ToMM(), ay.ToMM(), bx.ToMM(), by.ToMM(), a.l, net, need)
+	return g.segmentPadClear(ax.ToMM(), ay.ToMM(), bx.ToMM(), by.ToMM(), a.l, net, g.opts)
 }
 
 func (g *grid) stepPadClear(x0, y0, x1, y1 int, layer uint8, net string, padClear float64) bool {
 	ax, ay := g.cellToWorld(x0, y0)
 	bx, by := g.cellToWorld(x1, y1)
-	need := g.opts.TraceWidthMM/2 + padClear
-	return g.segmentPadClear(ax.ToMM(), ay.ToMM(), bx.ToMM(), by.ToMM(), layer, net, need)
+	o := g.opts
+	o.SearchClearMM = padClear
+	return g.segmentPadClear(ax.ToMM(), ay.ToMM(), bx.ToMM(), by.ToMM(), layer, net, o)
 }
 
 func abs(x int) int {
@@ -2856,7 +2946,7 @@ func (h astHeap) Len() int           { return len(h) }
 func (h astHeap) Less(i, j int) bool { return h[i].f < h[j].f }
 func (h astHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].idx = i; h[j].idx = j }
 func (h *astHeap) Push(x any) {
-	n := x.(*astNode)
+	n := x.(*astNode) // safe-ignore: container/heap Push contract; astHeap only ever holds *astNode
 	n.idx = len(*h)
 	*h = append(*h, n)
 }

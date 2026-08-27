@@ -62,7 +62,10 @@ and the event bus. File I/O is JSON (`.fragua` / legacy `.json`).
 Auto-routing. Stages: fab ceiling → QFN escape-slot matching + leftover
 far-ring → Prim/Theta* tree → RR&R (both-or-neither) → negotiate leftovers
 → organic string-pull → pour stitch. Via-in-pad is an explicit exception
-(`escape via-in-pad REF.PAD`), not the default.
+(`escape via-in-pad REF.PAD`), not the default. A net whose class width does
+not fit its escape retries with a short neck near its own pads (nominal width
+everywhere else), then one width tier down; both are counted in `Summary()`,
+never silent.
 
 ### `internal/placer`
 Simulated annealing legalisation, decoupling-ring seating for passives,
@@ -76,7 +79,8 @@ schematic ERC (floating pins, drivers, power rails) plus heuristics.
 Signal-integrity audit behind the `si-check` verb: impedance deviation per
 routed segment (closed form, via `internal/impedance`), return-path gaps
 against the nearest plane layer, diff-pair skew and via budget. Read-only,
-same `Report`/`Violation` shape as DRC/ERC.
+same `Report`/`Violation` shape as DRC/ERC. A deviating width covering only a
+sliver of the net is an escape neck: warning, not error.
 
 ### `internal/fab` + `internal/gerber` + `internal/odb`
 `pack fab=jlcpcb` writes Gerber + Excellon + BOM/CPL zip. DRC for the pack

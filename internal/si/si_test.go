@@ -310,6 +310,60 @@ func TestImpedanceToleranceOptionWidens(t *testing.T) {
 	}
 }
 
+// An escape neck: 0.5 mm of narrow copper on a 20 mm net. Far off target, but
+// too short to matter — a warning, never an error.
+func TestImpedanceShortNeckIsOnlyAWarning(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 5.5, 5, 0.15) // escape neck
+	addTrace(b, "CLK", 0, 5.5, 5, 25.5, 5, 0.34)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	v := firstOfKind(t, rep, KindImpedanceDeviation)
+	if v.Severity != SeverityWarning {
+		t.Fatalf("a 0.5 mm neck must not be an error: %+v", v)
+	}
+	if !strings.Contains(v.Message, "(short neck)") {
+		t.Fatalf("message should name the neck: %s", v.Message)
+	}
+	if rep.Errors != 0 {
+		t.Fatalf("expected no errors, got %s: %+v", rep.Summary(), rep.Violations)
+	}
+}
+
+// The other side of the threshold: 3 mm of the same width is a mis-sized line,
+// not a neck, and stays the error it always was.
+func TestImpedanceLongDeviationStaysAnError(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 8, 5, 0.15)
+	addTrace(b, "CLK", 0, 8, 5, 28, 5, 0.34)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	v := firstOfKind(t, rep, KindImpedanceDeviation)
+	if v.Severity != SeverityError {
+		t.Fatalf("a 3 mm deviation must stay an error: %+v", v)
+	}
+	if strings.Contains(v.Message, "short neck") {
+		t.Fatalf("3 mm is not a neck: %s", v.Message)
+	}
+}
+
+// Short is relative too: 1.5 mm is most of a 5 mm net, so it is the line, not
+// an escape from it.
+func TestImpedanceNeckMustAlsoBeAShareOfTheNet(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "CLK", 0, 5, 5, 6.5, 5, 0.15)
+	addTrace(b, "CLK", 0, 6.5, 5, 10, 5, 0.34)
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	v := firstOfKind(t, rep, KindImpedanceDeviation)
+	if v.Severity != SeverityError {
+		t.Fatalf("30%% of the net is not a neck: %+v", v)
+	}
+}
+
 // A stackup with no Er cannot feed the closed form: one warning for the net,
 // never a failed run and never a silent FR-4 guess.
 func TestMissingStackupDataWarnsOncePerNet(t *testing.T) {

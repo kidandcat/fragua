@@ -122,6 +122,9 @@ func (n *netWidths) classOf(net string) (string, *core.NetClass) {
 // widthFor is the nominal trace width (mm) for net on copper layer: the net
 // class (impedance target, then class width) wins over the router default.
 func (o Options) widthFor(net string, layer uint8) float64 {
+	if o.overrideMM > 0 {
+		return o.overrideMM
+	}
 	if w := o.widths.widthMM(net, layer); w > 0 {
 		return w
 	}
@@ -131,6 +134,9 @@ func (o Options) widthFor(net string, layer uint8) float64 {
 // netWidthMax is widthFor's widest value over the stackup — what planning and
 // clearance use before the layer of a segment is known.
 func (o Options) netWidthMax(net string) float64 {
+	if o.overrideMM > 0 {
+		return o.overrideMM
+	}
 	if w := o.widths.maxMM(net); w > 0 {
 		return w
 	}
