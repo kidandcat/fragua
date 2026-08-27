@@ -39,6 +39,10 @@ const (
 // board edge, so copper does not reach the rim.
 const pourEdgeInsetMM = 0.3
 
+// maxGapsPerNet caps the per-segment return-path findings for one net; the
+// rest collapse into a single "… and N more gaps" line.
+const maxGapsPerNet = 10
+
 // Violation is one SI finding.
 type Violation struct {
 	Kind     Kind     `json:"kind"`
@@ -207,6 +211,26 @@ type lineParams struct {
 	err error
 }
 
+// devKey groups segments that carry the identical impedance verdict. Width is
+// the nm fixed-point value, so grouping is exact — no float bucketing.
+type devKey struct {
+	layer uint8
+	width core.Length
+}
+
+// devGroup is one coalesced impedance finding: a routed net keeps the same
+// width for hundreds of segments, and 310 copies of one sentence is noise,
+// not 310 facts.
+type devGroup struct {
+	key       devKey
+	sev       Severity
+	z         float64
+	layerName string
+	widthMM   float64
+	count     int
+	xMM, yMM  float64 // first offending segment midpoint
+}
+
 func checkImpedance(b *core.Board, sch *core.Schematic, nets []string, opts Options, rep *Report) {
 	if sch == nil {
 		return
@@ -232,6 +256,10 @@ func checkImpedance(b *core.Board, sch *core.Schematic, nets []string, opts Opti
 				Net:     net,
 			})
 		}
+		// Coalesce by (net, layer, width): every segment in a group has the
+		// same Z0, so it is one fact, reported once with a segment count.
+		groups := map[devKey]*devGroup{}
+		var order []devKey
 		for i := range b.Traces {
 			tr := &b.Traces[i]
 			if tr.Net != net {
@@ -260,13 +288,33 @@ func checkImpedance(b *core.Board, sch *core.Schematic, nets []string, opts Opti
 			if dev > 2*opts.Tolerance {
 				sev = SeverityError
 			}
-			mx, my := segMidMM(tr)
+			key := devKey{layer: tr.Layer.Index, width: tr.Width}
+			g := groups[key]
+			if g == nil {
+				mx, my := segMidMM(tr)
+				g = &devGroup{
+					key: key, sev: sev, z: z, layerName: lp.p.LayerName,
+					widthMM: tr.Width.ToMM(), xMM: mx, yMM: my,
+				}
+				groups[key] = g
+				order = append(order, key)
+			}
+			g.count++
+			if sev == SeverityError {
+				g.sev = SeverityError // worst segment wins the group
+			}
+		}
+		for _, key := range order {
+			g := groups[key]
+			msg := fmt.Sprintf("net %s on %s: Z0 %.1f Ω vs target %.1f Ω (%+.1f%%, tol ±%.0f%%) at width %.3f mm",
+				net, g.layerName, g.z, cls.ImpedanceOhms,
+				100*(g.z-cls.ImpedanceOhms)/cls.ImpedanceOhms, 100*opts.Tolerance, g.widthMM)
+			if g.count > 1 {
+				msg += fmt.Sprintf(" (%d segments)", g.count)
+			}
 			rep.add(Violation{
-				Kind: KindImpedanceDeviation, Severity: sev,
-				Message: fmt.Sprintf("net %s on %s: Z0 %.1f Ω vs target %.1f Ω (%+.1f%%, tol ±%.0f%%) at width %.3f mm",
-					net, lp.p.LayerName, z, cls.ImpedanceOhms,
-					100*(z-cls.ImpedanceOhms)/cls.ImpedanceOhms, 100*opts.Tolerance, tr.Width.ToMM()),
-				Net: net, XMM: mx, YMM: my,
+				Kind: KindImpedanceDeviation, Severity: g.sev,
+				Message: msg, Net: net, XMM: g.xMM, YMM: g.yMM,
 			})
 		}
 	}
@@ -297,6 +345,9 @@ func checkReturnPath(b *core.Board, nets []string, opts Options, rep *Report) {
 			continue
 		}
 		reportedNoPour := map[int]bool{}
+		// Gap locations matter, so they stay per-segment — but a net routed
+		// entirely off the plane would bury the report, hence the cap.
+		gaps, suppressed := 0, 0
 		for i := range b.Traces {
 			tr := &b.Traces[i]
 			if tr.Net != net {
@@ -325,6 +376,11 @@ func checkReturnPath(b *core.Board, nets []string, opts Options, rep *Report) {
 				continue
 			}
 			if x, y, gap := firstUncovered(b, pours, tr, opts.SampleStepMM); gap {
+				if gaps >= maxGapsPerNet {
+					suppressed++
+					continue
+				}
+				gaps++
 				rep.add(Violation{
 					Kind: KindReferencePlaneGap, Severity: SeverityError,
 					Message: fmt.Sprintf("reference plane gap under %s at (%.2f, %.2f) mm on %s",
@@ -332,6 +388,13 @@ func checkReturnPath(b *core.Board, nets []string, opts Options, rep *Report) {
 					Net: net, XMM: x, YMM: y,
 				})
 			}
+		}
+		if suppressed > 0 {
+			rep.add(Violation{
+				Kind: KindReferencePlaneGap, Severity: SeverityError,
+				Message: fmt.Sprintf("… and %d more gaps on %s", suppressed, net),
+				Net:     net,
+			})
 		}
 	}
 }

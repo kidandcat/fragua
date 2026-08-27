@@ -1,6 +1,7 @@
 package si
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -122,6 +123,48 @@ func TestImpedanceTooNarrowWarnsThenErrors(t *testing.T) {
 	}
 }
 
+// A routed net keeps one width for hundreds of segments: that is one fact,
+// not one finding per segment.
+func TestImpedanceCoalescesSegmentsOfEqualWidth(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	for i := 0; i < 40; i++ {
+		x := 5 + 0.5*float64(i)
+		addTrace(b, "SCK", 0, x, 5, x+0.5, 5, 0.22)
+	}
+	sch := schWithClass("SCK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindImpedanceDeviation); n != 1 {
+		t.Fatalf("40 same-width segments must coalesce into 1 finding, got %d: %+v", n, rep.Violations)
+	}
+	v := firstOfKind(t, rep, KindImpedanceDeviation)
+	if !strings.Contains(v.Message, "(40 segments)") {
+		t.Fatalf("message should carry the segment count: %s", v.Message)
+	}
+	if v.XMM != 5.25 { // midpoint of the first offending segment
+		t.Fatalf("group should sit on the first offender, got %+v", v)
+	}
+}
+
+// Different widths (or layers) are different facts and stay separate.
+func TestImpedanceGroupsSplitByWidthAndLayer(t *testing.T) {
+	b := board4L()
+	addPour(b, "GND", 1)
+	addTrace(b, "SCK", 0, 5, 5, 10, 5, 0.22)
+	addTrace(b, "SCK", 0, 10, 5, 15, 5, 0.22) // same group as above
+	addTrace(b, "SCK", 0, 15, 5, 20, 5, 0.25) // different width
+	addTrace(b, "SCK", 3, 5, 8, 10, 8, 0.22)  // same width, other layer
+	sch := schWithClass("SCK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	if n := countKind(rep, KindImpedanceDeviation); n != 3 {
+		t.Fatalf("expected 3 groups (0.22/L1, 0.25/L1, 0.22/L4), got %d: %+v", n, rep.Violations)
+	}
+	// The worst segment sets the group severity; both 0.22 groups are errors.
+	if rep.Errors < 2 {
+		t.Fatalf("expected the 0.22 mm groups to be errors: %s %+v", rep.Summary(), rep.Violations)
+	}
+}
+
 func TestImpedanceToleranceOptionWidens(t *testing.T) {
 	b := board4L()
 	addTrace(b, "CLK", 0, 5, 5, 20, 5, 0.25) // +16%
@@ -188,6 +231,31 @@ func TestReturnPathGapUnderTrace(t *testing.T) {
 	}
 	if v.XMM < 10 || v.XMM > 20 {
 		t.Fatalf("gap should be reported past x=10: %+v", v)
+	}
+}
+
+// Gap locations are per-segment, but a net routed entirely off the plane is
+// capped so it cannot bury the rest of the report.
+func TestReturnPathGapsAreCappedPerNet(t *testing.T) {
+	b := board4L()
+	// Plane pour stops at x=10; 15 segments live past it.
+	addPour(b, "GND", 1, [2]float64{0, 0}, [2]float64{10, 0}, [2]float64{10, 30}, [2]float64{0, 30})
+	for i := 0; i < 15; i++ {
+		y := 3 + float64(i)
+		addTrace(b, "CLK", 0, 12, y, 18, y, 0.34)
+	}
+	sch := schWithClass("CLK", "hs", core.NetClass{ImpedanceOhms: 50})
+	rep := Check(b, sch, DefaultOptions())
+	// 10 located gaps + 1 summary line.
+	if n := countKind(rep, KindReferencePlaneGap); n != 11 {
+		t.Fatalf("expected 10 gaps + 1 summary, got %d: %+v", n, rep.Violations)
+	}
+	last := rep.Violations[len(rep.Violations)-1]
+	if !strings.Contains(last.Message, "and 5 more gaps on CLK") {
+		t.Fatalf("expected the suppressed-gap summary last, got %q", last.Message)
+	}
+	if last.XMM != 0 || last.YMM != 0 {
+		t.Fatalf("the summary line has no single location: %+v", last)
 	}
 }
 
