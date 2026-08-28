@@ -37,6 +37,12 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 			if !ok {
 				continue
 			}
+			// A drilled pad is copper on every layer: a same-net pour on
+			// any layer already ties it, and a stitch via would land on
+			// top of the pad's own hole.
+			if pad.Drill != nil && *pad.Drill > 0 {
+				continue
+			}
 			sameLayer := false
 			for _, L := range layers {
 				if L == pad.Layer.Index {
@@ -88,6 +94,9 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 					continue
 				}
 				if fanoutHitsPad(board, vx, vy, opts.ViaDiameterMM/2+0.13, fp, i) {
+					continue
+				}
+				if !holeSiteOK(board, vx, vy, opts.ViaDrillMM) {
 					continue
 				}
 				snapT, snapV := len(board.Traces), len(board.Vias)
@@ -171,6 +180,9 @@ func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
 					continue
 				}
 				if fanoutHitsPad(board, x, y, dia/2+0.15, nil, -1) {
+					continue
+				}
+				if !holeSiteOK(board, x, y, drill) {
 					continue
 				}
 				if viaNear(board, x, y, pitch*0.45) {

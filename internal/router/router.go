@@ -210,6 +210,10 @@ type padLoc struct {
 	ref   string
 	p     core.Point
 	layer uint8
+	// through: the pad is drilled, so it is copper on every layer. The
+	// router may land on either side without a via — and must not drill
+	// one next to the pad's own hole.
+	through bool
 }
 
 // Route autoroutes all multi-pad nets on the board. Mutates board traces/vias
@@ -241,9 +245,10 @@ func Route(board *core.Board, opts Options) Report {
 			}
 			layer := pad.Layer.Index
 			nets[*pad.Net] = append(nets[*pad.Net], padLoc{
-				ref:   fp.Reference,
-				p:     core.PadWorldCenter(fp, pad),
-				layer: layer,
+				ref:     fp.Reference,
+				p:       core.PadWorldCenter(fp, pad),
+				layer:   layer,
+				through: pad.Drill != nil && *pad.Drill > 0,
 			})
 		}
 	}
@@ -1074,8 +1079,13 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 	type site struct {
 		pad padLoc
 		via core.Point
+		// noVia: the pad is drilled, so it already reaches both layers.
+		// Jumping off it needs no second hole beside its own.
+		noVia bool
 	}
 	var sites []site
+	holeMark := g.holes.mark()
+	defer func() { g.holes.truncate(holeMark) }()
 	dirs := [][2]float64{
 		{0, -0.55}, {0, 0.55}, {-0.55, 0}, {0.55, 0},
 		{0.55, -0.55}, {-0.55, -0.55}, {0.55, 0.55}, {-0.55, 0.55},
@@ -1085,11 +1095,18 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 		{0, -2.00}, {2.00, 0}, {-2.00, 0}, {0, 2.00},
 	}
 	for _, p := range pads {
+		if p.through {
+			sites = append(sites, site{pad: p, via: p.p, noVia: true})
+			continue
+		}
 		var chosen *core.Point
 		px, py := p.p.X.ToMM(), p.p.Y.ToMM()
 		for _, d := range dirs {
 			x, y := px+d[0], py+d[1]
 			if board.Outline != nil && !outlineContains(board.Outline, x, y, 0.35) {
+				continue
+			}
+			if !g.holes.ok(x, y, opts.ViaDrillMM) {
 				continue
 			}
 			if g.nearForeignPad(x, y, p.layer, name, opts.needAt(x, y)) {
@@ -1101,6 +1118,7 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 			}
 			pt := core.NewPoint(core.FromMM(x), core.FromMM(y))
 			chosen = &pt
+			g.holes.add(x, y, opts.ViaDrillMM)
 			break
 		}
 		if chosen == nil {
@@ -1113,11 +1131,13 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 	var vias []core.Via
 	var sources []cellKey
 	for _, s := range sites {
-		vias = append(vias, core.Via{
-			ID: core.NewID(), Net: name, Position: s.via,
-			Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
-		})
-		stubs = append(stubs, opts.escapeTraces(name, s.pad.layer, s.pad.p, s.via)...)
+		if !s.noVia {
+			vias = append(vias, core.Via{
+				ID: core.NewID(), Net: name, Position: s.via,
+				Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
+			})
+			stubs = append(stubs, opts.escapeTraces(name, s.pad.layer, s.pad.p, s.via)...)
+		}
 		if cx, cy, ok := g.worldToCell(s.via.X, s.via.Y); ok {
 			for L := uint8(0); L < uint8(g.layers); L++ {
 				sources = append(sources, cellKey{cx, cy, L})
@@ -1186,7 +1206,7 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 		g.blockSegObstacle(t.Start.X, t.Start.Y, t.End.X, t.End.Y, t.Layer.Index, name, t.Width.ToMM()/2)
 	}
 	for _, v := range vias {
-		g.blockViaObstacle(v.Position.X, v.Position.Y, name, v.Diameter.ToMM()/2)
+		g.blockViaObstacle(v.Position.X, v.Position.Y, name, v.Diameter.ToMM()/2, v.Drill.ToMM())
 	}
 	length := 0.0
 	for _, t := range stubs {
@@ -1311,12 +1331,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		}
 	}
 	sources := existingNetSources(board, g, name, pads, connected)
-	if sx, sy, ok := g.worldToCell(pads[seed].p.X, pads[seed].p.Y); ok {
-		sources = append(sources, cellKey{sx, sy, pads[seed].layer})
-	} else {
-		sx, sy := clampCell(pads[seed].p, g)
-		sources = append(sources, cellKey{sx, sy, pads[seed].layer})
-	}
+	sources = append(sources, g.padSources(pads[seed])...)
 
 	type pendingVia struct {
 		v core.Via
@@ -1354,8 +1369,17 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		}
 		paints = nil
 	}
+	// holeMark/rollbackHoles: pending vias are provisional drills. They are
+	// registered as the path is built so two vias of the same net keep their
+	// gap, then dropped again if the net is abandoned (the commit loop
+	// re-registers the ones that survive).
 
 	copperR := g.copperRadius()
+	holeMark := g.holes.mark()
+	addVia := func(v core.Via) {
+		pendV = append(pendV, pendingVia{v: v})
+		g.holes.add(v.Position.X.ToMM(), v.Position.Y.ToMM(), v.Drill.ToMM())
+	}
 	segs := 0
 	length := 0.0
 	failed := false
@@ -1391,13 +1415,16 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 
 		goalLayer := pads[bestJ].layer
 		goalP := pads[bestJ].p
+		// A drilled pad is copper on every layer: arriving on either
+		// side lands on the pin, and no via is owed.
+		anyLayer := pads[bestJ].through
 		// Prefer a fanout via sitting off this pad — it sits outside
 		// the QFN body and is reachable on either layer.
 		if v, ok := closestNetVia(board, name, goalP, pads, bestJ); ok {
-			goalP = v
+			goalP, anyLayer = v, true
 		}
-		path, ok := g.aStarMulti(sources, goalP, goalLayer, name, deadline, hasDeadline)
-		if !ok {
+		path, ok := g.aStarMultiAt(sources, goalP, goalLayer, anyLayer, name, deadline, hasDeadline)
+		if !ok && !anyLayer {
 			path, ok = g.aStarMulti(sources, goalP, signalOtherLayer(g, goalLayer), name, deadline, hasDeadline)
 		}
 		if !ok {
@@ -1406,9 +1433,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			break
 		}
 		if len(path) < 2 {
-			if gx, gy, okc := g.worldToCell(pads[bestJ].p.X, pads[bestJ].p.Y); okc {
-				sources = append(sources, cellKey{gx, gy, goalLayer})
-			}
+			sources = append(sources, g.padSources(pads[bestJ])...)
 			connected[bestJ] = true
 			continue
 		}
@@ -1419,13 +1444,13 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		for k := 0; k < len(path)-1; k++ {
 			a, b := path[k], path[k+1]
 			if a.layer != b.layer {
-				pendV = append(pendV, pendingVia{v: core.Via{
+				addVia(core.Via{
 					ID:       core.NewID(),
 					Position: core.NewPoint(a.x, a.y),
 					Drill:    core.FromMM(opts.ViaDrillMM),
 					Diameter: core.FromMM(opts.ViaDiameterMM),
 					Net:      name,
-				}})
+				})
 				cx, cy, okc := g.worldToCell(a.x, a.y)
 				if okc {
 					for L := uint8(0); L < uint8(g.layers); L++ {
@@ -1459,13 +1484,14 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		// to leave U1's pad as its own island.
 		padP := pads[bestJ].p
 		from := path[len(path)-1]
-		if from.layer != goalLayer {
-			pendV = append(pendV, pendingVia{v: core.Via{
+		if from.layer != goalLayer && !pads[bestJ].through {
+			addVia(core.Via{
 				ID: core.NewID(), Position: core.NewPoint(from.x, from.y),
 				Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM), Net: name,
-			}})
+			})
 			from.layer = goalLayer
 		}
+		goalLayer = from.layer
 		if from.x != padP.X || from.y != padP.Y {
 			fx, fy := from.x.ToMM(), from.y.ToMM()
 			px, py := padP.X.ToMM(), padP.Y.ToMM()
@@ -1476,9 +1502,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 				length += hypotMM(core.NewPoint(from.x, from.y), padP)
 			}
 		}
-		if gx, gy, ok := g.worldToCell(padP.X, padP.Y); ok {
-			sources = append(sources, cellKey{gx, gy, goalLayer})
-		}
+		sources = append(sources, g.padSources(pads[bestJ])...)
 		connected[bestJ] = true
 		// Pick up this pad's fanout via now that it is in the tree.
 		sources = append(sources, existingNetSources(board, g, name, pads, map[int]bool{bestJ: true})...)
@@ -1486,8 +1510,10 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 
 	if failed {
 		rollback()
+		g.holes.truncate(holeMark)
 		return Outcome{Status: "failed", Reason: reason, LowerBoundMM: lb}
 	}
+	g.holes.truncate(holeMark)
 
 	// Commit copper and expand grid halos to full clearance so later nets
 	// treat this net as a foreign obstacle (search paint was bare half-width).
@@ -1498,7 +1524,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 	}
 	for _, p := range pendV {
 		board.Vias = append(board.Vias, p.v)
-		g.blockViaObstacle(p.v.Position.X, p.v.Position.Y, p.v.Net, p.v.Diameter.ToMM()/2)
+		g.blockViaObstacle(p.v.Position.X, p.v.Position.Y, p.v.Net, p.v.Diameter.ToMM()/2, p.v.Drill.ToMM())
 	}
 	if !copperClearanceFrom(board, snapT, commitClearance(board)) {
 		board.Traces = board.Traces[:snapT]
@@ -2293,6 +2319,9 @@ type grid struct {
 	theta   bool
 	share   bool    // PathFinder: foreign traces are costly, not walls
 	present float64 // extra step cost per shared cell
+	// holes tracks every drill on the board so a via is never placed
+	// inside another hole's fab clearance.
+	holes *holeMap
 }
 
 // maxGridDim caps cells per axis; larger boards coarsen the cell pitch.
@@ -2347,6 +2376,7 @@ func newGrid(board *core.Board, opts Options) *grid {
 		plane:   make([]bool, layers),
 		opts:    opts, board: board,
 		theta: cellMM > 0.16,
+		holes: newHoleMap(board),
 	}
 	st := board.StackupOrDefault()
 	for L := 0; L < layers; L++ {
@@ -2435,7 +2465,7 @@ func newGrid(board *core.Board, opts Options) *grid {
 		g.blockSegObstacle(tr.Start.X, tr.Start.Y, tr.End.X, tr.End.Y, tr.Layer.Index, tr.Net, tr.Width.ToMM()/2)
 	}
 	for _, v := range board.Vias {
-		g.blockViaObstacle(v.Position.X, v.Position.Y, v.Net, v.Diameter.ToMM()/2)
+		g.blockViaObstacle(v.Position.X, v.Position.Y, v.Net, v.Diameter.ToMM()/2, v.Drill.ToMM())
 	}
 	return g
 }
@@ -2525,10 +2555,11 @@ func (g *grid) blockSegObstacle(x0, y0, x1, y1 core.Length, layer uint8, net str
 	}
 }
 
-func (g *grid) blockViaObstacle(x, y core.Length, net string, halfWMM float64) {
+func (g *grid) blockViaObstacle(x, y core.Length, net string, halfWMM, drillMM float64) {
 	if net == "" {
 		net = "*"
 	}
+	g.holes.add(x.ToMM(), y.ToMM(), drillMM)
 	cx, cy, ok := g.worldToCell(x, y)
 	if !ok {
 		return
@@ -2684,6 +2715,12 @@ func (g *grid) passable(cx, cy int, layer uint8, net string) bool {
 
 // aStarMulti: multi-source A*; prefers layer 0; vias cost ViaCost.
 func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net string, deadline time.Time, hasDeadline bool) ([]gpos, bool) {
+	return g.aStarMultiAt(sources, to, goalLayer, false, net, deadline, hasDeadline)
+}
+
+// aStarMultiAt is aStarMulti with an explicit any-layer goal: a through-hole
+// pad is copper top to bottom, so arriving on either side finishes the hop.
+func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, anyLayer bool, net string, deadline time.Time, hasDeadline bool) ([]gpos, bool) {
 	tx, ty, ok2 := g.worldToCell(to.X, to.Y)
 	if !ok2 {
 		tx, ty = clampCell(to, g)
@@ -2726,9 +2763,13 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 	if open.Len() == 0 {
 		return nil, false
 	}
-	if _, ok := gScore[goal]; ok {
-		wx, wy := g.cellToWorld(goal.x, goal.y)
-		return []gpos{{x: wx, y: wy, layer: goal.l}}, true
+	for _, s := range sources {
+		if s.x == goal.x && s.y == goal.y && (anyLayer || s.l == goal.l) {
+			if _, ok := gScore[s]; ok {
+				wx, wy := g.cellToWorld(goal.x, goal.y)
+				return []gpos{{x: wx, y: wy, layer: s.l}}, true
+			}
+		}
 	}
 
 	dirs := [][2]int{
@@ -2752,7 +2793,7 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 			return nil, false
 		}
 		cur := heap.Pop(open).(*astNode) // safe-ignore: astHeap only ever holds *astNode; a mismatch is a programmer error worth the panic
-		if cur.k.x == goal.x && cur.k.y == goal.y && cur.k.l == goal.l {
+		if cur.k.x == goal.x && cur.k.y == goal.y && (anyLayer || cur.k.l == goal.l) {
 			return g.reconstruct(came, cur.k), true
 		}
 		if closed[cur.k] {
@@ -2821,6 +2862,11 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 				heap.Push(open, &astNode{k: nk, g: ng, f: ng + heuristic(nk, goal)})
 			}
 		} // end non-plane lateral walk
+		// A layer change means a drilled via here — only where the fab's
+		// hole-to-hole gap to every other drill still holds.
+		if !g.viaSiteOK(cur.k.x, cur.k.y, net) {
+			continue
+		}
 		for L := uint8(0); L < uint8(g.layers); L++ {
 			if L == cur.k.l {
 				continue

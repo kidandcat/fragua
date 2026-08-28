@@ -191,6 +191,9 @@ func placeViaInPadEscapes(board *core.Board, fp *core.Footprint, targets []slotT
 				continue
 			}
 		}
+		if !holeSiteOK(board, t.cx, t.cy, viaDrill) {
+			continue
+		}
 		board.Vias = append(board.Vias, core.Via{
 			ID: core.NewID(), Net: t.net,
 			Position: core.NewPoint(core.FromMM(t.cx), core.FromMM(t.cy)),
@@ -232,6 +235,9 @@ func placeEscapes(board *core.Board, fp *core.Footprint, targets []slotTarget, p
 					continue
 				}
 				if fanoutHitsPad(board, x, y, keepR, fp, t.idx) || fanoutHitsSite(*placed, x, y, minViaPitch) {
+					continue
+				}
+				if !holeSiteOK(board, x, y, viaDrill) {
 					continue
 				}
 				if stubHitsForeignPad(board, t.cx, t.cy, x, y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
@@ -557,6 +563,7 @@ func commitSlots(board *core.Board, fp *core.Footprint, targets []slotTarget, pe
 		t := targets[h.gi]
 		s := slots[h.si]
 		if fanoutHitsSite(*placed, s.x, s.y, minViaPitch) ||
+			!holeSiteOK(board, s.x, s.y, viaDrill) ||
 			fanoutHitsPad(board, s.x, s.y, keepR, fp, t.idx) ||
 			stubHitsForeignPad(board, t.cx, t.cy, s.x, s.y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
 			left = append(left, h.gi)

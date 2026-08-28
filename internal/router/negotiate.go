@@ -228,11 +228,10 @@ func probeBlockingNets(board *core.Board, g *grid, name string, pads []padLoc, d
 		g.present = oldPresent
 	}()
 
-	connected := map[int]bool{pickSeed(board, name, pads): true}
+	seed := pickSeed(board, name, pads)
+	connected := map[int]bool{seed: true}
 	sources := existingNetSources(board, g, name, pads, connected)
-	if sx, sy, ok := g.worldToCell(pads[pickSeed(board, name, pads)].p.X, pads[pickSeed(board, name, pads)].p.Y); ok {
-		sources = append(sources, cellKey{sx, sy, pads[pickSeed(board, name, pads)].layer})
-	}
+	sources = append(sources, g.padSources(pads[seed])...)
 	seen := map[string]bool{}
 	var out []string
 	for len(connected) < len(pads) {
@@ -256,12 +255,15 @@ func probeBlockingNets(board *core.Board, g *grid, name string, pads []padLoc, d
 		}
 		goalP := pads[bestJ].p
 		goalL := pads[bestJ].layer
+		anyLayer := pads[bestJ].through
 		if v, ok := closestNetVia(board, name, goalP, pads, bestJ); ok {
-			goalP = v
+			goalP, anyLayer = v, true
 		}
-		path, ok := g.aStarMulti(sources, goalP, goalL, name, deadline, hasDeadline)
-		if !ok {
-			path, ok = g.aStarMulti(sources, goalP, 1-goalL, name, deadline, hasDeadline)
+		path, ok := g.aStarMultiAt(sources, goalP, goalL, anyLayer, name, deadline, hasDeadline)
+		if !ok && !anyLayer {
+			// signalOtherLayer, not 1-goalL: the latter underflows on a
+			// 4-layer stackup and asks for layer 255.
+			path, ok = g.aStarMulti(sources, goalP, signalOtherLayer(g, goalL), name, deadline, hasDeadline)
 		}
 		if !ok {
 			break
