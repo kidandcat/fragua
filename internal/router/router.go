@@ -1544,6 +1544,11 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 }
 
 // padIslands counts electrically separate groups of pads on net.
+// padIslands counts electrically separate groups of pads on net. Copper
+// joins where it *touches*, not only where endpoints coincide: a branch that
+// leaves the middle of a trunk (which is what multi-source growth on a power
+// rail produces) is a T-junction, and an endpoint-only union-find used to
+// report those perfectly good rails as split nets.
 func padIslands(board *core.Board, net string, pads []padLoc) int {
 	if len(pads) < 2 {
 		return 1
@@ -1564,11 +1569,19 @@ func padIslands(board *core.Board, net string, pads []padLoc) int {
 		add(p.p.X.ToMM(), p.p.Y.ToMM())
 	}
 	nPad := len(pads)
+	type seg struct {
+		a, b [2]float64
+		ia   int
+		ib   int
+	}
+	var segs []seg
 	for _, t := range board.Traces {
-		if t.Net == net {
-			add(t.Start.X.ToMM(), t.Start.Y.ToMM())
-			add(t.End.X.ToMM(), t.End.Y.ToMM())
+		if t.Net != net {
+			continue
 		}
+		ax, ay := t.Start.X.ToMM(), t.Start.Y.ToMM()
+		bx, by := t.End.X.ToMM(), t.End.Y.ToMM()
+		segs = append(segs, seg{a: [2]float64{ax, ay}, b: [2]float64{bx, by}, ia: add(ax, ay), ib: add(bx, by)})
 	}
 	for _, v := range board.Vias {
 		if v.Net == net {
@@ -1599,11 +1612,30 @@ func padIslands(board *core.Board, net string, pads []padLoc) int {
 			}
 		}
 	}
-	for _, t := range board.Traces {
-		if t.Net != net {
-			continue
+	for _, sg := range segs {
+		unite(sg.ia, sg.ib)
+	}
+	// T-junctions: a node sitting anywhere along a segment is copper on it.
+	for _, sg := range segs {
+		for i := range nodes {
+			if find(i) == find(sg.ia) {
+				continue
+			}
+			if pointSegDist(p2{nodes[i].x, nodes[i].y}, p2(sg.a), p2(sg.b)) < touch {
+				unite(sg.ia, i)
+			}
 		}
-		unite(add(t.Start.X.ToMM(), t.Start.Y.ToMM()), add(t.End.X.ToMM(), t.End.Y.ToMM()))
+	}
+	// Crossings: two segments of the same net that meet away from any node.
+	for i := 0; i < len(segs); i++ {
+		for j := i + 1; j < len(segs); j++ {
+			if find(segs[i].ia) == find(segs[j].ia) {
+				continue
+			}
+			if segSegDist(p2(segs[i].a), p2(segs[i].b), p2(segs[j].a), p2(segs[j].b)) < touch {
+				unite(segs[i].ia, segs[j].ia)
+			}
+		}
 	}
 	seen := map[int]bool{}
 	for i := 0; i < nPad; i++ {

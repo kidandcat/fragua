@@ -420,3 +420,29 @@ func TestApplyFabCeilingUsesJLCPCB(t *testing.T) {
 		t.Fatalf("4L clearance=%v want ~0.0889", opts.ClearanceMM)
 	}
 }
+
+// A branch leaving the middle of a trunk is a T-junction, not a split net:
+// padIslands must see one island, or the router throws away good rails.
+func TestPadIslandsAcceptsTeeJunction(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	mk := func(x, y float64) core.Point { return core.NewPoint(core.FromMM(x), core.FromMM(y)) }
+	w := core.FromMM(0.25)
+	b.Traces = []core.Trace{
+		{ID: core.NewID(), Net: "RAIL", Layer: core.LayerTop, Width: w, Start: mk(5, 15), End: mk(35, 15)},
+		{ID: core.NewID(), Net: "RAIL", Layer: core.LayerTop, Width: w, Start: mk(20, 15), End: mk(20, 25)},
+	}
+	pads := []padLoc{
+		{ref: "A", p: mk(5, 15), layer: 0},
+		{ref: "B", p: mk(35, 15), layer: 0},
+		{ref: "C", p: mk(20, 25), layer: 0},
+	}
+	if n := padIslands(b, "RAIL", pads); n != 1 {
+		t.Fatalf("T-junction rail should be one island, got %d", n)
+	}
+	pads = append(pads, padLoc{ref: "D", p: mk(35, 25), layer: 0})
+	if n := padIslands(b, "RAIL", pads); n != 2 {
+		t.Fatalf("an unconnected pad is its own island, got %d", n)
+	}
+}
