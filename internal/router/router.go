@@ -258,7 +258,9 @@ func Route(board *core.Board, opts Options) Report {
 	for n := range nets {
 		names = append(names, n)
 	}
-	// Power first so +3V3 can span; 2-pad signals next; leftover fat last.
+	// Power first so +3V3 can span; then fat signal buses (>=8 pads) while
+	// the field is still open — a bus that spans the board cannot be routed
+	// over leftovers; small signals fill in around it afterwards.
 	sort.Slice(names, func(i, j int) bool {
 		pi, pj := netOrderKey(names[i]), netOrderKey(names[j])
 		if pi != pj {
@@ -267,7 +269,7 @@ func Route(board *core.Board, opts Options) Report {
 		if pi > 2 {
 			if ni, nj := len(nets[names[i]]), len(nets[names[j]]); ni >= 8 || nj >= 8 {
 				if (ni >= 8) != (nj >= 8) {
-					return ni < nj
+					return ni > nj
 				}
 			}
 		}
