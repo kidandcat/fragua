@@ -237,7 +237,12 @@ func openBrowser(url string) {
 	default:
 		return
 	}
-	_ = cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	// Reap it: the helper exits immediately once the browser is up, and an
+	// unwaited child stays a zombie for the life of the server.
+	go func() { _ = cmd.Wait() }()
 }
 
 func findUIDir() string {
