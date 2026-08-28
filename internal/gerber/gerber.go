@@ -200,19 +200,6 @@ func padOccupiesLayer(pad *core.Pad, target core.Layer) bool {
 	return pad.Layer.Index == target.Index
 }
 
-// padWorldSize swaps w/h for 90°/270° rotations (matches Rust).
-func padWorldSize(fp *core.Footprint, pad *core.Pad) (core.Length, core.Length) {
-	rot := math.Mod(fp.Rotation, 360)
-	if rot < 0 {
-		rot += 360
-	}
-	w, h := pad.Size[0], pad.Size[1]
-	if (rot > 45 && rot < 135) || (rot > 225 && rot < 315) {
-		return h, w
-	}
-	return w, h
-}
-
 // footprintsInOrder walks FootprintOrder, falling back to sorted map keys.
 func footprintsInOrder(board *core.Board) []*core.Footprint {
 	var out []*core.Footprint
@@ -532,7 +519,7 @@ func writeMask(board *core.Board, s side) string {
 			if !padOccupiesLayer(pad, layer) {
 				continue
 			}
-			pw, ph := padWorldSize(fp, pad)
+			pw, ph := core.PadWorldSize(fp, pad)
 			id := table.intern(rectAp(pw+maskClearance+maskClearance, ph+maskClearance+maskClearance))
 			flashes = append(flashes, flashOp{id, core.PadWorldCenter(fp, pad)})
 		}
@@ -820,7 +807,7 @@ func writePaste(board *core.Board, s side) string {
 			if pad.Layer.Index != layer.Index {
 				continue
 			}
-			pw, ph := padWorldSize(fp, pad)
+			pw, ph := core.PadWorldSize(fp, pad)
 			id := table.intern(rectAp(pw, ph))
 			flashes = append(flashes, flashOp{id, core.PadWorldCenter(fp, pad)})
 		}
