@@ -529,6 +529,12 @@ func packBoard(p *core.Project, args string) (string, error) {
 			out = filepath.Join(os.TempDir(), "fragua-fab")
 		}
 	}
+	// out= names a directory. Given a .zip path — the natural thing to type —
+	// pack used to create a *directory* called foo.zip and hide the real
+	// archive inside it; take the parent instead.
+	if strings.EqualFold(filepath.Ext(out), ".zip") {
+		out = filepath.Dir(out)
+	}
 	res, err := fab.Pack(p, provider, out)
 	if err != nil {
 		return "", err
