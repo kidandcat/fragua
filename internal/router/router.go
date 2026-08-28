@@ -1194,7 +1194,8 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 	board.Traces = append(board.Traces, stubs...)
 	board.Traces = append(board.Traces, hops...)
 	board.Vias = append(board.Vias, vias...)
-	if !copperClearanceFrom(board, snapT, commitClearance(board)) {
+	if !copperClearanceFrom(board, snapT, commitClearance(board)) ||
+		!viaClearanceFrom(board, snapV, commitClearance(board)) {
 		board.Traces = board.Traces[:snapT]
 		board.Vias = board.Vias[:snapV]
 		return Outcome{Status: "failed", Reason: "jumper-drc"}
@@ -1526,7 +1527,8 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		board.Vias = append(board.Vias, p.v)
 		g.blockViaObstacle(p.v.Position.X, p.v.Position.Y, p.v.Net, p.v.Diameter.ToMM()/2, p.v.Drill.ToMM())
 	}
-	if !copperClearanceFrom(board, snapT, commitClearance(board)) {
+	if !copperClearanceFrom(board, snapT, commitClearance(board)) ||
+		!viaClearanceFrom(board, snapV, commitClearance(board)) {
 		board.Traces = board.Traces[:snapT]
 		board.Vias = board.Vias[:snapV]
 		*g = *newGrid(board, g.opts)
@@ -1770,6 +1772,78 @@ func copperClearanceFrom(board *core.Board, fromT int, minClearanceMM float64) b
 					on = *pad.Net
 				}
 				if d-half+1e-6 < needAt(mx, my, a.Net, on) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// viaClearanceFrom checks vias[fromV:] — the barrels a commit is about to
+// keep — against every piece of foreign copper already on the board. A via
+// spans the whole stack, so layer never exempts it. copperClearanceFrom only
+// ever looked at traces, so until now nothing validated a via at commit and
+// the pour stitcher happily dropped one on top of a signal.
+func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool {
+	if board == nil || fromV >= len(board.Vias) {
+		return true
+	}
+	if fromV < 0 {
+		fromV = 0
+	}
+	res := &core.RuleResolver{Defaults: core.DefaultRules(), Areas: board.RuleAreas}
+	if fab := core.ActiveFabRules(board); fab.MinClearanceMM > 0 {
+		res.Defaults.Clearance = core.FromMM(fab.MinClearanceMM)
+	}
+	need := func(x, y float64, netA, netB string) float64 {
+		n := res.ClearanceBetween(core.NewPoint(core.FromMM(x), core.FromMM(y)), netA, netB).ToMM()
+		if n < minClearanceMM {
+			n = minClearanceMM
+		}
+		return n
+	}
+	for i := fromV; i < len(board.Vias); i++ {
+		v := board.Vias[i]
+		vx, vy := v.Position.X.ToMM(), v.Position.Y.ToMM()
+		vr := v.Diameter.ToMM() / 2
+		for _, tr := range board.Traces {
+			if tr.Net == v.Net {
+				continue
+			}
+			gap := distPointSeg(vx, vy, tr.Start.X.ToMM(), tr.Start.Y.ToMM(), tr.End.X.ToMM(), tr.End.Y.ToMM()) -
+				vr - tr.Width.ToMM()/2
+			if gap+1e-6 < need(vx, vy, v.Net, tr.Net) {
+				return false
+			}
+		}
+		for j := 0; j < len(board.Vias); j++ {
+			if j == i {
+				continue
+			}
+			w := board.Vias[j]
+			if w.Net == v.Net {
+				continue
+			}
+			gap := math.Hypot(w.Position.X.ToMM()-vx, w.Position.Y.ToMM()-vy) - vr - w.Diameter.ToMM()/2
+			if gap+1e-6 < need(vx, vy, v.Net, w.Net) {
+				return false
+			}
+		}
+		for _, fp := range footprintsStable(board) {
+			for k := range fp.Pads {
+				pad := &fp.Pads[k]
+				on := ""
+				if pad.Net != nil {
+					on = *pad.Net
+				}
+				if on == v.Net {
+					continue
+				}
+				aabb := core.PadWorldAABB(fp, pad)
+				d := pointRectDist(vx, vy,
+					aabb.Min.X.ToMM(), aabb.Min.Y.ToMM(), aabb.Max.X.ToMM(), aabb.Max.Y.ToMM()) - vr
+				if d+1e-6 < need(vx, vy, v.Net, on) {
 					return false
 				}
 			}

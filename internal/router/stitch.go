@@ -111,7 +111,8 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 						Width: core.FromMM(opts.TraceWidthMM), Start: c, End: vp,
 					})
 				}
-				if !copperClearanceFrom(board, snapT, commitClearance(board)) {
+				if !copperClearanceFrom(board, snapT, commitClearance(board)) ||
+					!viaClearanceFrom(board, snapV, commitClearance(board)) {
 					board.Traces = board.Traces[:snapT]
 					board.Vias = board.Vias[:snapV]
 					continue
@@ -196,7 +197,9 @@ func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
 					Drill:    core.FromMM(drill),
 					Diameter: core.FromMM(dia),
 				})
-				if !copperClearanceFrom(board, len(board.Traces), commitClearance(board)) {
+				// The stitch adds a via and no trace, so the trace-only
+				// check could never fail: validate the barrel itself.
+				if !viaClearanceFrom(board, snapV, commitClearance(board)) {
 					board.Vias = board.Vias[:snapV]
 					continue
 				}
