@@ -37,6 +37,11 @@ type Options struct {
 	SearchClearMM   float64 // pad-edge search gap; 0 → fab ceiling
 	Teardrops       bool    // add copper teardrops at pad/via junctions
 	TeardropsSet    bool    // true if teardrop= was in the script args
+	// ClearanceSet marks an explicit clearance= from the script args. The
+	// fab floor still wins when the request is tighter than the process
+	// allows, but a caller asking for more air than the fab minimum gets it
+	// — without this flag the fab ceiling silently overwrote the request.
+	ClearanceSet bool
 	// Schematic supplies the net classes that drive per-net trace width
 	// (impedance target, then class width). nil → TraceWidthMM everywhere.
 	Schematic *core.Schematic
@@ -125,6 +130,7 @@ func ParseOptions(o Options, args string) Options {
 			o.MaxSeconds = ClampBudget(x)
 		case "clearance":
 			o.ClearanceMM = x
+			o.ClearanceSet = x > 0
 		case "width", "trace_width":
 			o.TraceWidthMM = x
 		case "cell":
@@ -605,10 +611,18 @@ func signalTieBreak(name string) int {
 func applyFabCeiling(board *core.Board, opts Options) Options {
 	fab := core.ActiveFabRules(board)
 	if fab.MinClearanceMM > 0 {
-		opts.ClearanceMM = fab.MinClearanceMM
+		// The fab minimum is a floor, not a fixed value: an explicit
+		// clearance= wider than the process minimum is a legal request and
+		// is honoured. Only the default (and anything tighter than the fab
+		// allows) collapses onto the floor.
+		cl := fab.MinClearanceMM
+		if opts.ClearanceSet && opts.ClearanceMM > cl {
+			cl = opts.ClearanceMM
+		}
+		opts.ClearanceMM = cl
 		// Search a hair above the fab floor so grid quantisation cannot
 		// land a trace 50 nm inside the DRC limit (VBUS vs USB shield).
-		opts.SearchClearMM = fab.MinClearanceMM + 0.02
+		opts.SearchClearMM = cl + 0.02
 	}
 	if fab.MinViaDrillMM > 0 {
 		opts.ViaDrillMM = fab.MinViaDrillMM
