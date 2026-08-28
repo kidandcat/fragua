@@ -18,12 +18,12 @@ func TestLibraryPutGetListRoundtrip(t *testing.T) {
 	side := EdgeTop
 	body := &BodyRect{MinXMM: -1.5, MinYMM: -0.8, MaxXMM: 1.5, MaxYMM: 0.8}
 	in := LibraryEntry{
-		Key:         "r_0603",
-		Description: "0603 chip resistor",
+		Key:          "r_0603",
+		Description:  "0603 chip resistor",
 		DefaultValue: "10k",
-		EdgeMounted: false,
-		EdgeSide:    &side,
-		Elevated:    false,
+		EdgeMounted:  false,
+		EdgeSide:     &side,
+		Elevated:     false,
 		Pads: []LibraryPad{
 			{Number: "1", Name: "", XMM: -0.75, YMM: 0, WMM: 0.4, HMM: 0.5},
 			{Number: "2", Name: "", XMM: 0.75, YMM: 0, WMM: 0.4, HMM: 0.5},
@@ -113,7 +113,7 @@ func TestLibraryPutPreservesAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = lib.Put(LibraryEntry{
-		Key: "mod",
+		Key:  "mod",
 		Pads: []LibraryPad{{Number: "1", XMM: 0, YMM: 0, WMM: 1, HMM: 1}},
 		Attachments: []Attachment{
 			{ID: "a1", Kind: "photo", Filename: "x.jpg", Mime: "image/jpeg", AddedAt: 1},

@@ -9,13 +9,13 @@ import (
 // 0603 (0.06"×0.03") = 1608 (1.6×0.8 mm).
 // ipcPackageAlias maps common library keys to IPC-ish package names.
 var ipcPackageAlias = map[string]string{
-	"sot23":   "SOT-23",
-	"sot_23":  "SOT-23",
-	"sot23_3": "SOT-23",
-	"soic8":   "SOIC-8_3.9x4.9mm_P1.27mm",
-	"soic_8":  "SOIC-8_3.9x4.9mm_P1.27mm",
-	"sop8":    "SOIC-8_3.9x4.9mm_P1.27mm",
-	"tssop8":  "TSSOP-8_3x3mm_P0.65mm",
+	"sot23":    "SOT-23",
+	"sot_23":   "SOT-23",
+	"sot23_3":  "SOT-23",
+	"soic8":    "SOIC-8_3.9x4.9mm_P1.27mm",
+	"soic_8":   "SOIC-8_3.9x4.9mm_P1.27mm",
+	"sop8":     "SOIC-8_3.9x4.9mm_P1.27mm",
+	"tssop8":   "TSSOP-8_3x3mm_P0.65mm",
 	"qfn16":    "QFN-16-1EP_3x3mm_P0.5mm",
 	"qfn_16":   "QFN-16-1EP_3x3mm_P0.5mm",
 	"qfn20":    "QFN-20-1EP_4x4mm_P0.5mm",

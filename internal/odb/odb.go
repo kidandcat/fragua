@@ -25,8 +25,8 @@ func Export(board *core.Board, path string) error {
 	defer tw.Close()
 
 	files := map[string]string{
-		"matrix/matrix": "STEP {\n    COL=1\n    NAME=PCB\n}\n",
-		"misc/info":     fmt.Sprintf("JOB_NAME=fragua\nUNITS=MM\nGENERATED=%s\n", time.Now().UTC().Format(time.RFC3339)),
+		"matrix/matrix":      "STEP {\n    COL=1\n    NAME=PCB\n}\n",
+		"misc/info":          fmt.Sprintf("JOB_NAME=fragua\nUNITS=MM\nGENERATED=%s\n", time.Now().UTC().Format(time.RFC3339)),
 		"steps/pcb/eda/data": "UNITS=MM\n",
 	}
 	if board != nil && board.Outline != nil {

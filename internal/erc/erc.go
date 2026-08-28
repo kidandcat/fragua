@@ -392,7 +392,7 @@ func checkDecoupling(board *core.Board, sch *core.Schematic, maxDistMM float64, 
 
 	// caps by net name
 	capsByNet := map[string][]struct {
-		ref string
+		ref  string
 		x, y float64
 	}{}
 	for _, sym := range symbolsInOrder(sch) {
@@ -410,7 +410,7 @@ func checkDecoupling(board *core.Board, sch *core.Schematic, maxDistMM float64, 
 			for _, c := range net.Connections {
 				if c.SymbolID == sym.ID {
 					capsByNet[net.Name] = append(capsByNet[net.Name], struct {
-						ref string
+						ref  string
 						x, y float64
 					}{sym.Reference, pos[0], pos[1]})
 					break

@@ -144,8 +144,8 @@ type Attachment struct {
 // LibrarySilk is a silk primitive in footprint-local mm.
 // JSON uses tag "kind" with snake_case values "line" / "text" (Rust enum).
 type LibrarySilk struct {
-	Kind   string    `json:"kind"`
-	Layer  SilkLayer `json:"layer"`
+	Kind  string    `json:"kind"`
+	Layer SilkLayer `json:"layer"`
 	// Line fields (present when kind=line)
 	X1MM    float64 `json:"x1_mm,omitempty"`
 	Y1MM    float64 `json:"y1_mm,omitempty"`
@@ -163,23 +163,23 @@ type LibrarySilk struct {
 
 // LibraryEntry is one component footprint in the user library.
 type LibraryEntry struct {
-	Key                     string          `json:"key"`
-	Description             string          `json:"description"`
-	DefaultValue            string          `json:"default_value"`
-	DefaultRotationDeg      float32         `json:"default_rotation_deg"`
-	EdgeMounted             bool            `json:"edge_mounted"`
-	EdgeSide                *EdgeSide       `json:"edge_side"`
-	Elevated                bool            `json:"elevated,omitempty"`
-	Pads                    []LibraryPad    `json:"pads"`
-	Silk                    []LibrarySilk   `json:"silk"`
-	LcscID                  *string         `json:"lcsc_id,omitempty"`
-	MPN                     *string         `json:"mpn,omitempty"`
-	Manufacturer            *string         `json:"manufacturer,omitempty"`
-	Attachments             []Attachment    `json:"attachments"`
-	CreatedAt               uint64          `json:"created_at"`
-	FootprintViewTransform  ViewTransform   `json:"footprint_view_transform"`
-	PlacementMargin         PlacementMargin `json:"placement_margin"`
-	BodyRect                *BodyRect       `json:"body_rect,omitempty"`
+	Key                    string          `json:"key"`
+	Description            string          `json:"description"`
+	DefaultValue           string          `json:"default_value"`
+	DefaultRotationDeg     float32         `json:"default_rotation_deg"`
+	EdgeMounted            bool            `json:"edge_mounted"`
+	EdgeSide               *EdgeSide       `json:"edge_side"`
+	Elevated               bool            `json:"elevated,omitempty"`
+	Pads                   []LibraryPad    `json:"pads"`
+	Silk                   []LibrarySilk   `json:"silk"`
+	LcscID                 *string         `json:"lcsc_id,omitempty"`
+	MPN                    *string         `json:"mpn,omitempty"`
+	Manufacturer           *string         `json:"manufacturer,omitempty"`
+	Attachments            []Attachment    `json:"attachments"`
+	CreatedAt              uint64          `json:"created_at"`
+	FootprintViewTransform ViewTransform   `json:"footprint_view_transform"`
+	PlacementMargin        PlacementMargin `json:"placement_margin"`
+	BodyRect               *BodyRect       `json:"body_rect,omitempty"`
 }
 
 // PadsBBoxMM returns the axis-aligned pad bounding box, or false if no pads.
