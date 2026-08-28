@@ -67,6 +67,19 @@ not fit its escape retries with a short neck near its own pads (nominal width
 everywhere else), then one width tier down; both are counted in `Summary()`,
 never silent.
 
+Two invariants the engine owes its callers:
+
+- **Every run is bounded.** `ClampBudget` normalises `max_seconds`: absent,
+  zero, negative and non-finite all mean the 90 s default, and no single call
+  may exceed 600 s. The search is anytime (per-net caps, deadline checks
+  inside A*), so a run that hits the clock returns the tree it has.
+- **Committed copper is legal copper.** Nothing is kept that DRC would
+  reject: `copperClearanceFrom` checks new traces against traces, pads *and*
+  vias; `viaClearanceFrom` checks new barrels against all three; `viaSiteOK`
+  gates every layer change on the fab hole-to-hole gap and on room for the
+  annulus. A through-hole pad is copper on every layer, so the router lands
+  on it from either side and owes it no via.
+
 ### `internal/placer`
 Simulated annealing legalisation, decoupling-ring seating for passives,
 edge-mount snap. Deterministic for a fixed seed.
