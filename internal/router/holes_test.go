@@ -109,3 +109,43 @@ func TestRouterKeepsViasOffDrills(t *testing.T) {
 		}
 	}
 }
+
+// Neither commit check used to look at vias: copperClearanceFrom compared
+// traces to traces and pads only, and viaClearanceFrom did not exist. So the
+// router could route straight over a foreign barrel and call the net ok.
+func TestRouterClearsForeignVias(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(20)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 5, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	b.AddFootprint(footprint("R2", 25, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	// A foreign barrel sitting on the straight line between them.
+	b.Vias = []core.Via{{
+		ID: core.NewID(), Net: "OTHER",
+		Position: core.NewPoint(core.FromMM(15), core.FromMM(10)),
+		Drill:    core.FromMM(0.30), Diameter: core.FromMM(0.60),
+	}}
+
+	opts := DefaultOptions()
+	opts.MaxSeconds = 20
+	Route(b, opts)
+
+	minClr := commitClearance(b)
+	for _, tr := range b.Traces {
+		for _, v := range b.Vias {
+			if v.Net == tr.Net {
+				continue
+			}
+			gap := distPointSeg(v.Position.X.ToMM(), v.Position.Y.ToMM(),
+				tr.Start.X.ToMM(), tr.Start.Y.ToMM(), tr.End.X.ToMM(), tr.End.Y.ToMM()) -
+				tr.Width.ToMM()/2 - v.Diameter.ToMM()/2
+			if gap+1e-6 < minClr {
+				t.Fatalf("trace %s runs %.3f mm from via %s, fab needs %.3f mm",
+					tr.Net, gap, v.Net, minClr)
+			}
+		}
+	}
+	if len(b.Traces) == 0 {
+		t.Fatal("expected the net to route around the barrel")
+	}
+}

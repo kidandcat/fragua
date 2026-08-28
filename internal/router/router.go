@@ -945,6 +945,14 @@ func routeNetAt(board *core.Board, g *grid, name string, pads []padLoc, opts Opt
 		}
 	}
 	out := routeNetFrom(board, g, name, pads, seed0, already, opts, deadline, hasDeadline)
+	// A commit rejected for a via site bans that cell; the same search then
+	// finds a different barrel. Bounded so a pathological net cannot spin.
+	for retry := 0; retry < 3 && out.Reason == "drc-via"; retry++ {
+		if hasDeadline && time.Now().After(deadline) {
+			break
+		}
+		out = routeNetFrom(board, g, name, pads, seed0, already, opts, deadline, hasDeadline)
+	}
 	if out.Status == "ok" {
 		out.TraceSegments += preSegs
 		out.LengthMM += preLen
@@ -1527,8 +1535,31 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		board.Vias = append(board.Vias, p.v)
 		g.blockViaObstacle(p.v.Position.X, p.v.Position.Y, p.v.Net, p.v.Diameter.ToMM()/2, p.v.Drill.ToMM())
 	}
-	if !copperClearanceFrom(board, snapT, commitClearance(board)) ||
-		!viaClearanceFrom(board, snapV, commitClearance(board)) {
+	if bad := viaClearanceOffenders(board, snapV, commitClearance(board)); len(bad) > 0 {
+		// The grid clearance disk is an approximation of the exact rule, so
+		// A* can still propose a barrel the commit refuses. Ban those sites
+		// and let the caller ask again rather than losing the whole net.
+		var banned [][2]int
+		for _, i := range bad {
+			if cx, cy, ok := g.worldToCell(board.Vias[i].Position.X, board.Vias[i].Position.Y); ok {
+				banned = append(banned, [2]int{cx, cy})
+			}
+		}
+		board.Traces = board.Traces[:snapT]
+		board.Vias = board.Vias[:snapV]
+		bans := g.viaBan
+		*g = *newGrid(board, g.opts)
+		g.viaBan = bans
+		for _, c := range banned {
+			g.banVia(c[0], c[1])
+		}
+		reason := "drc"
+		if len(banned) > 0 {
+			reason = "drc-via" // retryable: routeNetAt asks again
+		}
+		return Outcome{Status: "failed", Reason: reason, LowerBoundMM: lb}
+	}
+	if !copperClearanceFrom(board, snapT, commitClearance(board)) {
 		board.Traces = board.Traces[:snapT]
 		board.Vias = board.Vias[:snapV]
 		*g = *newGrid(board, g.opts)
@@ -1756,6 +1787,18 @@ func copperClearanceFrom(board *core.Board, fromT int, minClearanceMM float64) b
 		half := a.Width.ToMM() / 2
 		aa := [2]float64{ax0, ay0}
 		bb := [2]float64{ax1, ay1}
+		// Vias are copper on every layer, so a new trace has to clear them
+		// too — the mirror of viaClearanceFrom, and just as missing before.
+		for _, v := range board.Vias {
+			if v.Net == a.Net {
+				continue
+			}
+			gap := distPointSeg(v.Position.X.ToMM(), v.Position.Y.ToMM(), ax0, ay0, ax1, ay1) -
+				half - v.Diameter.ToMM()/2
+			if gap+1e-6 < needAt(mx, my, a.Net, v.Net) {
+				return false
+			}
+		}
 		for _, fp := range footprintsStable(board) {
 			for k := range fp.Pads {
 				pad := &fp.Pads[k]
@@ -1786,8 +1829,15 @@ func copperClearanceFrom(board *core.Board, fromT int, minClearanceMM float64) b
 // ever looked at traces, so until now nothing validated a via at commit and
 // the pour stitcher happily dropped one on top of a signal.
 func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool {
+	return len(viaClearanceOffenders(board, fromV, minClearanceMM)) == 0
+}
+
+// viaClearanceOffenders returns the indexes of vias[fromV:] that break the
+// rule, so a caller can ban those sites and try the net again instead of
+// simply losing it.
+func viaClearanceOffenders(board *core.Board, fromV int, minClearanceMM float64) []int {
 	if board == nil || fromV >= len(board.Vias) {
-		return true
+		return nil
 	}
 	if fromV < 0 {
 		fromV = 0
@@ -1803,10 +1853,12 @@ func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool
 		}
 		return n
 	}
+	var bad []int
 	for i := fromV; i < len(board.Vias); i++ {
 		v := board.Vias[i]
 		vx, vy := v.Position.X.ToMM(), v.Position.Y.ToMM()
 		vr := v.Diameter.ToMM() / 2
+		hit := false
 		for _, tr := range board.Traces {
 			if tr.Net == v.Net {
 				continue
@@ -1814,10 +1866,11 @@ func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool
 			gap := distPointSeg(vx, vy, tr.Start.X.ToMM(), tr.Start.Y.ToMM(), tr.End.X.ToMM(), tr.End.Y.ToMM()) -
 				vr - tr.Width.ToMM()/2
 			if gap+1e-6 < need(vx, vy, v.Net, tr.Net) {
-				return false
+				hit = true
+				break
 			}
 		}
-		for j := 0; j < len(board.Vias); j++ {
+		for j := 0; !hit && j < len(board.Vias); j++ {
 			if j == i {
 				continue
 			}
@@ -1827,10 +1880,13 @@ func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool
 			}
 			gap := math.Hypot(w.Position.X.ToMM()-vx, w.Position.Y.ToMM()-vy) - vr - w.Diameter.ToMM()/2
 			if gap+1e-6 < need(vx, vy, v.Net, w.Net) {
-				return false
+				hit = true
 			}
 		}
 		for _, fp := range footprintsStable(board) {
+			if hit {
+				break
+			}
 			for k := range fp.Pads {
 				pad := &fp.Pads[k]
 				on := ""
@@ -1844,12 +1900,16 @@ func viaClearanceFrom(board *core.Board, fromV int, minClearanceMM float64) bool
 				d := pointRectDist(vx, vy,
 					aabb.Min.X.ToMM(), aabb.Min.Y.ToMM(), aabb.Max.X.ToMM(), aabb.Max.Y.ToMM()) - vr
 				if d+1e-6 < need(vx, vy, v.Net, on) {
-					return false
+					hit = true
+					break
 				}
 			}
 		}
+		if hit {
+			bad = append(bad, i)
+		}
 	}
-	return true
+	return bad
 }
 
 func segSegDistMM(a0, a1, b0, b1 [2]float64) float64 {
@@ -2428,6 +2488,9 @@ type grid struct {
 	// holes tracks every drill on the board so a via is never placed
 	// inside another hole's fab clearance.
 	holes *holeMap
+	// viaBan are cells a commit already proved unusable for a barrel.
+	// It survives grid rebuilds so a retry does not walk into them again.
+	viaBan map[[2]int]bool
 }
 
 // maxGridDim caps cells per axis; larger boards coarsen the cell pitch.

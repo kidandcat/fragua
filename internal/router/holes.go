@@ -97,6 +97,9 @@ func (h *holeMap) truncate(n int) {
 // annulus on every layer. The lateral search only ever cleared a trace
 // half-width, and a via pad is usually more than twice that.
 func (g *grid) viaSiteOK(cx, cy int, net string) bool {
+	if g.viaBan[[2]int{cx, cy}] {
+		return false
+	}
 	wx, wy := g.cellToWorld(cx, cy)
 	if g.holes != nil && !g.holes.ok(wx.ToMM(), wy.ToMM(), g.opts.ViaDrillMM) {
 		return false
@@ -183,4 +186,13 @@ func holeSiteOK(board *core.Board, xMM, yMM, drillMM float64) bool {
 		}
 	}
 	return true
+}
+
+// banVia marks a cell as unusable for a barrel: a commit measured it against
+// the exact rule and refused it, and the grid's clearance disk cannot see why.
+func (g *grid) banVia(cx, cy int) {
+	if g.viaBan == nil {
+		g.viaBan = map[[2]int]bool{}
+	}
+	g.viaBan[[2]int{cx, cy}] = true
 }
