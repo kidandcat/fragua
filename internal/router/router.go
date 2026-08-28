@@ -55,6 +55,10 @@ type Options struct {
 	// overrideMM replaces the class width for the net being routed — the
 	// reduced tier a net falls back to when nothing else fits.
 	overrideMM float64
+	// pending is the set of nets that still have to be routed. Copper laid
+	// across their pads' escape corridors is what walls a header in, so the
+	// search pays a toll to cross one instead of taking the shortcut.
+	pending map[string]bool
 }
 
 // Route budget, in seconds. A route call is never unbounded: an autorouter
@@ -69,6 +73,47 @@ const (
 	// MaxBudgetSeconds is the hard ceiling for any single route call.
 	MaxBudgetSeconds = 600.0
 )
+
+// Per-net first-pass budget. A net used to get a flat 3 s (6 s for a fat
+// bus) no matter how much clock the call actually had, so a 600 s run
+// starved a corner-to-corner power hop that needs ~7 s of A* and then
+// reported it as "unreachable". The slice is now a share of what is left.
+const (
+	minNetBudget    = 3 * time.Second
+	minFatNetBudget = 6 * time.Second
+	maxNetBudget    = 45 * time.Second
+	// repairReserve is the fraction of the remaining clock the first pass
+	// leaves untouched, so RR&R, jumpers and negotiation still have time.
+	repairReserve = 0.5
+)
+
+// netBudget shares the clock still left across the nets still to route:
+// an equal slice of half the remainder, doubled for a fat bus, clamped
+// between the old floor and a sane ceiling. Nets that finish in
+// milliseconds (most of them) hand their slice back to whoever is next.
+func netBudget(left time.Duration, netsLeft, padCount int) time.Duration {
+	floor := minNetBudget
+	if padCount >= 8 {
+		floor = minFatNetBudget
+	}
+	if netsLeft < 1 {
+		netsLeft = 1
+	}
+	share := time.Duration(float64(left) * (1 - repairReserve) / float64(netsLeft))
+	if padCount >= 8 {
+		share *= 2
+	}
+	if share < floor {
+		share = floor
+	}
+	if share > maxNetBudget {
+		share = maxNetBudget
+	}
+	if share > left {
+		share = left
+	}
+	return share
+}
 
 // ClampBudget normalises a wall-clock budget in seconds. Zero, negative,
 // NaN and ±Inf all mean "use the default" — never "run forever" — and no
@@ -304,6 +349,24 @@ func Route(board *core.Board, opts Options) Report {
 		pourNets[p.Net] = true
 	}
 
+	// Nets that actually cost search time, for the per-net budget share,
+	// and the same set as the initial "still to route" toll list.
+	routableLeft := 0
+	pending := map[string]bool{}
+	for _, name := range names {
+		if !pourNets[name] && len(nets[name]) >= 2 {
+			routableLeft++
+			pending[name] = true
+		}
+	}
+	// The grid carries the toll list in its own options so a rebuild
+	// (a rejected commit, a rip) keeps it.
+	setPending := func(cur string) {
+		delete(pending, cur)
+		opts.pending = pending
+		g.opts.pending = pending
+	}
+
 	var failedNets []string
 	for _, name := range names {
 		pads := nets[name]
@@ -323,18 +386,12 @@ func Route(board *core.Board, opts Options) Report {
 
 		netDead := deadline
 		if hasDeadline {
-			left := time.Until(deadline)
-			cap := 3 * time.Second
-			if len(pads) >= 8 {
-				cap = 6 * time.Second
-			}
-			if left > 0 && left < cap {
-				cap = left
-			}
-			if cap > 0 {
-				netDead = time.Now().Add(cap)
+			if slice := netBudget(time.Until(deadline), routableLeft, len(pads)); slice > 0 {
+				netDead = time.Now().Add(slice)
 			}
 		}
+		routableLeft--
+		setPending(name)
 		out := routeNet(board, g, name, pads, opts, netDead, hasDeadline)
 		if out.Status != "ok" && len(pads) <= 3 && !pastDeadline() {
 			cheap := opts
@@ -372,6 +429,14 @@ func Route(board *core.Board, opts Options) Report {
 		}
 	}
 
+	// From here only the leftovers are still owed copper, so they are the
+	// only pads whose escape corridors still carry a toll.
+	pending = map[string]bool{}
+	for _, n := range failedNets {
+		pending[n] = true
+	}
+	opts.pending, g.opts.pending = pending, pending
+
 	// 4. RR&R: snapshot, rip one blocking signal net, retry the failed
 	// net then the victim. Restore the snapshot if either side fails.
 	if len(failedNets) > 0 && !pastDeadline() {
@@ -382,6 +447,7 @@ func Route(board *core.Board, opts Options) Report {
 				still = append(still, name)
 				continue
 			}
+			setPending(name)
 			victim := pickRipVictim(board, nets[name], name)
 			snapT := append([]core.Trace(nil), board.Traces...)
 			snapV := append([]core.Via(nil), board.Vias...)
@@ -430,6 +496,7 @@ func Route(board *core.Board, opts Options) Report {
 		g = newGrid(board, opts)
 		left := []string{}
 		for _, name := range failedNets {
+			setPending(name)
 			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
 			if out.Status == "ok" {
 				rep.Failed--
@@ -1480,7 +1547,16 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		}
 		if !ok {
 			failed = true
-			reason = fmt.Sprintf("unreachable:%s.p%d(%.1f,%.1f) from %d", name, bestJ, pads[bestJ].p.X.ToMM(), pads[bestJ].p.Y.ToMM(), len(connected))
+			// A* also returns "no path" when it runs out of clock. Saying
+			// "unreachable" for that is a lie that sends the next reader
+			// hunting for a geometric blockage that is not there.
+			if g.timedOut || (hasDeadline && time.Now().After(deadline)) {
+				reason = fmt.Sprintf("budget:%s.p%d(%.1f,%.1f) from %d", name, bestJ,
+					pads[bestJ].p.X.ToMM(), pads[bestJ].p.Y.ToMM(), len(connected))
+			} else {
+				reason = fmt.Sprintf("unreachable:%s.p%d(%.1f,%.1f) from %d", name, bestJ,
+					pads[bestJ].p.X.ToMM(), pads[bestJ].p.Y.ToMM(), len(connected))
+			}
 			break
 		}
 		if len(path) < 2 {
@@ -2533,6 +2609,74 @@ type grid struct {
 	// viaBan are cells a commit already proved unusable for a barrel.
 	// It survives grid rebuilds so a retry does not walk into them again.
 	viaBan map[[2]int]bool
+	// padIdx buckets pads by position so a clearance query tests the few
+	// pads that can be in reach instead of every pad on the board.
+	padIdx *padIndex
+	// timedOut records why the last A* returned nothing: a spent deadline
+	// or a genuine dead end. They are not the same failure and must not be
+	// reported as if they were.
+	timedOut bool
+}
+
+// padIndex is a uniform bucket grid over pad AABBs. nearForeignPad is the
+// router's hottest call — a Theta* line-of-sight test samples its chord every
+// 0.08 mm and asks for each sample — and scanning the whole pad list there
+// made one cross-board hop cost seconds of A*. Every pad is filed in each
+// bucket its AABB overlaps, so a query only has to read the buckets its own
+// reach touches; the answer is identical to the linear scan.
+type padIndex struct {
+	cellMM     float64
+	minX, minY float64
+	w, h       int
+	buckets    [][]int32
+}
+
+// padIndexCellMM is the bucket pitch. Pads are millimetre-scale, so a 1 mm
+// bucket keeps both the fill factor and the per-query bucket count small.
+const padIndexCellMM = 1.0
+
+func newPadIndex(pads []padObs, minX, minY, maxX, maxY float64) *padIndex {
+	if len(pads) == 0 {
+		return nil
+	}
+	w := int((maxX-minX)/padIndexCellMM) + 1
+	h := int((maxY-minY)/padIndexCellMM) + 1
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	pi := &padIndex{cellMM: padIndexCellMM, minX: minX, minY: minY, w: w, h: h,
+		buckets: make([][]int32, w*h)}
+	for i := range pads {
+		x0, y0 := pi.cellOf(pads[i].minX, pads[i].minY)
+		x1, y1 := pi.cellOf(pads[i].maxX, pads[i].maxY)
+		for by := y0; by <= y1; by++ {
+			for bx := x0; bx <= x1; bx++ {
+				pi.buckets[by*pi.w+bx] = append(pi.buckets[by*pi.w+bx], int32(i))
+			}
+		}
+	}
+	return pi
+}
+
+// cellOf clamps into the bucket grid: a pad hanging off the outline and a
+// query beside it land in the same border bucket, so nothing is missed.
+func (pi *padIndex) cellOf(x, y float64) (int, int) {
+	bx := int((x - pi.minX) / pi.cellMM)
+	by := int((y - pi.minY) / pi.cellMM)
+	if bx < 0 {
+		bx = 0
+	} else if bx >= pi.w {
+		bx = pi.w - 1
+	}
+	if by < 0 {
+		by = 0
+	} else if by >= pi.h {
+		by = pi.h - 1
+	}
+	return bx, by
 }
 
 // maxGridDim caps cells per axis; larger boards coarsen the cell pitch.
@@ -2671,6 +2815,7 @@ func newGrid(board *core.Board, opts Options) *grid {
 			}
 		}
 	}
+	g.padIdx = newPadIndex(g.pads, minX.ToMM(), minY.ToMM(), maxX.ToMM(), maxY.ToMM())
 	// Existing board copper: foreign obstacles use full clearance inflation.
 	for _, tr := range board.Traces {
 		g.blockSegObstacle(tr.Start.X, tr.Start.Y, tr.End.X, tr.End.Y, tr.Layer.Index, tr.Net, tr.Width.ToMM()/2)
@@ -2864,20 +3009,116 @@ func (g *grid) clearanceForHalf(cx, cy int, layer uint8, net string, need float6
 	return true
 }
 
+// pendingEscapeReachMM is how far in front of a pad its escape corridor is
+// assumed to run: room for a trace and its clearance, plus the turn it needs
+// to leave.
+const pendingEscapeReachMM = 1.2
+
+// pendingEscapeToll is the extra step cost per unit of crowding (see
+// pendingPenalty), and pendingTollMaxUnits caps it so no cell can ever cost
+// more than going right round the board. Saturated it is about three
+// quarters of a via: a shortcut across an unrouted connector's pin face has
+// to be clearly better than the way round, not merely shorter.
+const (
+	pendingEscapeToll   = 1.5
+	pendingTollMaxUnits = 4
+)
+
+// pendingPenalty prices the escape corridors of the pads still waiting for
+// copper. Nothing is forbidden — a board with no other way still routes —
+// but a rail that used to take the diagonal straight across an unrouted
+// header's pin face now prefers the way round, which leaves those pins an
+// escape instead of stranding the whole connector. Closing a long power haul
+// early cost three signal nets their only way out until this existed.
+//
+// Crowding is measured in pad-index tiles: one unit for each tile within
+// reach that an unrouted pad occupies. It is deliberately coarse, and it
+// rises with both the number of unrouted pins nearby and their size — which
+// is exactly the pressure being priced, since a 2 mm through-hole pin needs
+// far more room to escape than a 0.4 mm fine-pitch pad.
+func (g *grid) pendingPenalty(cx, cy int, layer uint8, net string) float64 {
+	if len(g.opts.pending) == 0 || g.padIdx == nil {
+		return 0
+	}
+	wx, wy := g.cellToWorld(cx, cy)
+	x, y := wx.ToMM(), wy.ToMM()
+	const reach = pendingEscapeReachMM
+	x0, y0 := g.padIdx.cellOf(x-reach, y-reach)
+	x1, y1 := g.padIdx.cellOf(x+reach, y+reach)
+	units := 0
+	for by := y0; by <= y1; by++ {
+		row := by * g.padIdx.w
+		for bx := x0; bx <= x1; bx++ {
+			for _, i := range g.padIdx.buckets[row+bx] {
+				p := &g.pads[i]
+				if p.net == "" || p.net == net || !g.opts.pending[p.net] {
+					continue
+				}
+				if !p.through && p.layer != layer {
+					continue
+				}
+				if pointRectDist2(x, y, p.minX, p.minY, p.maxX, p.maxY) >= reach*reach {
+					continue
+				}
+				units++
+				if units >= pendingTollMaxUnits {
+					return pendingEscapeToll * pendingTollMaxUnits
+				}
+			}
+		}
+	}
+	return pendingEscapeToll * float64(units)
+}
+
 func (g *grid) nearForeignPad(x, y float64, layer uint8, net string, need float64) bool {
-	for i := range g.pads {
-		p := &g.pads[i]
+	hit := func(p *padObs) bool {
 		if p.net == net || p.net == "" {
-			continue
+			return false
 		}
 		if !p.through && p.layer != layer {
-			continue
+			return false
 		}
-		if pointRectDist(x, y, p.minX, p.minY, p.maxX, p.maxY) < need {
-			return true
+		return pointRectDist2(x, y, p.minX, p.minY, p.maxX, p.maxY) < need*need
+	}
+	if g.padIdx == nil {
+		for i := range g.pads {
+			if hit(&g.pads[i]) {
+				return true
+			}
+		}
+		return false
+	}
+	x0, y0 := g.padIdx.cellOf(x-need, y-need)
+	x1, y1 := g.padIdx.cellOf(x+need, y+need)
+	for by := y0; by <= y1; by++ {
+		row := by * g.padIdx.w
+		for bx := x0; bx <= x1; bx++ {
+			for _, i := range g.padIdx.buckets[row+bx] {
+				if hit(&g.pads[i]) {
+					return true
+				}
+			}
 		}
 	}
 	return false
+}
+
+// pointRectDist2 is pointRectDist squared: the hot clearance test compares
+// against a squared reach, so it never pays for the square root.
+func pointRectDist2(x, y, minX, minY, maxX, maxY float64) float64 {
+	dx := 0.0
+	if x < minX {
+		dx = minX - x
+	} else if x > maxX {
+		dx = x - maxX
+	}
+	dy := 0.0
+	if y < minY {
+		dy = minY - y
+	} else if y > maxY {
+		dy = y - maxY
+	}
+	return dx*dx + dy*dy
 }
 
 func pointRectDist(x, y, minX, minY, maxX, maxY float64) float64 {
@@ -2932,6 +3173,7 @@ func (g *grid) aStarMulti(sources []cellKey, to core.Point, goalLayer uint8, net
 // aStarMultiAt is aStarMulti with an explicit any-layer goal: a through-hole
 // pad is copper top to bottom, so arriving on either side finishes the hop.
 func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, anyLayer bool, net string, deadline time.Time, hasDeadline bool) ([]gpos, bool) {
+	g.timedOut = false
 	tx, ty, ok2 := g.worldToCell(to.X, to.Y)
 	if !ok2 {
 		tx, ty = clampCell(to, g)
@@ -3001,6 +3243,7 @@ func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, a
 	for open.Len() > 0 && expanded < maxExpand {
 		expanded++
 		if hasDeadline && expanded%deadlineEvery == 0 && time.Now().After(deadline) {
+			g.timedOut = true
 			return nil, false
 		}
 		cur := heap.Pop(open).(*astNode) // safe-ignore: astHeap only ever holds *astNode; a mismatch is a programmer error worth the panic
@@ -3049,6 +3292,7 @@ func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, a
 				if g.share {
 					step += g.shareCost(nx, ny, cur.k.l, net)
 				}
+				step += g.pendingPenalty(nx, ny, cur.k.l, net)
 				bestParent := cur.k
 				ng := gScore[cur.k] + step
 				// Lazy Theta*: if the parent has line-of-sight to nk on the
@@ -3057,6 +3301,10 @@ func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, a
 					if parent, ok := came[cur.k]; ok && parent.l == nk.l {
 						if g.lineOfSight(parent, nk, net) {
 							eu := hypotCells(parent, nk)
+							// The chord skips the cells between its ends, so
+							// it must still pay their tolls — otherwise a
+							// Theta* shortcut buys the straight line across
+							// an unrouted header for free.
 							cand := gScore[parent] + eu
 							if cand < ng {
 								ng = cand

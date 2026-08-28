@@ -67,12 +67,27 @@ not fit its escape retries with a short neck near its own pads (nominal width
 everywhere else), then one width tier down; both are counted in `Summary()`,
 never silent.
 
-Two invariants the engine owes its callers:
+Two things keep the greedy pass honest. Pads are filed in a millimetre-tile
+index (`padIndex`), so the clearance query A* runs on every step and every
+Theta* chord costs a handful of tests instead of a scan of every pad on the
+board — one cross-board hop went from seconds to tens of milliseconds. And a
+cell inside the escape corridor of a pad whose net is still unrouted carries a
+toll (`pendingPenalty`), so a rail crossing the board does not take the
+shortcut straight over an unrouted header's pin face and strand the connector.
+
+Three invariants the engine owes its callers:
 
 - **Every run is bounded.** `ClampBudget` normalises `max_seconds`: absent,
-  zero, negative and non-finite all mean the 90 s default, and no single call
-  may exceed 600 s. The search is anytime (per-net caps, deadline checks
-  inside A*), so a run that hits the clock returns the tree it has.
+  zero, negative and non-finite all mean the 600 s default, which is also the
+  ceiling for any single call. The search is anytime (per-net caps, deadline
+  checks inside A*), so a run that hits the clock returns the tree it has. A
+  net's first-pass cap is a share of the clock still left (`netBudget`), never
+  a fixed number of seconds — and a net that ran out of clock is reported as
+  `budget`, never as `unreachable`.
+- **A net that does not finish leaves no copper.** The partial passes
+  (`routeDirect`, `routeClearHops`) commit their hops as they go; `routeNetAt`
+  rolls the board back when the net dies later, so a failed net never ships
+  dangling stubs and a retry never lays a second copy of them.
 - **Committed copper is legal copper.** Nothing is kept that DRC would
   reject: `copperClearanceFrom` checks new traces against traces, pads *and*
   vias; `viaClearanceFrom` checks new barrels against all three; `viaSiteOK`
