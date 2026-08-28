@@ -933,7 +933,32 @@ func routeNet(board *core.Board, g *grid, name string, pads []padLoc, opts Optio
 	return out
 }
 
+// routeNetAt lays one net at one width, and leaves the board exactly as it
+// found it when the net does not finish. The partial passes (routeDirect,
+// routeClearHops) commit copper as they go; without this rollback a net that
+// died later kept those stubs, which DRC reports as dangling pads and which
+// the next attempt at the same net simply laid a second time on top of.
 func routeNetAt(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	snapT, snapV := len(board.Traces), len(board.Vias)
+	out := routeNetAtOnce(board, g, name, pads, opts, deadline, hasDeadline)
+	if out.Status != "ok" && (len(board.Traces) > snapT || len(board.Vias) > snapV) {
+		board.Traces = board.Traces[:snapT]
+		board.Vias = board.Vias[:snapV]
+		g.rebuild(board)
+	}
+	return out
+}
+
+// rebuild re-stamps the grid from the board while keeping the state that is
+// not derived from copper: banned via sites, and the negotiation mode a
+// caller switched on around this call.
+func (g *grid) rebuild(board *core.Board) {
+	bans, share, present := g.viaBan, g.share, g.present
+	*g = *newGrid(board, g.opts)
+	g.viaBan, g.share, g.present = bans, share, present
+}
+
+func routeNetAtOnce(board *core.Board, g *grid, name string, pads []padLoc, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	// This net's nominal width drives planning clearance and the grid's
 	// own-net paint; each segment then takes its own layer's width.
 	opts.TraceWidthMM = opts.netWidthMax(name)
