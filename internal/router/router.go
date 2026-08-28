@@ -29,7 +29,7 @@ type Options struct {
 	ViaDrillMM      float64
 	ViaDiameterMM   float64
 	ViaCost         float64
-	MaxSeconds      float64 // >0 wall budget; ≤0 = unlimited (Rust None / 0)
+	MaxSeconds      float64 // wall budget in seconds; normalised by ClampBudget
 	Organic         bool
 	OrganicFilletMM float64 // reserved; string-pull only in this pass
 	FineEscape      bool    // opt-in; ignored (not implemented)
@@ -52,6 +52,31 @@ type Options struct {
 	overrideMM float64
 }
 
+// Route budget, in seconds. A route call is never unbounded: an autorouter
+// that runs for hours is a bug, not a thorough search. The engine is anytime
+// (per-net budgets, deadline checks inside A*), so a clamped run returns the
+// best tree it has when the clock stops.
+const (
+	// DefaultBudgetSeconds is used when max_seconds is absent, zero,
+	// negative or non-finite.
+	DefaultBudgetSeconds = 90.0
+	// MaxBudgetSeconds is the hard ceiling for any single route call.
+	MaxBudgetSeconds = 600.0
+)
+
+// ClampBudget normalises a wall-clock budget in seconds. Zero, negative,
+// NaN and ±Inf all mean "use the default" — never "run forever" — and no
+// run may ask for more than MaxBudgetSeconds.
+func ClampBudget(s float64) float64 {
+	if math.IsNaN(s) || math.IsInf(s, 0) || s <= 0 {
+		return DefaultBudgetSeconds
+	}
+	if s > MaxBudgetSeconds {
+		return MaxBudgetSeconds
+	}
+	return s
+}
+
 // DefaultOptions returns Rust-aligned 2-layer Grid defaults.
 func DefaultOptions() Options {
 	return Options{
@@ -61,7 +86,7 @@ func DefaultOptions() Options {
 		ViaDrillMM:      0.30,
 		ViaDiameterMM:   0.60,
 		ViaCost:         8.0,
-		MaxSeconds:      90,
+		MaxSeconds:      DefaultBudgetSeconds,
 		Organic:         true,
 		OrganicFilletMM: 3.0,
 		FineEscape:      false,
@@ -96,7 +121,7 @@ func ParseOptions(o Options, args string) Options {
 		fmt.Sscanf(v, "%f", &x) // safe-ignore: unparsable numeric options intentionally leave x=0 and fall through to defaults
 		switch k {
 		case "max_seconds":
-			o.MaxSeconds = x
+			o.MaxSeconds = ClampBudget(x)
 		case "clearance":
 			o.ClearanceMM = x
 		case "width", "trace_width":
@@ -194,12 +219,12 @@ func Route(board *core.Board, opts Options) Report {
 		board.Teardrops = opts.Teardrops
 	}
 	start := time.Now()
-	// Rust: max_seconds None/0/non-finite → no deadline.
-	var deadline time.Time
-	if opts.MaxSeconds > 0 && !math.IsInf(opts.MaxSeconds, 0) && !math.IsNaN(opts.MaxSeconds) {
-		deadline = start.Add(time.Duration(opts.MaxSeconds * float64(time.Second)))
-	}
-	hasDeadline := !deadline.IsZero()
+	// Every run is bounded: max_seconds=0 is "the default budget", not
+	// "forever". The search is anytime, so the deadline caps the wall
+	// clock without throwing away the copper already committed.
+	opts.MaxSeconds = ClampBudget(opts.MaxSeconds)
+	deadline := start.Add(time.Duration(opts.MaxSeconds * float64(time.Second)))
+	hasDeadline := true
 	pastDeadline := func() bool {
 		return hasDeadline && time.Now().After(deadline)
 	}
