@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mentasystems/fragua/internal/core"
 	"github.com/mentasystems/fragua/internal/drc"
@@ -20,6 +21,11 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 	placeIters := 3000
 	allowFailed := 0
 	routeSec := 20.0
+	// Whole-search budget. compact runs up to 24 place+route+DRC probes, so
+	// without a wall clock of its own a generous route_seconds turns a verb
+	// into an afternoon. The search is anytime: it keeps the best size it
+	// has proven when the budget runs out.
+	maxSec := router.MaxBudgetSeconds
 	aspectFree := false
 	var minW, minH float64
 	for _, t := range strings.Fields(args) {
@@ -38,7 +44,9 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 		case "allow_failed":
 			allowFailed = int(v)
 		case "route_seconds":
-			routeSec = v
+			routeSec = router.ClampBudget(v)
+		case "max_seconds":
+			maxSec = router.ClampBudget(v)
 		case "min_w":
 			minW = v
 		case "min_h":
@@ -68,6 +76,9 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 		minH = h0 * 0.45
 	}
 
+	deadline := time.Now().Add(time.Duration(maxSec * float64(time.Second)))
+	spent := func() bool { return time.Now().After(deadline) }
+
 	type cand struct{ w, h float64 }
 	best := cand{w0, h0}
 	bestBoard := src.Clone()
@@ -78,7 +89,7 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 	}
 
 	lo, hi := 0.50, 1.0
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 7 && !spent(); i++ {
 		mid := (lo + hi) / 2
 		w, h := w0*mid, h0*mid
 		if w < minW {
@@ -97,8 +108,8 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 		}
 	}
 	if aspectFree {
-		for dim := 0; dim < 2; dim++ {
-			for k := 0; k < 8; k++ {
+		for dim := 0; dim < 2 && !spent(); dim++ {
+			for k := 0; k < 8 && !spent(); k++ {
 				w, h := best.w, best.h
 				if dim == 0 {
 					w -= step

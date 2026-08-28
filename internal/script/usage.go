@@ -42,7 +42,7 @@ Script verbs (line-oriented, agent-first):
   move REF X Y | rotate REF DEG
   unplace REF | delete REF | clear-board
   auto-place [REF...] [seed=N] [iters=N]
-  route [max_seconds=N] [organic=true] [teardrop=true]
+  route [max_seconds=N] [organic=true] [teardrop=true]   (N: default 90, max 600)
   clear-route | clear-net NET | delete-trace ID | delete-via ID
   trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
   via NET x y [drill=0.3] [dia=0.6]
@@ -63,7 +63,7 @@ Script verbs (line-oriented, agent-first):
   escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
   layer list|add|remove|rename|dielectric
   drc / erc
-  compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [aspect=keep|free]
+  compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [max_seconds=600] [aspect=keep|free]
   pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)
   screenshot PATH
   save [PATH] | view | status | reset | help
