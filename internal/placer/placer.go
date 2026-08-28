@@ -234,21 +234,27 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		}
 	}
 
-	var moved []string
 	for _, fp := range fps {
 		b := best[fp.Reference]
-		s := start[fp.Reference]
-		dx := math.Abs((b.x - s.x).ToMM())
-		dy := math.Abs((b.y - s.y).ToMM())
-		if dx >= 0.05 || dy >= 0.05 || b.rot != s.rot {
-			moved = append(moved, fp.Reference)
-		}
 		fp.Position = core.NewPoint(b.x, b.y)
 		fp.Rotation = b.rot
 	}
 
 	if opts.Decouple {
 		PullPassivesToAnchors(board, fps, opts)
+	}
+
+	// Count what moved against the final positions, not against the
+	// annealer's best: the decouple pass moves parts too, and reporting
+	// "moved 0 parts" next to a changed HPWL is simply untrue.
+	var moved []string
+	for _, fp := range fps {
+		s := start[fp.Reference]
+		dx := math.Abs((fp.Position.X - s.x).ToMM())
+		dy := math.Abs((fp.Position.Y - s.y).ToMM())
+		if dx >= 0.05 || dy >= 0.05 || fp.Rotation != s.rot {
+			moved = append(moved, fp.Reference)
+		}
 	}
 
 	return Report{
