@@ -58,8 +58,9 @@ type Options struct {
 // best tree it has when the clock stops.
 const (
 	// DefaultBudgetSeconds is used when max_seconds is absent, zero,
-	// negative or non-finite.
-	DefaultBudgetSeconds = 90.0
+	// negative or non-finite. It equals the hard ceiling: a default route
+	// call spends whatever it is allowed to before giving up on a net.
+	DefaultBudgetSeconds = 600.0
 	// MaxBudgetSeconds is the hard ceiling for any single route call.
 	MaxBudgetSeconds = 600.0
 )

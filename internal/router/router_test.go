@@ -296,8 +296,8 @@ func TestDefaultOptionsMatchRust(t *testing.T) {
 	if o.ViaCost != 8 || o.ViaDrillMM != 0.30 || o.ViaDiameterMM != 0.60 {
 		t.Fatalf("via defaults: %+v", o)
 	}
-	if o.MaxSeconds != 90 {
-		t.Fatalf("max_seconds: got %v want 90", o.MaxSeconds)
+	if o.MaxSeconds != DefaultBudgetSeconds {
+		t.Fatalf("max_seconds: got %v want %v", o.MaxSeconds, DefaultBudgetSeconds)
 	}
 	if !o.Organic || o.FineEscape || o.Negotiate {
 		t.Fatalf("flags: organic=%v fine_escape=%v negotiate=%v", o.Organic, o.FineEscape, o.Negotiate)
