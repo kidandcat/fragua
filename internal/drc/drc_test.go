@@ -1,6 +1,7 @@
 package drc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -45,16 +46,6 @@ func addTrace(b *core.Board, net string, x0, y0, x1, y1, widthMM float64) {
 		Width: core.FromMM(widthMM),
 		Net:   net,
 	})
-}
-
-func countKind(rep Report, k Kind) int {
-	n := 0
-	for _, v := range rep.Violations {
-		if v.Kind == k {
-			n++
-		}
-	}
-	return n
 }
 
 func TestPadPadClearanceFires(t *testing.T) {
@@ -432,4 +423,58 @@ func TestImpedanceMismatchWarning(t *testing.T) {
 	if countKind(rep, KindImpedanceMismatch) == 0 {
 		t.Fatalf("expected impedance warning for 0.25 mm vs ~3 mm: %+v", rep.Violations)
 	}
+}
+
+// `nc REF.PIN` is the designer saying "this pin is meant to be unused". The
+// board checks used to ignore the mark, so a breakout with one unused pin
+// warned on every DRC run and there was no way to silence it.
+func TestNoConnectPinsAreNotDangling(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(20, 20)
+	b.Outline = &o
+	b.AddFootprint(fp("U9", 10, 10, []core.Pad{
+		pad("1", -1, 0, "VCC"),
+		pad("2", 1, 0, ""), // unused, no net
+	}))
+	b.AddFootprint(fp("R1", 15, 10, []core.Pad{
+		pad("1", -1, 0, "VCC"),
+		pad("2", 1, 0, "OUT"),
+	}))
+	addTrace(b, "VCC", 9, 10, 14, 10, 0.25)
+	sch := core.NewSchematic()
+
+	danglingOn := func(rep Report, key string) bool {
+		for _, v := range rep.Violations {
+			if v.Kind == KindSmallComponentDangling && strings.Contains(v.Message, key) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !danglingOn(Check(b, sch, DefaultOptions()), "U9.2") {
+		t.Fatal("an unnetted pad with no nc mark must still be reported")
+	}
+
+	id := core.NewID()
+	sch.Symbols = map[string]*core.Symbol{id.String(): {
+		ID: id, Reference: "U9",
+		Kind: core.SymbolKind{Kind: "generic_ic", ICPins: []core.SchPin{
+			{Number: "1", Role: core.PinPowerIn},
+			{Number: "2", Role: core.PinNC, NC: true},
+		}},
+	}}
+	if danglingOn(Check(b, sch, DefaultOptions()), "U9.2") {
+		t.Fatal("an nc pin must not be reported as dangling")
+	}
+}
+
+func countKind(rep Report, k Kind) int {
+	n := 0
+	for _, v := range rep.Violations {
+		if v.Kind == k {
+			n++
+		}
+	}
+	return n
 }

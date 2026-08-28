@@ -244,7 +244,7 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 	}
 	checkCourtyardOverlap(board, &rep)
 	checkUnconnectedPads(board, pads, &rep)
-	checkSmallComponentDangling(board, pads, &rep)
+	checkSmallComponentDangling(board, sch, pads, &rep)
 	checkNetContinuity(board, pads, &rep)
 	checkNarrowTraces(board, resolver, &rep)
 	checkSmallDrills(board, minDrillMM, &rep)
@@ -733,7 +733,30 @@ func checkSmallDrills(board *core.Board, minDrillMM float64, rep *Report) {
 	}
 }
 
-func checkSmallComponentDangling(board *core.Board, pads []padGeom, rep *Report) {
+// ncPins are the REF.PIN keys the schematic explicitly marks no-connect.
+// A pin the designer declared unused is not a defect, so the board checks
+// that look for missing copper have to know about it — otherwise `nc` only
+// ever silenced ERC and every DRC run stayed noisy forever.
+func ncPins(sch *core.Schematic) map[string]bool {
+	if sch == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, sym := range sch.Symbols {
+		if sym == nil || sym.Reference == "" {
+			continue
+		}
+		for _, pin := range sym.Kind.Pins() {
+			if pin.IsNC() {
+				out[sym.Reference+"."+pin.Number] = true
+			}
+		}
+	}
+	return out
+}
+
+func checkSmallComponentDangling(board *core.Board, sch *core.Schematic, pads []padGeom, rep *Report) {
+	nc := ncPins(sch)
 	// Build lookup pad geom by ref.number
 	byKey := map[string]padGeom{}
 	for _, p := range pads {
@@ -769,6 +792,9 @@ func checkSmallComponentDangling(board *core.Board, pads []padGeom, rep *Report)
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
 			key := ref + "." + pad.Number
+			if nc[key] {
+				continue
+			}
 			pg, ok := byKey[key]
 			connected := false
 			if pad.Net != nil && *pad.Net != "" && ok {
