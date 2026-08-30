@@ -478,3 +478,52 @@ func countKind(rep Report, k Kind) int {
 	}
 	return n
 }
+
+// TestCopperInKeepout: nothing outside the router read Keepout.NoCopper, so a
+// pad or trace sitting in a no-copper zone — under a module antenna, say —
+// passed DRC silently.
+func TestCopperInKeepout(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(40)))
+	b.Outline = &o
+	ko := core.RectFromCorners(core.NewPoint(core.FromMM(20), core.FromMM(20)), core.NewPoint(core.FromMM(30), core.FromMM(30)))
+	b.Keepouts = append(b.Keepouts, core.Keepout{ID: core.NewID(), Rect: &ko, NoCopper: true})
+	b.AddFootprint(fp("R1", 25, 25, []core.Pad{pad("1", 0, 0, "GND")}))
+	b.AddFootprint(fp("R2", 5, 5, []core.Pad{pad("1", 0, 0, "GND")}))
+	b.Traces = append(b.Traces, core.Trace{
+		ID: core.NewID(), Net: "SIG", Width: core.FromMM(0.2), Layer: core.LayerTop,
+		Start: core.NewPoint(core.FromMM(22), core.FromMM(28)),
+		End:   core.NewPoint(core.FromMM(28), core.FromMM(28)),
+	})
+	b.Vias = append(b.Vias, core.Via{
+		ID: core.NewID(), Net: "GND", Diameter: core.FromMM(0.6), Drill: core.FromMM(0.3),
+		Position: core.NewPoint(core.FromMM(24), core.FromMM(22)),
+	})
+
+	rep := Check(b, nil, DefaultOptions())
+	var got []string
+	for _, v := range rep.Violations {
+		if v.Kind == KindCopperInKeepout {
+			got = append(got, v.Message)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("copper_in_keepout: %d want 3 (pad, trace, via): %v", len(got), got)
+	}
+	for _, want := range []string{"pad R1.1", "trace SIG", "via GND"} {
+		found := false
+		for _, m := range got {
+			if strings.Contains(m, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing violation for %s: %v", want, got)
+		}
+	}
+	for _, m := range got {
+		if strings.Contains(m, "R2") {
+			t.Fatalf("R2 is outside the keepout: %v", got)
+		}
+	}
+}

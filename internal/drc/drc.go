@@ -46,6 +46,7 @@ const (
 	KindCopperSliver           Kind = "copper_sliver"
 	KindImpedanceMismatch      Kind = "impedance_mismatch"
 	KindTeardropClearance      Kind = "teardrop_clearance"
+	KindCopperInKeepout        Kind = "copper_in_keepout"
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -242,6 +243,7 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 		checkEdge(board, pads, *board.Outline, edgeClMM, &rep)
 		checkBodyOffBoard(board, *board.Outline, &rep)
 	}
+	checkCopperInKeepout(board, pads, &rep)
 	checkCourtyardOverlap(board, &rep)
 	checkUnconnectedPads(board, pads, &rep)
 	checkSmallComponentDangling(board, sch, pads, &rep)
@@ -597,6 +599,94 @@ func rectRectClosestSite(a, b core.Rect) (float64, float64) {
 	pa := clampPointToRect([2]float64{bcx, bcy}, a)
 	pb := clampPointToRect([2]float64{acx, acy}, b)
 	return (pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2
+}
+
+// checkCopperInKeepout reports pads, traces and vias that land inside a
+// no-copper keepout. Nothing used to read Keepout.NoCopper outside the router,
+// so a keepout the router honoured could still be filled by anything placed or
+// poured by hand, silently. A polygon keepout is tested by its bounding box;
+// the `keepout` verb only ever builds rectangles.
+func checkCopperInKeepout(board *core.Board, pads []padGeom, rep *Report) {
+	var zones []core.Rect
+	for i := range board.Keepouts {
+		k := &board.Keepouts[i]
+		if !k.NoCopper {
+			continue
+		}
+		if k.Rect != nil {
+			zones = append(zones, *k.Rect)
+			continue
+		}
+		if len(k.Polygon) >= 3 {
+			zones = append(zones, polyBounds(k.Polygon))
+		}
+	}
+	if len(zones) == 0 {
+		return
+	}
+	overlaps := func(z core.Rect, x0, y0, x1, y1 float64) bool {
+		return x1 > z.Min.X.ToMM()+TouchTolMM && x0 < z.Max.X.ToMM()-TouchTolMM &&
+			y1 > z.Min.Y.ToMM()+TouchTolMM && y0 < z.Max.Y.ToMM()-TouchTolMM
+	}
+	for _, z := range zones {
+		for _, pad := range pads {
+			r := pad.rect
+			if !overlaps(z, r.Min.X.ToMM(), r.Min.Y.ToMM(), r.Max.X.ToMM(), r.Max.Y.ToMM()) {
+				continue
+			}
+			cx, cy := rectCenterMM(r)
+			rep.add(Violation{
+				Kind: KindCopperInKeepout, Severity: SeverityError,
+				Message: fmt.Sprintf("pad %s is inside a no-copper keepout", pad.label()),
+				Net:     pad.net, XMM: cx, YMM: cy,
+			})
+		}
+		for _, tr := range board.Traces {
+			half := tr.Width.ToMM() / 2
+			sx, sy := tr.Start.X.ToMM(), tr.Start.Y.ToMM()
+			ex, ey := tr.End.X.ToMM(), tr.End.Y.ToMM()
+			if !overlaps(z, math.Min(sx, ex)-half, math.Min(sy, ey)-half, math.Max(sx, ex)+half, math.Max(sy, ey)+half) {
+				continue
+			}
+			rep.add(Violation{
+				Kind: KindCopperInKeepout, Severity: SeverityError,
+				Message: fmt.Sprintf("trace %s is inside a no-copper keepout", tr.Net),
+				Net:     tr.Net, XMM: (sx + ex) / 2, YMM: (sy + ey) / 2,
+			})
+		}
+		for _, v := range board.Vias {
+			r := v.Diameter.ToMM() / 2
+			cx, cy := v.Position.X.ToMM(), v.Position.Y.ToMM()
+			if !overlaps(z, cx-r, cy-r, cx+r, cy+r) {
+				continue
+			}
+			rep.add(Violation{
+				Kind: KindCopperInKeepout, Severity: SeverityError,
+				Message: fmt.Sprintf("via %s is inside a no-copper keepout", v.Net),
+				Net:     v.Net, XMM: cx, YMM: cy,
+			})
+		}
+	}
+}
+
+func polyBounds(poly []core.Point) core.Rect {
+	minX, minY := poly[0].X, poly[0].Y
+	maxX, maxY := minX, minY
+	for _, p := range poly[1:] {
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	return core.Rect{Min: core.NewPoint(minX, minY), Max: core.NewPoint(maxX, maxY)}
 }
 
 func checkEdge(board *core.Board, pads []padGeom, outline core.Rect, edgeClMM float64, rep *Report) {
