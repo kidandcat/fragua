@@ -79,3 +79,47 @@ func TestStitchKeepsViasOffForeignCopper(t *testing.T) {
 		}
 	}
 }
+
+// The stitcher tested "is this point in the pour" against the board bounding
+// box alone, so it sprayed its lattice straight through no-copper keepouts —
+// under a module antenna, in drone-x's case — and through milled cutouts.
+func TestStitchKeepsViasOutOfVoids(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(40)))
+	b.Outline = &o
+	b.Pours = []core.Pour{{
+		Net: "GND", Layer: core.LayerTop,
+		Stitching: &core.StitchPolicy{Enabled: true, PitchMM: 2},
+	}}
+	ko := core.RectFromCorners(core.NewPoint(core.FromMM(25), core.FromMM(25)), core.NewPoint(core.FromMM(35), core.FromMM(35)))
+	b.Keepouts = append(b.Keepouts, core.Keepout{ID: core.NewID(), Rect: &ko, NoCopper: true})
+	b.Cutouts = append(b.Cutouts, core.Cutout{ID: core.NewID(), Polygon: []core.Point{
+		core.NewPoint(core.FromMM(5), core.FromMM(5)),
+		core.NewPoint(core.FromMM(15), core.FromMM(5)),
+		core.NewPoint(core.FromMM(15), core.FromMM(15)),
+		core.NewPoint(core.FromMM(5), core.FromMM(15)),
+	}})
+	n := "GND"
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1",
+		Position: core.NewPoint(core.FromMM(20), core.FromMM(2)),
+		Layer:    core.LayerBottom,
+		Pads: []core.Pad{{
+			Number: "1", Size: [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Layer: core.LayerBottom, Net: &n,
+		}},
+	})
+	StitchIsolatedPads(b, DefaultOptions())
+	if len(b.Vias) == 0 {
+		t.Fatal("expected stitch vias somewhere on the board")
+	}
+	for _, v := range b.Vias {
+		x, y := v.Position.X.ToMM(), v.Position.Y.ToMM()
+		if x >= 25 && x <= 35 && y >= 25 && y <= 35 {
+			t.Fatalf("via at %.2f,%.2f is inside the no-copper keepout", x, y)
+		}
+		if x >= 4.7 && x <= 15.3 && y >= 4.7 && y <= 15.3 {
+			t.Fatalf("via at %.2f,%.2f is inside the cutout", x, y)
+		}
+	}
+}

@@ -299,6 +299,9 @@ func pourBoundsMM(board *core.Board, pr *core.Pour) (xmin, ymin, xmax, ymax floa
 }
 
 func pointInPourRegion(board *core.Board, pr *core.Pour, x, y float64) bool {
+	if pointInPourVoid(board, x, y) {
+		return false
+	}
 	if len(pr.Polygon) >= 3 {
 		return pointInPoly(pr.Polygon, x, y)
 	}
@@ -309,6 +312,56 @@ func pointInPourRegion(board *core.Board, pr *core.Pour, x, y float64) bool {
 	inset := 0.3
 	return x >= r.Min.X.ToMM()+inset && x <= r.Max.X.ToMM()-inset &&
 		y >= r.Min.Y.ToMM()+inset && y <= r.Max.Y.ToMM()-inset
+}
+
+// pointInPourVoid reports whether a point falls somewhere the pour is cleared
+// out of — an internal cutout, plus the same setback a milled edge gets, or a
+// no-copper keepout. Mirrors the gerber export, so stitching vias land where
+// there will actually be copper. A non-rectangular cutout is tested by its
+// bounding box, which errs towards stitching less.
+func pointInPourVoid(board *core.Board, x, y float64) bool {
+	const cutoutSetbackMM = 0.3
+	for i := range board.Cutouts {
+		poly := board.Cutouts[i].Polygon
+		if len(poly) < 3 {
+			continue
+		}
+		xmin, ymin, xmax, ymax := polyBoundsMM(poly)
+		if x >= xmin-cutoutSetbackMM && x <= xmax+cutoutSetbackMM &&
+			y >= ymin-cutoutSetbackMM && y <= ymax+cutoutSetbackMM {
+			return true
+		}
+	}
+	for i := range board.Keepouts {
+		k := &board.Keepouts[i]
+		if !k.NoCopper {
+			continue
+		}
+		if k.Rect != nil {
+			r := *k.Rect
+			if x >= r.Min.X.ToMM() && x <= r.Max.X.ToMM() &&
+				y >= r.Min.Y.ToMM() && y <= r.Max.Y.ToMM() {
+				return true
+			}
+			continue
+		}
+		if len(k.Polygon) >= 3 && pointInPoly(k.Polygon, x, y) {
+			return true
+		}
+	}
+	return false
+}
+
+func polyBoundsMM(poly []core.Point) (xmin, ymin, xmax, ymax float64) {
+	xmin, ymin = poly[0].X.ToMM(), poly[0].Y.ToMM()
+	xmax, ymax = xmin, ymin
+	for _, p := range poly[1:] {
+		xmin = math.Min(xmin, p.X.ToMM())
+		ymin = math.Min(ymin, p.Y.ToMM())
+		xmax = math.Max(xmax, p.X.ToMM())
+		ymax = math.Max(ymax, p.Y.ToMM())
+	}
+	return
 }
 
 func pointInPoly(poly []core.Point, x, y float64) bool {
