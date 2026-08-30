@@ -28,8 +28,13 @@ func TestClampBudget(t *testing.T) {
 			t.Fatalf("ClampBudget(%v) = %v, want %v", c.in, got, c.want)
 		}
 	}
-	if MaxBudgetSeconds > 600 {
-		t.Fatalf("route budget ceiling must stay at or under 10 minutes, got %v", MaxBudgetSeconds)
+	// The default is what every caller that says nothing gets, and it must
+	// stay at ten minutes; the ceiling is only what an operator may ask for.
+	if DefaultBudgetSeconds != 600 {
+		t.Fatalf("default route budget must stay at 10 minutes, got %v", DefaultBudgetSeconds)
+	}
+	if MaxBudgetSeconds > 3600 {
+		t.Fatalf("route budget ceiling must stay at or under an hour, got %v", MaxBudgetSeconds)
 	}
 }
 
@@ -43,6 +48,13 @@ func TestParseOptionsClampsBudget(t *testing.T) {
 	}
 	if got := ParseOptions(DefaultOptions(), "max_seconds=99999").MaxSeconds; got != MaxBudgetSeconds {
 		t.Fatalf("max_seconds=99999: got %v, want %v", got, MaxBudgetSeconds)
+	}
+	// An operator may buy more than the default, up to the ceiling.
+	if got := ParseOptions(DefaultOptions(), "max_seconds=1800").MaxSeconds; got != 1800 {
+		t.Fatalf("max_seconds=1800: got %v, want 1800", got)
+	}
+	if got := ParseOptions(DefaultOptions(), "").MaxSeconds; got != DefaultBudgetSeconds {
+		t.Fatalf("no max_seconds: got %v, want the default %v", got, DefaultBudgetSeconds)
 	}
 }
 

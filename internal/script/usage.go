@@ -43,7 +43,7 @@ Script verbs (line-oriented, agent-first):
   unplace REF | delete REF | clear-board
   auto-place [REF...] [seed=N] [iters=N]
   route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true]
-        (max_seconds: default 600, max 600; clearance: extra air, fab min is the floor)
+        (max_seconds: default 600, max 3600; clearance: extra air, fab min is the floor)
   clear-route | clear-net NET | delete-trace ID | delete-via ID
   trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
   via NET x y [drill=0.3] [dia=0.6]

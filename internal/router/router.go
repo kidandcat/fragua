@@ -67,11 +67,16 @@ type Options struct {
 // best tree it has when the clock stops.
 const (
 	// DefaultBudgetSeconds is used when max_seconds is absent, zero,
-	// negative or non-finite. It equals the hard ceiling: a default route
-	// call spends whatever it is allowed to before giving up on a net.
+	// negative or non-finite. Ten minutes is what a route call spends
+	// unless it is asked for more, and every existing caller gets exactly
+	// this.
 	DefaultBudgetSeconds = 600.0
-	// MaxBudgetSeconds is the hard ceiling for any single route call.
-	MaxBudgetSeconds = 600.0
+	// MaxBudgetSeconds is the hard ceiling a caller may ask for with
+	// max_seconds. It is above the default on purpose: a dense board can
+	// still be converging when ten minutes are up — drone-x sat on 53 of 54
+	// nets across six 600 s runs — and an operator who knows that should be
+	// able to buy the router an hour without editing the source.
+	MaxBudgetSeconds = 3600.0
 )
 
 // Per-net first-pass budget. A net used to get a flat 3 s (6 s for a fat
