@@ -177,6 +177,10 @@ func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
 				if !pointInPourRegion(board, pr, x, y) {
 					continue
 				}
+				// The barrel, not just the centre, has to clear the void.
+				if pointInPourVoidMargin(board, x, y, dia/2) {
+					continue
+				}
 				if !outlineContains(board.Outline, x, y, 0.4) {
 					continue
 				}
@@ -320,6 +324,12 @@ func pointInPourRegion(board *core.Board, pr *core.Pour, x, y float64) bool {
 // there will actually be copper. A non-rectangular cutout is tested by its
 // bounding box, which errs towards stitching less.
 func pointInPourVoid(board *core.Board, x, y float64) bool {
+	return pointInPourVoidMargin(board, x, y, 0)
+}
+
+// pointInPourVoidMargin is pointInPourVoid with the void grown by marginMM, so
+// a via can be tested by its barrel rather than its centre.
+func pointInPourVoidMargin(board *core.Board, x, y, marginMM float64) bool {
 	const cutoutSetbackMM = 0.3
 	for i := range board.Cutouts {
 		poly := board.Cutouts[i].Polygon
@@ -327,8 +337,8 @@ func pointInPourVoid(board *core.Board, x, y float64) bool {
 			continue
 		}
 		xmin, ymin, xmax, ymax := polyBoundsMM(poly)
-		if x >= xmin-cutoutSetbackMM && x <= xmax+cutoutSetbackMM &&
-			y >= ymin-cutoutSetbackMM && y <= ymax+cutoutSetbackMM {
+		if x >= xmin-cutoutSetbackMM-marginMM && x <= xmax+cutoutSetbackMM+marginMM &&
+			y >= ymin-cutoutSetbackMM-marginMM && y <= ymax+cutoutSetbackMM+marginMM {
 			return true
 		}
 	}
@@ -339,8 +349,8 @@ func pointInPourVoid(board *core.Board, x, y float64) bool {
 		}
 		if k.Rect != nil {
 			r := *k.Rect
-			if x >= r.Min.X.ToMM() && x <= r.Max.X.ToMM() &&
-				y >= r.Min.Y.ToMM() && y <= r.Max.Y.ToMM() {
+			if x >= r.Min.X.ToMM()-marginMM && x <= r.Max.X.ToMM()+marginMM &&
+				y >= r.Min.Y.ToMM()-marginMM && y <= r.Max.Y.ToMM()+marginMM {
 				return true
 			}
 			continue

@@ -642,28 +642,27 @@ func checkCopperInKeepout(board *core.Board, pads []padGeom, rep *Report) {
 			})
 		}
 		for _, tr := range board.Traces {
-			half := tr.Width.ToMM() / 2
-			sx, sy := tr.Start.X.ToMM(), tr.Start.Y.ToMM()
-			ex, ey := tr.End.X.ToMM(), tr.End.Y.ToMM()
-			if !overlaps(z, math.Min(sx, ex)-half, math.Min(sy, ey)-half, math.Max(sx, ex)+half, math.Max(sy, ey)+half) {
+			// Swept capsule, not the bounding box: a diagonal trace that passes
+			// outside a corner has a box that clips it and copper that does not.
+			a, b := ptMM(tr.Start), ptMM(tr.End)
+			if segmentAABBDistance(a, b, z)+TouchTolMM >= tr.Width.ToMM()/2 {
 				continue
 			}
 			rep.add(Violation{
 				Kind: KindCopperInKeepout, Severity: SeverityError,
 				Message: fmt.Sprintf("trace %s is inside a no-copper keepout", tr.Net),
-				Net:     tr.Net, XMM: (sx + ex) / 2, YMM: (sy + ey) / 2,
+				Net:     tr.Net, XMM: (a[0] + b[0]) / 2, YMM: (a[1] + b[1]) / 2,
 			})
 		}
 		for _, v := range board.Vias {
-			r := v.Diameter.ToMM() / 2
-			cx, cy := v.Position.X.ToMM(), v.Position.Y.ToMM()
-			if !overlaps(z, cx-r, cy-r, cx+r, cy+r) {
+			c := ptMM(v.Position)
+			if segmentAABBDistance(c, c, z)+TouchTolMM >= v.Diameter.ToMM()/2 {
 				continue
 			}
 			rep.add(Violation{
 				Kind: KindCopperInKeepout, Severity: SeverityError,
 				Message: fmt.Sprintf("via %s is inside a no-copper keepout", v.Net),
-				Net:     v.Net, XMM: cx, YMM: cy,
+				Net:     v.Net, XMM: c[0], YMM: c[1],
 			})
 		}
 	}
