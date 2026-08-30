@@ -682,3 +682,46 @@ func TestIPCD356InPack(t *testing.T) {
 		t.Fatalf("README missing IPC-D-356A file: %s", readme)
 	}
 }
+
+// TestPourClippedByCutoutAndKeepout locks the drone-x export bug: the pour
+// used to be one board-sized region minus pad clearances, so copper filled
+// the milled slots and the no-copper zones under module antennas.
+func TestPourClippedByCutoutAndKeepout(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(40)))
+	b.Outline = &o
+	gnd := "GND"
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "R1", Library: "R_0603",
+		Position: core.NewPoint(core.FromMM(5), core.FromMM(5)),
+		Layer:    core.LayerTop,
+		Pads: []core.Pad{
+			{Number: "1", Offset: core.NewPoint(core.FromMM(-0.8), 0), Size: [2]core.Length{core.FromMM(0.9), core.FromMM(0.9)}, Layer: core.LayerTop, Net: &gnd},
+		},
+	})
+	cut := []core.Point{
+		core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		core.NewPoint(core.FromMM(20), core.FromMM(10)),
+		core.NewPoint(core.FromMM(20), core.FromMM(20)),
+		core.NewPoint(core.FromMM(10), core.FromMM(20)),
+	}
+	b.Cutouts = append(b.Cutouts, core.Cutout{ID: core.NewID(), Polygon: cut})
+	ko := core.RectFromCorners(core.NewPoint(core.FromMM(25), core.FromMM(25)), core.NewPoint(core.FromMM(35), core.FromMM(35)))
+	b.Keepouts = append(b.Keepouts, core.Keepout{ID: core.NewID(), Rect: &ko, NoCopper: true})
+	b.Pours = append(b.Pours, core.Pour{Net: gnd, Layer: core.LayerTop})
+
+	g := writeCopperLayer(b, core.LayerTop, "F.Cu")
+	if n := strings.Count(g, "G36*"); n != 3 {
+		t.Fatalf("regions: %d want 3 (board fill + cutout void + keepout void)", n)
+	}
+	// The keepout is cleared exactly as declared; the cutout is set back by the
+	// same 0.3 mm the outline gets, because a milled edge is a board edge.
+	for _, want := range []string{"X25000000Y25000000", "X35000000Y35000000", "X9700000Y9700000", "X20300000Y20300000"} {
+		if !strings.Contains(g, want) {
+			t.Fatalf("missing void vertex %s", want)
+		}
+	}
+	if !strings.Contains(g, "%LPC*%") {
+		t.Fatal("voids must be emitted in clear polarity")
+	}
+}

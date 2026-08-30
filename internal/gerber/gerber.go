@@ -346,6 +346,7 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 	}
 
 	var tearVoids [][]core.Point
+	var shapeVoids [][]core.Point
 	if hasPour {
 		for _, td := range core.BuildTeardrops(board) {
 			if td.Layer.Index != layer.Index || pourNets[td.Net] {
@@ -353,6 +354,7 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 			}
 			tearVoids = append(tearVoids, expandPolyMM(td.Poly, pourClearance.ToMM()))
 		}
+		shapeVoids = pourShapeVoids(board)
 	}
 
 	var flashes []flashOp
@@ -425,6 +427,11 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 			writeClosedPoly(&b, poly)
 			b.WriteString("G37*\n")
 		}
+		for _, poly := range shapeVoids {
+			b.WriteString("G36*\n")
+			writeClosedPoly(&b, poly)
+			b.WriteString("G37*\n")
+		}
 		b.WriteString("%LPD*%\n")
 		cur = 0
 		for _, d := range spokeDraws {
@@ -463,6 +470,102 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 	}
 	b.WriteString(footer())
 	return b.String()
+}
+
+// pourShapeVoids returns the polygons a pour must be cleared out of on every
+// layer: internal cutouts and no-copper keepouts. A cutout is a board edge, so
+// it gets the same setback the outline gets; a keepout is the designer saying
+// "no copper here", so it is honoured exactly as declared.
+func pourShapeVoids(board *core.Board) [][]core.Point {
+	var out [][]core.Point
+	for i := range board.Cutouts {
+		poly := board.Cutouts[i].Polygon
+		if len(poly) < 3 {
+			continue
+		}
+		out = append(out, growPolyOutwardMM(poly, pourEdgeClearance.ToMM()))
+	}
+	for i := range board.Keepouts {
+		k := &board.Keepouts[i]
+		if !k.NoCopper {
+			continue
+		}
+		if len(k.Polygon) >= 3 {
+			out = append(out, append([]core.Point(nil), k.Polygon...))
+			continue
+		}
+		if k.Rect != nil {
+			out = append(out, rectPoly(*k.Rect))
+		}
+	}
+	return out
+}
+
+func rectPoly(r core.Rect) []core.Point {
+	return []core.Point{
+		core.NewPoint(r.Min.X, r.Min.Y),
+		core.NewPoint(r.Max.X, r.Min.Y),
+		core.NewPoint(r.Max.X, r.Max.Y),
+		core.NewPoint(r.Min.X, r.Max.Y),
+	}
+}
+
+// growPolyOutwardMM offsets a convex polygon outward by marginMM, mitred, so
+// every edge really does move the full margin — including at corners, where a
+// plain bisector step only moves margin*cos(θ/2). Winding is handled from the
+// signed area, so a cutout drawn either way clears the same copper.
+func growPolyOutwardMM(poly []core.Point, marginMM float64) []core.Point {
+	n := len(poly)
+	if n < 3 || marginMM == 0 {
+		return poly
+	}
+	sign := 1.0
+	if signedAreaMM2(poly) < 0 {
+		sign = -1
+	}
+	unit := func(from, to core.Point) (float64, float64, bool) {
+		dx := to.X.ToMM() - from.X.ToMM()
+		dy := to.Y.ToMM() - from.Y.ToMM()
+		l := math.Hypot(dx, dy)
+		if l < 1e-12 {
+			return 0, 0, false
+		}
+		return dx / l, dy / l, true
+	}
+	out := make([]core.Point, n)
+	for i := 0; i < n; i++ {
+		cur := poly[i]
+		ux, uy, okU := unit(poly[(i+n-1)%n], cur)
+		vx, vy, okV := unit(cur, poly[(i+1)%n])
+		if !okU || !okV {
+			out[i] = cur
+			continue
+		}
+		// Right-hand normal is the outward one for a counter-clockwise ring.
+		nux, nuy := sign*uy, -sign*ux
+		nvx, nvy := sign*vy, -sign*vx
+		denom := 1 + nux*nvx + nuy*nvy
+		if denom < 1e-9 {
+			out[i] = cur
+			continue
+		}
+		out[i] = core.NewPoint(
+			core.FromMM(cur.X.ToMM()+marginMM*(nux+nvx)/denom),
+			core.FromMM(cur.Y.ToMM()+marginMM*(nuy+nvy)/denom),
+		)
+	}
+	return out
+}
+
+// signedAreaMM2 is positive for a counter-clockwise polygon.
+func signedAreaMM2(poly []core.Point) float64 {
+	var a float64
+	for i := range poly {
+		p := poly[i]
+		q := poly[(i+1)%len(poly)]
+		a += p.X.ToMM()*q.Y.ToMM() - q.X.ToMM()*p.Y.ToMM()
+	}
+	return a / 2
 }
 
 // expandPolyMM grows a convex polygon by marginMM along vertex normals.
