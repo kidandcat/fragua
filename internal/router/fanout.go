@@ -104,6 +104,37 @@ func fanoutHitsPad(board *core.Board, x, y, r float64, skip *core.Footprint, ski
 
 // stripStrandedFanout removes via+stub islands that never joined a net's
 // tree. Those are DRC NetSplit errors, not connections.
+// dropDuplicateVias removes barrels that sit on exactly the same point as an
+// earlier barrel of the same net. Two passes can each decide the same net
+// needs to change layer at the same cell — the tree that lays it and the
+// stitch or jumper that reaches it again — and the second drill is not a
+// second connection, it is the same hole ordered twice. DRC saw it as it
+// should (hole-to-hole -0.300 mm against itself), which left every board
+// carrying a fab-blocking error that had to be deleted by hand.
+//
+// Only exact coincidence goes: two barrels a hair apart may well be a real
+// pair, and judging that is viaSiteOK's job, not this one.
+func dropDuplicateVias(board *core.Board) {
+	if board == nil || len(board.Vias) < 2 {
+		return
+	}
+	type key struct {
+		x, y core.Length
+		net  string
+	}
+	seen := make(map[key]bool, len(board.Vias))
+	kept := board.Vias[:0]
+	for _, v := range board.Vias {
+		k := key{v.Position.X, v.Position.Y, v.Net}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		kept = append(kept, v)
+	}
+	board.Vias = kept
+}
+
 func stripStrandedFanout(board *core.Board) {
 	touch := func(a, b core.Point) bool {
 		return hypotMM(a, b) < 0.35
