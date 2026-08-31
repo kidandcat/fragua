@@ -67,6 +67,16 @@ not fit its escape retries with a short neck near its own pads (nominal width
 everywhere else), then one width tier down; both are counted in `Summary()`,
 never silent.
 
+A multi-terminal net is one Prim tree, and the shape of that tree — which
+terminal seeds it and which one it reaches for next — decides what copper the
+last branch has to get past. The first pass builds one shape (all seeds for a
+net of six terminals or fewer, as it always has); the two last-chance passes
+let a net still open try up to `maxTreeAttempts` of them (`treeAttempts`),
+including trunk-first growth, and give a branch that found no path one more
+look once the rest of the tree is down. The shapes are deliberately *not* spent
+inside RR&R or the negotiator: those try a leftover once per rip set, and a
+fruitless A* is the most expensive search there is.
+
 Two things keep the greedy pass honest. Pads are filed in a millimetre-tile
 index (`padIndex`), so the clearance query A* runs on every step and every
 Theta* chord costs a handful of tests instead of a scan of every pad on the

@@ -62,7 +62,7 @@ func TestBudgetExhaustionIsNotReportedAsUnreachable(t *testing.T) {
 	if !g.timedOut {
 		t.Fatal("A* stopped on the clock but did not record it")
 	}
-	out := routeNetFrom(b, g, "N1", pads, 0, nil, opts, time.Now().Add(-time.Second), true)
+	out := routeNetFrom(b, g, "N1", pads, 0, growNearest, nil, opts, time.Now().Add(-time.Second), true)
 	if out.Status == "ok" {
 		t.Fatalf("expected the expired deadline to stop the net, got %+v", out)
 	}
@@ -71,7 +71,7 @@ func TestBudgetExhaustionIsNotReportedAsUnreachable(t *testing.T) {
 	}
 	// The same board with a real budget routes, so the pad was never
 	// unreachable in the first place.
-	if out := routeNetFrom(b, g, "N1", pads, 0, nil, opts, time.Now().Add(30*time.Second), true); out.Status != "ok" {
+	if out := routeNetFrom(b, g, "N1", pads, 0, growNearest, nil, opts, time.Now().Add(30*time.Second), true); out.Status != "ok" {
 		t.Fatalf("the net is routable given the clock: %+v", out)
 	}
 	if g.timedOut {

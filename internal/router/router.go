@@ -59,6 +59,13 @@ type Options struct {
 	// across their pads' escape corridors is what walls a header in, so the
 	// search pays a toll to cross one instead of taking the shortcut.
 	pending map[string]bool
+	// exploreTrees lets a net look for a tree shape other than the one the
+	// router builds by default: alternative seeds, trunk-first growth, and
+	// a second look at a branch that found no path. Only the two
+	// last-chance passes set it — a search that finds nothing is the most
+	// expensive search there is, so it is worth its price only where one
+	// net is tried once and nobody is queued behind it.
+	exploreTrees bool
 }
 
 // Route budget, in seconds. A route call is never unbounded: an autorouter
@@ -441,6 +448,42 @@ func Route(board *core.Board, opts Options) Report {
 		pending[n] = true
 	}
 	opts.pending, g.opts.pending = pending, pending
+	// Options for the passes that may look for a different tree shape. It is
+	// one extra call per leftover, never a multiplier inside RR&R or the
+	// negotiator: those try a leftover once per rip set, and twelve shapes
+	// per rip set costs far more clock than it wins. Measured on drone-x,
+	// exploring inside the negotiator took 53/54 down to 50/54 — the three
+	// nets it lost were ones the negotiator used to have time to rescue.
+	exOpts := opts
+	exOpts.exploreTrees = true
+
+	// retryLeftovers rebuilds the grid and gives every net still open one
+	// more routeNet on the board as it now stands.
+	retryLeftovers := func(o Options) {
+		g = newGrid(board, o)
+		left := []string{}
+		for _, name := range failedNets {
+			if pastDeadline() {
+				left = append(left, name)
+				continue
+			}
+			setPending(name)
+			out := routeNet(board, g, name, nets[name], o, deadline, hasDeadline)
+			if out.Status == "ok" {
+				rep.Failed--
+				rep.TraceCount += out.TraceSegments
+				rep.TotalLengthMM += out.LengthMM
+				for i := range rep.PerNet {
+					if rep.PerNet[i].Net == name {
+						rep.PerNet[i].Outcome = out
+					}
+				}
+			} else {
+				left = append(left, name)
+			}
+		}
+		failedNets = left
+	}
 
 	// 4. RR&R: snapshot, rip one blocking signal net, retry the failed
 	// net then the victim. Restore the snapshot if either side fails.
@@ -496,35 +539,28 @@ func Route(board *core.Board, opts Options) Report {
 		failedNets = still
 	}
 
-	// 4b. Last chance: rebuild grid and try direct/jumper on leftovers.
+	// 4b. Last chance: rebuild grid and try direct/jumper on leftovers, and
+	// the first of the two places a leftover may also look for a tree shape
+	// other than the one it was built with — one call per net, on a board
+	// nobody else is queued behind.
 	if len(failedNets) > 0 && !pastDeadline() {
-		g = newGrid(board, opts)
-		left := []string{}
-		for _, name := range failedNets {
-			setPending(name)
-			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
-			if out.Status == "ok" {
-				rep.Failed--
-				rep.TraceCount += out.TraceSegments
-				rep.TotalLengthMM += out.LengthMM
-				for i := range rep.PerNet {
-					if rep.PerNet[i].Net == name {
-						rep.PerNet[i].Outcome = out
-					}
-				}
-			} else {
-				left = append(left, name)
-			}
-		}
-		failedNets = left
+		retryLeftovers(exOpts)
 	}
 
 	// 4c. Negotiated congestion: sharing-aware probe + multi-victim
 	// rip of long-haul copper (fanout vias stay). Always runs on
 	// leftovers — that is what closes QFN contention the single-victim
-	// RR&R cannot.
+	// RR&R cannot. Plain options: twelve tree shapes per rip set would
+	// spend the clock this pass needs to work through its rip sets.
 	if len(failedNets) > 0 && !pastDeadline() {
 		failedNets = negotiateLeftovers(board, &g, nets, failedNets, &rep, opts, deadline, hasDeadline)
+	}
+
+	// 4d. The negotiator moved other people's copper; whatever is still open
+	// gets one more look at a different tree shape against the board it left
+	// behind. Last thing before the post-passes, so it can starve nothing.
+	if len(failedNets) > 0 && !pastDeadline() {
+		retryLeftovers(exOpts)
 	}
 
 	// Drop dogbone islands of nets that never finished — they are
@@ -824,6 +860,155 @@ func footprintsStable(board *core.Board) []*core.Footprint {
 	return append(out, extra...)
 }
 
+// growthOrder picks which unconnected terminal joins the Prim tree next. The
+// terminals of a multi-terminal net are the same whichever order they are
+// tied in, but the copper is not: every branch laid narrows the field the next
+// one has to cross. Two seven-terminal I2C stars one pad pitch apart on
+// drone-x proved it — `SCL` closed in every run and `SDA` in none, because the
+// one order the router ever built happened to work for one of them.
+type growthOrder uint8
+
+const (
+	// growNearest attaches the terminal closest to the tree. Shortest
+	// copper, but it leaves the board-spanning branch for last, when the
+	// field is at its most congested — and a net is all-or-nothing, so
+	// that last branch failing throws the whole tree away.
+	growNearest growthOrder = iota
+	// growFarthest attaches the most remote terminal first, so the trunk
+	// crosses the board while the field is still open and the terminals
+	// left tap into it over a short distance.
+	growFarthest
+)
+
+// treeAttempt is one tree shape for a net: where the growth starts and which
+// terminal it reaches for next.
+type treeAttempt struct {
+	seed  int
+	order growthOrder
+}
+
+// maxTreeAttempts bounds the tree shapes one net may try, so a rail with
+// thirty terminals cannot spend the whole clock on itself.
+const maxTreeAttempts = 12
+
+// maxBranchTries is how often one branch of a tree may be searched for in a
+// single attempt: once, plus one reprieve after the rest of the tree is down.
+const maxBranchTries = 2
+
+// treeAttempts enumerates the shapes to try, deterministically. The first
+// entry is always (seed0, growNearest) — the tree the router has always built.
+//
+// Without explore the plan is exactly what the first pass has always done:
+// every seed for a net of six terminals or fewer, and one shape for anything
+// bigger. That cut-off is the defect — it is why a seven-terminal bus got one
+// shape and no second opinion — but the first pass is not where to pay for
+// the cure, so explore widens the plan only for the repair passes.
+//
+// With explore, both growth orders are on the table and alternative seeds come
+// extremity-first: a tree rooted at an outlying terminal grows as a chain
+// across the board, one rooted in the middle grows as a star whose last spoke
+// has to cross every earlier spoke.
+func treeAttempts(pads []padLoc, seed0 int, explore bool) []treeAttempt {
+	if seed0 < 0 || seed0 >= len(pads) {
+		seed0 = 0
+	}
+	if len(pads) < 2 {
+		return []treeAttempt{{seed: seed0, order: growNearest}}
+	}
+	if !explore {
+		out := []treeAttempt{{seed: seed0, order: growNearest}}
+		if len(pads) <= 6 {
+			for i := range pads {
+				if i != seed0 {
+					out = append(out, treeAttempt{seed: i, order: growNearest})
+				}
+			}
+		}
+		return out
+	}
+	// With a single hop there is only one order, so a two-terminal net
+	// costs exactly what it costs today.
+	orders := []growthOrder{growNearest}
+	if len(pads) >= 3 {
+		orders = []growthOrder{growNearest, growFarthest}
+	}
+
+	var cx, cy float64
+	for _, p := range pads {
+		cx += p.p.X.ToMM()
+		cy += p.p.Y.ToMM()
+	}
+	cx /= float64(len(pads))
+	cy /= float64(len(pads))
+	alts := make([]int, 0, len(pads)-1)
+	for i := range pads {
+		if i != seed0 {
+			alts = append(alts, i)
+		}
+	}
+	sort.Slice(alts, func(a, b int) bool {
+		da := math.Hypot(pads[alts[a]].p.X.ToMM()-cx, pads[alts[a]].p.Y.ToMM()-cy)
+		db := math.Hypot(pads[alts[b]].p.X.ToMM()-cx, pads[alts[b]].p.Y.ToMM()-cy)
+		if math.Abs(da-db) > 1e-9 {
+			return da > db
+		}
+		return alts[a] < alts[b]
+	})
+
+	out := make([]treeAttempt, 0, maxTreeAttempts)
+	for _, o := range orders {
+		out = append(out, treeAttempt{seed: seed0, order: o})
+	}
+	for _, s := range alts {
+		for _, o := range orders {
+			if len(out) >= maxTreeAttempts {
+				return out
+			}
+			out = append(out, treeAttempt{seed: s, order: o})
+		}
+	}
+	return out
+}
+
+// nextTerminal picks the unconnected terminal that joins the tree next, by
+// its Manhattan distance to the nearest terminal already in it: the closest
+// one, or — when this attempt lays the trunk first — the most remote one.
+// Terminals in skip are the ones that already refused this sweep. Ties go to
+// the lowest index, so the growth is the same on every run.
+func nextTerminal(pads []padLoc, connected, skip map[int]bool, order growthOrder) int {
+	best, bestD := -1, math.MaxFloat64
+	if order == growFarthest {
+		bestD = -1
+	}
+	for j := range pads {
+		if connected[j] || skip[j] {
+			continue
+		}
+		toTree := math.MaxFloat64
+		for i := range pads {
+			if !connected[i] {
+				continue
+			}
+			if d := manhattanMM(pads[i].p, pads[j].p); d < toTree {
+				toTree = d
+			}
+		}
+		if toTree == math.MaxFloat64 {
+			continue
+		}
+		if order == growFarthest {
+			if toTree > bestD {
+				bestD, best = toTree, j
+			}
+			continue
+		}
+		if toTree < bestD {
+			bestD, best = toTree, j
+		}
+	}
+	return best
+}
+
 func nearestConnectedPad(pads []padLoc, connected map[int]bool, g gpos) int {
 	best, bestD := -1, math.MaxFloat64
 	for i := range pads {
@@ -1058,34 +1243,29 @@ func routeNetAtOnce(board *core.Board, g *grid, name string, pads []padLoc, opts
 			}
 		}
 	}
-	out := routeNetFrom(board, g, name, pads, seed0, already, opts, deadline, hasDeadline)
-	// A commit rejected for a via site bans that cell; the same search then
-	// finds a different barrel. Bounded so a pathological net cannot spin.
-	for retry := 0; retry < 3 && out.Reason == "drc-via"; retry++ {
-		if hasDeadline && time.Now().After(deadline) {
+	// One tree shape per attempt, cheapest-first: the shape the router has
+	// always built, then the alternatives. Only a net that failed ever gets
+	// past the first entry, and the deadline gates every one after it.
+	var out Outcome
+	for i, at := range treeAttempts(pads, seed0, opts.exploreTrees) {
+		if i > 0 && hasDeadline && time.Now().After(deadline) {
 			break
 		}
-		out = routeNetFrom(board, g, name, pads, seed0, already, opts, deadline, hasDeadline)
-	}
-	if out.Status == "ok" {
-		out.TraceSegments += preSegs
-		out.LengthMM += preLen
-		return out
-	}
-	if len(pads) >= 2 && len(pads) <= 6 {
-		for seed := 0; seed < len(pads); seed++ {
-			if seed == seed0 {
-				continue
-			}
+		out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, opts, deadline, hasDeadline)
+		// A commit rejected for a via site bans that cell; the same search
+		// then finds a different barrel. Bounded so a net cannot spin — and
+		// only on the first shape, because a ban outlives the net that
+		// earned it and hands every later net a smaller board.
+		for retry := 0; i == 0 && retry < 3 && out.Reason == "drc-via"; retry++ {
 			if hasDeadline && time.Now().After(deadline) {
 				break
 			}
-			out = routeNetFrom(board, g, name, pads, seed, already, opts, deadline, hasDeadline)
-			if out.Status == "ok" {
-				out.TraceSegments += preSegs
-				out.LengthMM += preLen
-				return out
-			}
+			out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, opts, deadline, hasDeadline)
+		}
+		if out.Status == "ok" {
+			out.TraceSegments += preSegs
+			out.LengthMM += preLen
+			return out
 		}
 	}
 	if (!hasDeadline || time.Now().Before(deadline)) &&
@@ -1127,7 +1307,14 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 			if connected[j] {
 				continue
 			}
-			for i := range connected {
+			// Walk the pad slice, not the connected set: ranging a Go map
+			// picks a different winner between equally-close pads on every
+			// run, which is one of the reasons two identical route calls
+			// used to disagree.
+			for i := range pads {
+				if !connected[i] {
+					continue
+				}
 				d := manhattanMM(pads[i].p, pads[j].p)
 				if d < bestD {
 					bestD, bestI, bestJ = d, i, j
@@ -1425,10 +1612,17 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 	for i := range pads {
 		groups[find(i)] = append(groups[find(i)], i)
 	}
+	// Largest cluster wins, lowest pad index breaks a tie. Ranging the map
+	// picked a different cluster of the same size on every run, and which
+	// cluster seeds the tree changes the copper the net ends up with.
 	best, bestN := -1, 1
-	for r, mem := range groups {
-		if len(mem) > bestN {
-			best, bestN = r, len(mem)
+	for i := range pads {
+		r := find(i)
+		if r != i {
+			continue
+		}
+		if len(groups[r]) > bestN {
+			best, bestN = r, len(groups[r])
 		}
 	}
 	if best >= 0 {
@@ -1439,7 +1633,7 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 	return connected, segs, length
 }
 
-func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed int, already map[int]bool, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed int, order growthOrder, already map[int]bool, opts Options, deadline time.Time, hasDeadline bool) Outcome {
 	lb := lowerBoundMM(pads)
 
 	// Prim growth: connected set starts with pad 0; multi-source A* from
@@ -1508,33 +1702,41 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 	failed := false
 	reason := "unreachable"
 
+	// Terminals whose hop found no path in the current sweep. A branch that
+	// cannot be laid now is not the same thing as a net that cannot be laid:
+	// the branches still owed copper will widen the tree, and A* searches
+	// from every cell of it. One reprieve each — a branch that still finds
+	// nothing with the rest of the tree down is not going to come good, and
+	// a fruitless A* walks the whole grid before it says so.
+	deferred := map[int]bool{}
+	tries := make([]int, len(pads))
+	grew := false
+
 	for len(connected) < len(pads) {
 		if hasDeadline && time.Now().After(deadline) {
 			failed = true
 			reason = "budget"
 			break
 		}
-		// Nearest unconnected pad (Manhattan) to any connected pad.
-		bestJ := -1
-		bestD := math.MaxFloat64
-		for j := range pads {
-			if connected[j] {
-				continue
-			}
-			for i := range pads {
-				if !connected[i] {
-					continue
-				}
-				d := manhattanMM(pads[i].p, pads[j].p)
-				if d < bestD {
-					bestD, bestJ = d, j
-				}
-			}
-		}
+		bestJ := nextTerminal(pads, connected, deferred, order)
 		if bestJ < 0 {
-			failed = true
-			break
+			unparked := false
+			if grew {
+				for j := range pads {
+					if deferred[j] && tries[j] < maxBranchTries {
+						delete(deferred, j)
+						unparked = true
+					}
+				}
+			}
+			if !unparked {
+				failed = true
+				break
+			}
+			grew = false
+			continue
 		}
+		tries[bestJ]++
 
 		goalLayer := pads[bestJ].layer
 		goalP := pads[bestJ].p
@@ -1551,22 +1753,30 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			path, ok = g.aStarMulti(sources, goalP, signalOtherLayer(g, goalLayer), name, deadline, hasDeadline)
 		}
 		if !ok {
-			failed = true
 			// A* also returns "no path" when it runs out of clock. Saying
 			// "unreachable" for that is a lie that sends the next reader
 			// hunting for a geometric blockage that is not there.
-			if g.timedOut || (hasDeadline && time.Now().After(deadline)) {
+			timedOut := g.timedOut || (hasDeadline && time.Now().After(deadline))
+			if timedOut {
 				reason = fmt.Sprintf("budget:%s.p%d(%.1f,%.1f) from %d", name, bestJ,
 					pads[bestJ].p.X.ToMM(), pads[bestJ].p.Y.ToMM(), len(connected))
 			} else {
 				reason = fmt.Sprintf("unreachable:%s.p%d(%.1f,%.1f) from %d", name, bestJ,
 					pads[bestJ].p.X.ToMM(), pads[bestJ].p.Y.ToMM(), len(connected))
 			}
-			break
+			if timedOut || !opts.exploreTrees {
+				failed = true
+				break
+			}
+			// Park this branch and lay the others first — the tree they add
+			// is more copper to search from, and A* is multi-source.
+			deferred[bestJ] = true
+			continue
 		}
 		if len(path) < 2 {
 			sources = append(sources, g.padSources(pads[bestJ])...)
 			connected[bestJ] = true
+			grew = true
 			continue
 		}
 
@@ -1636,6 +1846,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 		}
 		sources = append(sources, g.padSources(pads[bestJ])...)
 		connected[bestJ] = true
+		grew = true
 		// Pick up this pad's fanout via now that it is in the tree.
 		sources = append(sources, existingNetSources(board, g, name, pads, map[int]bool{bestJ: true})...)
 	}
