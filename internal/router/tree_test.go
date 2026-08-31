@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mentasystems/fragua/internal/core"
 )
@@ -279,5 +280,41 @@ func TestSevenTerminalBusRoutesRepeatably(t *testing.T) {
 			t.Fatalf("route is not repeatable: run0 %d traces/%d vias, run1 %d/%d",
 				wantTraces, wantVias, len(b.Traces), len(b.Vias))
 		}
+	}
+}
+
+// The repair passes used to hand each leftover the whole remaining deadline,
+// so the first hard net spent the lot and the rip sets that would have freed
+// the next one never ran. The slice must shrink with the queue, never run
+// past the wall, and never come out in the past.
+func TestRepairBudgetSlicesTheRemainingClock(t *testing.T) {
+	now := time.Now()
+	wall := now.Add(300 * time.Second)
+
+	many := repairBudget(wall, true, 20, 4)
+	if !many.Before(wall) {
+		t.Fatal("with twenty attempts left a leftover must not get the whole wall")
+	}
+	few := repairBudget(wall, true, 2, 4)
+	if !few.After(many) {
+		t.Fatalf("the share must grow as the queue drains: %v vs %v", few.Sub(now), many.Sub(now))
+	}
+	for _, d := range []time.Time{many, few} {
+		if d.After(wall) {
+			t.Fatalf("a slice may never run past the wall: %v", d.Sub(now))
+		}
+		if !d.After(now) {
+			t.Fatalf("a slice may never come out in the past: %v", d.Sub(now))
+		}
+	}
+
+	// A clock that is already gone stays gone — no slice resurrects it.
+	spent := now.Add(-time.Second)
+	if got := repairBudget(spent, true, 3, 4); !got.Equal(spent) {
+		t.Fatalf("an expired deadline must be returned untouched, got %v", got.Sub(now))
+	}
+	// No deadline means no deadline.
+	if got := repairBudget(wall, false, 3, 4); !got.Equal(wall) {
+		t.Fatal("without a deadline repairBudget must not invent one")
 	}
 }

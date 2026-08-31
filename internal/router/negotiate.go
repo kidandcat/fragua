@@ -114,15 +114,27 @@ func tryNegotiateOne(board *core.Board, gp **grid, name string, pads []padLoc, n
 		}
 	}
 
-	for _, a := range sets {
-		if stealAndRestore(board, gp, name, pads, a.victims, a.nickPower, a.fullRip, nets, opts, deadline, hasDeadline, rep) {
+	// One rip set must not spend the clock the rest of them need: this is
+	// the pass that has to work through its whole list to find the eviction
+	// that frees a walled-in pad, and it used to hit the wall on set one.
+	for k, a := range sets {
+		if hasDeadline && time.Now().After(deadline) {
+			return false
+		}
+		tryDead := repairBudget(deadline, hasDeadline, len(sets)-k, len(pads))
+		if stealAndRestore(board, gp, name, pads, a.victims, a.nickPower, a.fullRip, nets, opts, tryDead, deadline, hasDeadline, rep) {
 			return true
 		}
 	}
 	return false
 }
 
-func stealAndRestore(board *core.Board, gp **grid, name string, pads []padLoc, victims []string, nickPower, fullRip bool, nets map[string][]padLoc, opts Options, deadline time.Time, hasDeadline bool, rep *Report) bool {
+// stealAndRestore rips victims, routes the leftover, then puts the victims
+// back. tryDead bounds the leftover's own two searches so a hopeless rip set
+// cannot eat the pass; deadline — the wall — bounds putting the victims back,
+// because a victim that fails to return aborts the whole swap and starving it
+// would throw away a rescue that worked.
+func stealAndRestore(board *core.Board, gp **grid, name string, pads []padLoc, victims []string, nickPower, fullRip bool, nets map[string][]padLoc, opts Options, tryDead, deadline time.Time, hasDeadline bool, rep *Report) bool {
 	failedBefore := 0
 	for _, n := range rep.PerNet {
 		if n.Outcome.Status != "ok" {
@@ -164,11 +176,11 @@ func stealAndRestore(board *core.Board, gp **grid, name string, pads []padLoc, v
 
 	*gp = newGrid(board, opts)
 	g := *gp
-	out := routeNet(board, g, name, pads, opts, deadline, hasDeadline)
+	out := routeNet(board, g, name, pads, opts, tryDead, hasDeadline)
 	if out.Status != "ok" {
 		cheap := opts
 		cheap.ViaCost = 2
-		out = routeNet(board, g, name, pads, cheap, deadline, hasDeadline)
+		out = routeNet(board, g, name, pads, cheap, tryDead, hasDeadline)
 	}
 	if out.Status != "ok" {
 		abort()

@@ -127,6 +127,32 @@ func netBudget(left time.Duration, netsLeft, padCount int) time.Duration {
 	return share
 }
 
+// repairBudget slices what is left of the clock across the attempts a repair
+// pass still owes. The first pass has always sliced (netBudget); the repair
+// passes never did — they handed each leftover the whole remaining deadline,
+// so the first hard net spent the lot and the rip sets that would have freed
+// the next one never ran. drone-x reached the 600 s wall with the negotiator
+// still working its first victim set.
+//
+// attemptsLeft counts the attempts this pass has yet to make, so the share
+// grows as the queue drains and a pass that finishes early hands the rest
+// back. Never past the wall, and never a deadline in the past: a slice of
+// zero would turn "no time left" into a search that cannot even start.
+func repairBudget(deadline time.Time, hasDeadline bool, attemptsLeft, padCount int) time.Time {
+	if !hasDeadline {
+		return deadline
+	}
+	left := time.Until(deadline)
+	if left <= 0 {
+		return deadline
+	}
+	slice := netBudget(left, attemptsLeft, padCount)
+	if d := time.Now().Add(slice); d.Before(deadline) {
+		return d
+	}
+	return deadline
+}
+
 // ClampBudget normalises a wall-clock budget in seconds. Zero, negative,
 // NaN and ±Inf all mean "use the default" — never "run forever" — and no
 // run may ask for more than MaxBudgetSeconds.
@@ -462,13 +488,14 @@ func Route(board *core.Board, opts Options) Report {
 	retryLeftovers := func(o Options) {
 		g = newGrid(board, o)
 		left := []string{}
-		for _, name := range failedNets {
+		for i, name := range failedNets {
 			if pastDeadline() {
 				left = append(left, name)
 				continue
 			}
 			setPending(name)
-			out := routeNet(board, g, name, nets[name], o, deadline, hasDeadline)
+			netDead := repairBudget(deadline, hasDeadline, len(failedNets)-i, len(nets[name]))
+			out := routeNet(board, g, name, nets[name], o, netDead, hasDeadline)
 			if out.Status == "ok" {
 				rep.Failed--
 				rep.TraceCount += out.TraceSegments
@@ -490,7 +517,7 @@ func Route(board *core.Board, opts Options) Report {
 	if len(failedNets) > 0 && !pastDeadline() {
 		rep.Iterations = 2
 		still := []string{}
-		for _, name := range failedNets {
+		for i, name := range failedNets {
 			if pastDeadline() {
 				still = append(still, name)
 				continue
@@ -503,7 +530,11 @@ func Route(board *core.Board, opts Options) Report {
 				ripNetCopper(board, victim)
 				g = newGrid(board, opts)
 			}
-			out := routeNet(board, g, name, nets[name], opts, deadline, hasDeadline)
+			// The leftover gets a share; the victim's restore below keeps
+			// the full wall, because a victim that cannot come back costs
+			// the rescue outright (both-or-neither).
+			tryDead := repairBudget(deadline, hasDeadline, len(failedNets)-i, len(nets[name]))
+			out := routeNet(board, g, name, nets[name], opts, tryDead, hasDeadline)
 			kept := false
 			if out.Status != "ok" {
 				board.Traces = snapT
@@ -583,6 +614,9 @@ func Route(board *core.Board, opts Options) Report {
 	if !pastDeadline() {
 		stitchIsolatedPads(board, opts)
 	}
+	// Last, so it catches the tree, the jumper and the stitch alike: no net
+	// ships the same hole ordered twice.
+	dropDuplicateVias(board)
 
 	// Via count for nets that finished ok.
 	okNets := map[string]bool{}

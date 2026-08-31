@@ -93,7 +93,9 @@ Three invariants the engine owes its callers:
   checks inside A*), so a run that hits the clock returns the tree it has. A
   net's first-pass cap is a share of the clock still left (`netBudget`), never
   a fixed number of seconds — and a net that ran out of clock is reported as
-  `budget`, never as `unreachable`.
+  `budget`, never as `unreachable`. The repair passes slice the same way
+  (`repairBudget`), per leftover in RR&R and per rip set in the negotiator, so
+  one hard net cannot spend the budget the rest of the queue is waiting on.
 - **A net that does not finish leaves no copper.** The partial passes
   (`routeDirect`, `routeClearHops`) commit their hops as they go; `routeNetAt`
   rolls the board back when the net dies later, so a failed net never ships
