@@ -11,6 +11,12 @@ const (
 	EventSchematicChanged EventKind = "schematic_changed"
 	EventActivity         EventKind = "activity"
 	EventSaved            EventKind = "saved"
+	// Long-operation lifecycle. `progress` carries Done/Total/Detail so the
+	// UI can draw a bar instead of a spinner; `op_end` always follows an
+	// `op_start`, cancelled or not.
+	EventOpStarted  EventKind = "op_start"
+	EventOpProgress EventKind = "progress"
+	EventOpEnded    EventKind = "op_end"
 )
 
 // ActivityLevel is the severity of an activity log line.
@@ -29,6 +35,13 @@ type Event struct {
 	Level   ActivityLevel `json:"level,omitempty"`
 	Message string        `json:"message,omitempty"`
 	Path    string        `json:"path,omitempty"`
+	// Long-operation fields (op_start / progress / op_end).
+	Op        string `json:"op,omitempty"`     // route | auto-place | compact
+	Detail    string `json:"detail,omitempty"` // what it is working on now
+	Done      int    `json:"done,omitempty"`
+	Total     int    `json:"total,omitempty"`
+	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
 }
 
 // EventBus is a fan-out broadcaster for project events.

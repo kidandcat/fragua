@@ -82,64 +82,79 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 	}
 
 	deadline := time.Now().Add(time.Duration(maxSec * float64(time.Second)))
-	spent := func() bool { return time.Now().After(deadline) }
+	// A cancel from the UI ends the search the same way the clock does:
+	// the best size already proven is kept.
+	spent := func() bool { return time.Now().After(deadline) || p.Ops().Cancelled() }
 
 	type cand struct{ w, h float64 }
 	best := cand{w0, h0}
 	bestBoard := src.Clone()
-	// Prove the current size first (baseline).
-	if !compactFeasible(bestBoard, sch, w0, h0, seed, placeIters, routeSec, allowFailed) {
-		// Still try to shrink from a freshly cloned current board.
-		bestBoard = src.Clone()
-	}
+	runOp(p, "compact", func() {
+		// Prove the current size first (baseline).
+		if !compactFeasible(bestBoard, sch, w0, h0, seed, placeIters, routeSec, allowFailed) {
+			// Still try to shrink from a freshly cloned current board.
+			bestBoard = src.Clone()
+		}
 
-	lo, hi := 0.50, 1.0
-	for i := 0; i < 7 && !spent(); i++ {
-		mid := (lo + hi) / 2
-		w, h := w0*mid, h0*mid
-		if w < minW {
-			w = minW
+		// Probe count for the progress bar: the binary search, plus the
+		// per-dimension shave when the aspect ratio is free.
+		probes, probe := 7, 0
+		if aspectFree {
+			probes += 16
 		}
-		if h < minH {
-			h = minH
+		emit := progressEmitter(p, "compact")
+		lo, hi := 0.50, 1.0
+		for i := 0; i < 7 && !spent(); i++ {
+			mid := (lo + hi) / 2
+			w, h := w0*mid, h0*mid
+			emit(fmt.Sprintf("%.1fx%.1f mm", w, h), probe, probes)
+			probe++
+			if w < minW {
+				w = minW
+			}
+			if h < minH {
+				h = minH
+			}
+			try := src.Clone()
+			if compactFeasible(try, sch, w, h, seed+uint64(i), placeIters, routeSec, allowFailed) {
+				hi = mid
+				best = cand{w, h}
+				bestBoard = try
+			} else {
+				lo = mid
+			}
 		}
-		try := src.Clone()
-		if compactFeasible(try, sch, w, h, seed+uint64(i), placeIters, routeSec, allowFailed) {
-			hi = mid
-			best = cand{w, h}
-			bestBoard = try
-		} else {
-			lo = mid
-		}
-	}
-	if aspectFree {
-		for dim := 0; dim < 2 && !spent(); dim++ {
-			for k := 0; k < 8 && !spent(); k++ {
-				w, h := best.w, best.h
-				if dim == 0 {
-					w -= step
-					if w < minW {
+		if aspectFree {
+			for dim := 0; dim < 2 && !spent(); dim++ {
+				for k := 0; k < 8 && !spent(); k++ {
+					w, h := best.w, best.h
+					if dim == 0 {
+						w -= step
+						if w < minW {
+							break
+						}
+					} else {
+						h -= step
+						if h < minH {
+							break
+						}
+					}
+					emit(fmt.Sprintf("%.1fx%.1f mm", w, h), probe, probes)
+					probe++
+					try := src.Clone()
+					if compactFeasible(try, sch, w, h, seed+30+uint64(dim*10+k), placeIters, routeSec, allowFailed) {
+						best = cand{w, h}
+						bestBoard = try
+					} else {
 						break
 					}
-				} else {
-					h -= step
-					if h < minH {
-						break
-					}
-				}
-				try := src.Clone()
-				if compactFeasible(try, sch, w, h, seed+30+uint64(dim*10+k), placeIters, routeSec, allowFailed) {
-					best = cand{w, h}
-					bestBoard = try
-				} else {
-					break
 				}
 			}
 		}
-	}
 
-	p.MutateBoard(func(b *core.Board) {
-		*b = *bestBoard
+		p.MutateBoard(func(b *core.Board) {
+			*b = *bestBoard
+		})
 	})
 	area0 := w0 * h0
 	area1 := best.w * best.h

@@ -45,6 +45,13 @@ type Options struct {
 	// Schematic supplies the net classes that drive per-net trace width
 	// (impedance target, then class width). nil → TraceWidthMM everywhere.
 	Schematic *core.Schematic
+	// Progress, when set, is called once per net attempted so a host can
+	// stream "nets done / total" to a watching human. Must not block.
+	Progress func(Progress)
+	// Cancel, when set, stops the run at the next net boundary. The engine
+	// is anytime, so a cancelled run keeps the copper already committed —
+	// same contract as running out of clock.
+	Cancel func() bool
 
 	// widths is derived from Schematic + stackup inside Route.
 	widths *netWidths
@@ -231,6 +238,17 @@ func ParseOptions(o Options, args string) Options {
 	return o
 }
 
+// Progress is one step of a route run, for a UI that is watching.
+type Progress struct {
+	// Phase is "route" for the first pass, "repair" for RR&R / negotiation.
+	Phase string
+	Net   string
+	// Done / Total count nets, not seconds: a repair pass reports against
+	// the leftovers it owns, not the whole board.
+	Done, Total int
+	ElapsedMS   int64
+}
+
 // Outcome for one net.
 type Outcome struct {
 	Status        string  `json:"status"` // ok | failed | skipped
@@ -320,7 +338,21 @@ func Route(board *core.Board, opts Options) Report {
 	deadline := start.Add(time.Duration(opts.MaxSeconds * float64(time.Second)))
 	hasDeadline := true
 	pastDeadline := func() bool {
+		// A cancel is the same event as running out of clock: stop looking,
+		// keep what is committed, report the leftovers honestly.
+		if opts.Cancel != nil && opts.Cancel() {
+			return true
+		}
 		return hasDeadline && time.Now().After(deadline)
+	}
+	report := func(phase, net string, done, total int) {
+		if opts.Progress == nil {
+			return
+		}
+		opts.Progress(Progress{
+			Phase: phase, Net: net, Done: done, Total: total,
+			ElapsedMS: time.Since(start).Milliseconds(),
+		})
 	}
 
 	rep := Report{Iterations: 1}
@@ -406,7 +438,8 @@ func Route(board *core.Board, opts Options) Report {
 	}
 
 	var failedNets []string
-	for _, name := range names {
+	for ni, name := range names {
+		report("route", name, ni, len(names))
 		pads := nets[name]
 		// Rust: 1-pad nets and pour nets are Outcome::Ok with 0 copper.
 		if pourNets[name] || len(pads) < 2 {
@@ -493,6 +526,7 @@ func Route(board *core.Board, opts Options) Report {
 				left = append(left, name)
 				continue
 			}
+			report("repair", name, i, len(failedNets))
 			setPending(name)
 			netDead := repairBudget(deadline, hasDeadline, len(failedNets)-i, len(nets[name]))
 			out := routeNet(board, g, name, nets[name], o, netDead, hasDeadline)
@@ -522,6 +556,7 @@ func Route(board *core.Board, opts Options) Report {
 				still = append(still, name)
 				continue
 			}
+			report("repair", name, i, len(failedNets))
 			setPending(name)
 			victim := pickRipVictim(board, nets[name], name)
 			snapT := append([]core.Trace(nil), board.Traces...)

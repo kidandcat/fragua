@@ -30,7 +30,17 @@ type Options struct {
 	MaxStepMM       float64
 	MinStepMM       float64
 	Decouple        bool
+	// Progress, when set, is called every ProgressEvery iterations of the
+	// SA loop so a host can stream a bar. Must not block.
+	Progress func(done, total int)
+	// Cancel, when set, ends the anneal early. The board keeps the best
+	// arrangement found so far — never a half-applied move.
+	Cancel func() bool
 }
+
+// progressEvery is how often the SA loop reports: often enough to animate a
+// bar, rare enough that the callback is noise next to the annealing itself.
+const progressEvery = 200
 
 // DefaultOptions matches Rust PlaceOptions::default (SA-only temps;
 // after a global stage the loop retunes T 5→0.05 / step 8→0.25).
@@ -183,7 +193,17 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 
 	o := board.Outline
 	hardClear := math.Max(opts.MinClearanceMM, opts.SolderGapMM)
+	ranIter := maxIter
 	for iter := 0; iter < maxIter; iter++ {
+		if iter%progressEvery == 0 {
+			if opts.Progress != nil {
+				opts.Progress(iter, maxIter)
+			}
+			if opts.Cancel != nil && opts.Cancel() {
+				ranIter = iter
+				break
+			}
+		}
 		temp := initT * math.Pow(cooling, float64(iter))
 		progress := float64(iter) / float64(maxIter)
 		step := maxStep*(1.0-progress) + minStep*progress
@@ -270,7 +290,7 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		InitialHPWLMM: initHPWL,
 		FinalHPWLMM:   rawHPWL(board),
 		Moved:         moved,
-		Iterations:    maxIter,
+		Iterations:    ranIter,
 	}, nil
 }
 
