@@ -54,11 +54,49 @@ from the [releases page](https://github.com/mentasystems/fragua/releases/latest)
 Then tell your AI to design the hardware with the `fragua` CLI — it opens
 the browser UI, exposes the HTTP script API, and the agent drives the rest.
 
+## Use it from your AI agent
+
+`fragua init` writes the onboarding files (`AGENTS.md`, a Claude Code skill,
+a Cursor rule, `.mcp.json`) into your project. It merges rather than
+clobbers, so it is safe to re-run.
+
+```sh
+cd my-board && fragua init
+```
+
+**Claude Code** — `fragua init` then `claude`. The skill and the MCP server
+are picked up from the project automatically.
+
+**Cursor** — `fragua init` writes `.cursor/rules/fragua.mdc`; add the MCP
+server from `.mcp.json` in Settings → MCP.
+
+**Codex / any MCP client** — point it at the stdio server:
+
+```json
+{
+  "mcpServers": {
+    "fragua": { "command": "fragua", "args": ["mcp"] }
+  }
+}
+```
+
+`fragua mcp` runs the same host as `fragua run`: the agent talks MCP on
+stdio while the human watches the live board at
+`http://127.0.0.1:7878/ui/`. Tools: `fragua_script`, `fragua_help`,
+`fragua_status`, `fragua_state`, `fragua_screenshot`, `fragua_save`,
+`fragua_drc`, `fragua_route`.
+
+**No MCP?** The HTTP API needs nothing but `curl` — see
+[Drive it from an agent](#drive-it-from-an-agent) below. Machine-readable
+docs: [`docs/llms.txt`](docs/llms.txt) and
+[`docs/llms-full.txt`](docs/llms-full.txt).
+
 ## Run it
 
-The launch subcommand is **`run`**. Bare `fragua` (or `fragua help`) prints
-the usage + full script reference and exits — so agents can discover the
-surface before starting the server.
+The launch subcommands are **`run`** and **`mcp`**. Bare `fragua` (or
+`fragua help`) prints the usage + full script reference and exits — so agents
+can discover the surface before starting the server. `fragua help <verb>`
+prints one verb's usage, aliases and examples.
 
 ```sh
 go build -o fragua ./cmd/fragua
@@ -72,6 +110,9 @@ go build -o fragua ./cmd/fragua
 # Installed binary:
 fragua run
 fragua run /path/to/project.fragua
+
+# …or the same host plus an MCP server on stdio:
+fragua mcp /path/to/project.fragua
 ```
 
 The browser opens at `http://127.0.0.1:7878/ui/` and the HTTP API listens
@@ -107,8 +148,10 @@ curl -s http://127.0.0.1:7878/save \
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/`, `/help` | Usage + full script reference |
+| `GET` | `/`, `/help` | Usage + full script reference (`?verb=route` for one verb) |
 | `GET` | `/health` | `ok` |
+| `GET` | `/state` | JSON project snapshot |
+| `GET` | `/events` | SSE project change stream |
 | `GET` | `/ui/` | Browser UI |
 | `GET` | `/screenshot` | Board SVG |
 | `POST` | `/script` | Multi-line script body `{"script":"..."}` |
