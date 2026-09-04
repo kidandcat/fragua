@@ -202,7 +202,8 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 			fp.Position = core.NewPoint(old.x+core.FromMM(dx), old.y+core.FromMM(dy))
 		}
 
-		if !padsInside(fp, o, opts.EdgeClearanceMM) || firstOverlapper(board, fp) {
+		if !padsInside(fp, o, opts.EdgeClearanceMM) ||
+			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
 			fp.Position = core.NewPoint(old.x, old.y)
 			fp.Rotation = old.rot
 			continue
@@ -412,17 +413,128 @@ func padsInside(fp *core.Footprint, o *core.Rect, edgeMM float64) bool {
 		b.Max.X <= o.Max.X-e && b.Max.Y <= o.Max.Y-e
 }
 
+// noPlaceRects collects the placement exclusions declared on the board: every
+// keepout with no_place set, as a rectangle. A polygon keepout contributes its
+// bounding box, which is the conservative reading.
+func noPlaceRects(board *core.Board) []core.Rect {
+	if board == nil {
+		return nil
+	}
+	var out []core.Rect
+	for i := range board.Keepouts {
+		k := &board.Keepouts[i]
+		if !k.NoPlace {
+			continue
+		}
+		switch {
+		case k.Rect != nil:
+			out = append(out, *k.Rect)
+		case len(k.Polygon) > 0:
+			r := core.Rect{Min: k.Polygon[0], Max: k.Polygon[0]}
+			for _, p := range k.Polygon[1:] {
+				r = r.Union(core.Rect{Min: p, Max: p})
+			}
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// hitsNoPlace reports whether a footprint's extent lands in a no_place keepout.
+// Without this the annealer seats parts inside milled slots, under a module's
+// PCB antenna and on top of mounting screws: it optimises wirelength against
+// the outline only, and a keepout is invisible to wirelength.
+func hitsNoPlace(board *core.Board, fp *core.Footprint) bool {
+	b, ok := footprintBounds(fp)
+	if !ok {
+		return false
+	}
+	for _, r := range noPlaceRects(board) {
+		if b.Intersects(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// noPlaceOverlapMM2 is the total area the given footprints put inside no_place
+// keepouts. hitsNoPlace refuses to move a part *into* an exclusion; this makes
+// a part that was already sitting in one strictly worse off staying there, so
+// the anneal walks it out instead of leaving it where the script dropped it.
+func noPlaceOverlapMM2(board *core.Board, fps []*core.Footprint) float64 {
+	rects := noPlaceRects(board)
+	if len(rects) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, fp := range fps {
+		b, ok := footprintBounds(fp)
+		if !ok {
+			continue
+		}
+		for _, r := range rects {
+			w := math.Min(b.Max.X.ToMM(), r.Max.X.ToMM()) - math.Max(b.Min.X.ToMM(), r.Min.X.ToMM())
+			h := math.Min(b.Max.Y.ToMM(), r.Max.Y.ToMM()) - math.Max(b.Min.Y.ToMM(), r.Min.Y.ToMM())
+			if w > 0 && h > 0 {
+				total += w * h
+			}
+		}
+	}
+	return total
+}
+
+// canCollide reports whether two footprints can physically clash.
+//
+// Two surface-mount parts on opposite faces of the board cannot: they are a
+// board thickness apart. The placer used to compare every pair of pad boxes
+// regardless of layer, so putting a wire header on the bottom copper bought no
+// room at all - which on a small carrier is most of the board. A through-hole
+// pad is copper on every layer, so a part that has one collides with both
+// faces; DRC already reasons this way.
+func canCollide(a, b *core.Footprint) bool {
+	if a.Layer == b.Layer {
+		return true
+	}
+	return hasThroughHole(a) || hasThroughHole(b)
+}
+
+func hasThroughHole(fp *core.Footprint) bool {
+	for i := range fp.Pads {
+		if fp.Pads[i].Drill != nil && *fp.Pads[i].Drill > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // firstOverlapper: pad-bbox union expanded by MIN_FOOTPRINT_GAP/2 intersects another.
 func firstOverlapper(board *core.Board, probe *core.Footprint) bool {
+	return firstOverlapperGap(board, probe, core.MinFootprintGapMM)
+}
+
+// firstOverlapperGap is firstOverlapper with the assembly gap made explicit.
+// The 2.0 mm package constant is a sensible default for a roomy board and a
+// veto on a small one: on a 30 x 30 mm carrier it puts a 1 mm halo round every
+// 0603 and there is simply nowhere left to anneal to. `auto-place solder_gap=N`
+// parses into Options.SolderGapMM, but until now only the soft penalty and the
+// afterGap test read it - the hard rejection here used the constant, so the
+// option could not actually buy any room.
+func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64) bool {
 	pb, ok := footprintBounds(probe)
 	if !ok {
 		return false
 	}
-	half := core.FromMM(core.MinFootprintGapMM / 2)
+	if gapMM < 0 {
+		gapMM = 0
+	}
+	half := core.FromMM(gapMM / 2)
 	pb = pb.Expand(half)
 	for _, id := range board.FootprintOrder {
 		fp := board.Footprints[id]
 		if fp == nil || fp == probe || fp.ID == probe.ID {
+			continue
+		}
+		if !canCollide(probe, fp) {
 			continue
 		}
 		ob, ok := footprintBounds(fp)
@@ -437,6 +549,9 @@ func firstOverlapper(board *core.Board, probe *core.Footprint) bool {
 	if len(board.FootprintOrder) == 0 {
 		for _, fp := range board.Footprints {
 			if fp == nil || fp == probe || fp.ID == probe.ID {
+				continue
+			}
+			if !canCollide(probe, fp) {
 				continue
 			}
 			ob, ok := footprintBounds(fp)
@@ -505,7 +620,7 @@ func minGapAgainstOthers(board *core.Board, probe *core.Footprint) float64 {
 	}
 	m := math.Inf(1)
 	visit := func(fp *core.Footprint) {
-		if fp == nil || fp == probe || fp.ID == probe.ID {
+		if fp == nil || fp == probe || fp.ID == probe.ID || !canCollide(probe, fp) {
 			return
 		}
 		ob, ok := footprintBounds(fp)
@@ -689,8 +804,67 @@ func weightedHPWL(board *core.Board) float64 {
 	return total
 }
 
-func compositeScore(board *core.Board, _ []*core.Footprint, opts Options) float64 {
-	return weightedHPWL(board) + opts.GapPenalty*totalGapPenalty(board, opts.MinGapMM)
+// noPlacePenalty weights a square millimetre of illegal overlap - with a
+// no_place keepout or with another part - against a millimetre of wirelength.
+// It only has to dominate the wirelength a part could win by squatting there.
+const noPlacePenalty = 100.0
+
+// overlapAreaMM2 totals the area the movable parts push into other footprints
+// at the run's assembly gap.
+//
+// The annealer vetoes a move INTO an overlap but, without this term, has no
+// gradient out of one - so a part that was already overlapping when Place was
+// called just sat there, since every legal escape lengthened a net and lost on
+// score. That is not a corner case: the force-directed pre-pass drags a decap
+// straight onto its IC's pads by construction, and a script that seeds parts
+// before calling auto-place lands in the same state. The veto stops it getting
+// worse; this makes it get better.
+func overlapAreaMM2(board *core.Board, fps []*core.Footprint, gapMM float64) float64 {
+	if gapMM < 0 {
+		gapMM = 0
+	}
+	half := core.FromMM(gapMM / 2)
+	movable := map[string]bool{}
+	for _, fp := range fps {
+		movable[fp.ID.String()] = true
+	}
+	total := 0.0
+	for _, fp := range fps {
+		b, ok := footprintBounds(fp)
+		if !ok {
+			continue
+		}
+		b = b.Expand(half)
+		for _, other := range footprintsAll(board) {
+			if other == fp || other.ID == fp.ID {
+				continue
+			}
+			// Count a movable/movable pair once, not twice.
+			if movable[other.ID.String()] && other.Reference < fp.Reference {
+				continue
+			}
+			if !canCollide(fp, other) {
+				continue
+			}
+			ob, ok := footprintBounds(other)
+			if !ok {
+				continue
+			}
+			ob = ob.Expand(half)
+			w := math.Min(b.Max.X.ToMM(), ob.Max.X.ToMM()) - math.Max(b.Min.X.ToMM(), ob.Min.X.ToMM())
+			h := math.Min(b.Max.Y.ToMM(), ob.Max.Y.ToMM()) - math.Max(b.Min.Y.ToMM(), ob.Min.Y.ToMM())
+			if w > 0 && h > 0 {
+				total += w * h
+			}
+		}
+	}
+	return total
+}
+
+func compositeScore(board *core.Board, movable []*core.Footprint, opts Options) float64 {
+	return weightedHPWL(board) + opts.GapPenalty*totalGapPenalty(board, opts.MinGapMM) +
+		noPlacePenalty*(noPlaceOverlapMM2(board, movable)+
+			overlapAreaMM2(board, movable, opts.SolderGapMM))
 }
 
 // LegalAt reports whether fp (already posed) clears the solder floor
@@ -700,6 +874,9 @@ func LegalAt(board *core.Board, fp *core.Footprint) bool {
 		return false
 	}
 	if !padsInside(fp, board.Outline, 0.8) {
+		return false
+	}
+	if hitsNoPlace(board, fp) {
 		return false
 	}
 	return !firstOverlapper(board, fp)

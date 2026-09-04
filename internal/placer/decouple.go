@@ -275,7 +275,7 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 			if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
 				continue
 			}
-			if firstOverlapper(board, fp) {
+			if firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
 				continue
 			}
 			return true
@@ -329,7 +329,8 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 		if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
 			continue
 		}
-		if minGapAgainstOthers(board, fp) < hard+seatSlackMM || firstOverlapper(board, fp) {
+		if minGapAgainstOthers(board, fp) < hard+seatSlackMM ||
+			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
 			continue
 		}
 		return
