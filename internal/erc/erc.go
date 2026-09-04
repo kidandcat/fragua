@@ -70,6 +70,36 @@ func (r Report) Summary() string {
 	return fmt.Sprintf("erc: %d errors, %d warnings (%d findings)", r.Errors, r.Warnings, len(r.Violations))
 }
 
+// maxDetail caps how many violations Detail spells out.
+const maxDetail = 24
+
+// Detail is Summary plus the violations themselves. `erc` over the script API
+// used to return only the counts, so an agent could see that its netlist was
+// wrong but had no way at all to find out how — unlike DRC there was not even
+// a cmd/ helper to dump them.
+func (r Report) Detail() string {
+	var b strings.Builder
+	b.WriteString(r.Summary())
+	n := len(r.Violations)
+	if n > maxDetail {
+		n = maxDetail
+	}
+	for _, v := range r.Violations[:n] {
+		b.WriteString(fmt.Sprintf("\n  %s %s", v.Severity, v.Kind))
+		if v.Net != "" {
+			b.WriteString(" net=" + v.Net)
+		}
+		if v.Symbol != "" {
+			b.WriteString(" sym=" + v.Symbol)
+		}
+		b.WriteString(": " + v.Message)
+	}
+	if len(r.Violations) > maxDetail {
+		b.WriteString(fmt.Sprintf("\n  ... and %d more", len(r.Violations)-maxDetail))
+	}
+	return b.String()
+}
+
 func (r *Report) add(v Violation) {
 	r.Violations = append(r.Violations, v)
 	if v.Severity == SeverityError {

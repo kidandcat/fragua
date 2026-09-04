@@ -527,3 +527,24 @@ func TestCopperInKeepout(t *testing.T) {
 		}
 	}
 }
+
+// A courtyard is a one-face assembly envelope. Two SMD parts on opposite faces
+// share none, so a decap placed under its own IC is not a violation.
+func TestCourtyardOverlapIgnoresOppositeFaces(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "A")}))
+	bot := fp("R2", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "B")})
+	bot.Layer = core.LayerBottom
+	b.AddFootprint(bot)
+	if n := countKind(Check(b, nil, DefaultOptions()), KindCourtyardOverlap); n != 0 {
+		t.Fatalf("opposite faces must not clash, got %d", n)
+	}
+	// A through-hole pad is on every layer, so it still does.
+	d := core.FromMM(0.8)
+	b.FootprintByRef("R2").Pads[0].Drill = &d
+	if n := countKind(Check(b, nil, DefaultOptions()), KindCourtyardOverlap); n == 0 {
+		t.Fatal("a through-hole part must still clash with the other face")
+	}
+}

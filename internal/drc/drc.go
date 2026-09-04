@@ -104,6 +104,37 @@ func (r Report) Summary() string {
 	return fmt.Sprintf("drc: %d errors, %d warnings (%d findings)", r.Errors, r.Warnings, len(r.Violations))
 }
 
+// maxDetail caps how many violations Detail spells out. An agent needs to see
+// what broke, not all of it: the first two dozen always name the problem.
+const maxDetail = 24
+
+// Detail is Summary plus the violations themselves. `drc` over the script API
+// used to return only the counts, which told an agent that its board was wrong
+// and nothing about why — the only way to read a violation was to save the
+// project and run cmd/drc-print over it.
+func (r Report) Detail() string {
+	var b strings.Builder
+	b.WriteString(r.Summary())
+	n := len(r.Violations)
+	if n > maxDetail {
+		n = maxDetail
+	}
+	for _, v := range r.Violations[:n] {
+		b.WriteString(fmt.Sprintf("\n  %s %s", v.Severity, v.Kind))
+		if v.Net != "" {
+			b.WriteString(" net=" + v.Net)
+		}
+		if v.XMM != 0 || v.YMM != 0 {
+			b.WriteString(fmt.Sprintf(" @%.2f,%.2f", v.XMM, v.YMM))
+		}
+		b.WriteString(": " + v.Message)
+	}
+	if len(r.Violations) > maxDetail {
+		b.WriteString(fmt.Sprintf("\n  ... and %d more", len(r.Violations)-maxDetail))
+	}
+	return b.String()
+}
+
 func (r *Report) add(v Violation) {
 	r.Violations = append(r.Violations, v)
 	if v.Severity == SeverityError {
@@ -460,6 +491,8 @@ func checkCourtyardOverlap(board *core.Board, rep *Report) {
 		ref      string
 		rect     core.Rect
 		elevated bool
+		layer    core.Layer
+		throughH bool
 	}
 	var bodies []body
 	for _, id := range board.FootprintOrder {
@@ -471,7 +504,8 @@ func checkCourtyardOverlap(board *core.Board, rep *Report) {
 		if !ok {
 			continue
 		}
-		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated})
+		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated,
+			layer: fp.Layer, throughH: hasThroughHolePad(fp)})
 	}
 	seen := map[string]bool{}
 	for _, id := range board.FootprintOrder {
@@ -493,13 +527,21 @@ func checkCourtyardOverlap(board *core.Board, rep *Report) {
 		if !ok {
 			continue
 		}
-		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated})
+		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated,
+			layer: fp.Layer, throughH: hasThroughHolePad(fp)})
 	}
 	for i := 0; i < len(bodies); i++ {
 		for j := i + 1; j < len(bodies); j++ {
 			a, b := bodies[i], bodies[j]
 			if a.elevated != b.elevated {
 				continue // elevated body may overlap a low one
+			}
+			// A courtyard is the assembly envelope on ONE face. Two parts on
+			// opposite faces have no shared envelope; only a through-hole part
+			// occupies both. Without this a two-sided board reports a
+			// courtyard clash for every decap placed under its own IC.
+			if a.layer != b.layer && !a.throughH && !b.throughH {
+				continue
 			}
 			if !a.rect.Intersects(b.rect) {
 				continue
@@ -513,6 +555,17 @@ func checkCourtyardOverlap(board *core.Board, rep *Report) {
 			})
 		}
 	}
+}
+
+// hasThroughHolePad reports whether any pad is drilled, i.e. the part occupies
+// every layer rather than just fp.Layer.
+func hasThroughHolePad(fp *core.Footprint) bool {
+	for i := range fp.Pads {
+		if fp.Pads[i].Drill != nil && *fp.Pads[i].Drill > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func checkTracePad(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {

@@ -91,3 +91,20 @@ func countKind(rep Report, k Kind) int {
 	}
 	return n
 }
+
+// The script API returns whatever Summary/Detail produce; an agent that only
+// gets counts cannot fix its netlist.
+func TestReportDetailNamesTheViolations(t *testing.T) {
+	r := Report{}
+	r.add(Violation{Kind: KindFloatingPin, Severity: SeverityError,
+		Message: "pin not connected", Symbol: "U1", Net: ""})
+	r.add(Violation{Kind: KindFloatingNet, Severity: SeverityWarning,
+		Message: "net has one connection", Net: "SDA"})
+	got := r.Detail()
+	for _, want := range []string{"1 errors", "1 warnings", "pin not connected",
+		"sym=U1", "net=SDA"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Detail() missing %q:\n%s", want, got)
+		}
+	}
+}
