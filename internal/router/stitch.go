@@ -172,42 +172,70 @@ func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
 		}
 		xmin, ymin, xmax, ymax := pourBoundsMM(board, pr)
 		margin := math.Max(dia/2+0.4, 0.8)
-		for x := xmin + margin; x <= xmax-margin+1e-9; x += pitch {
-			for y := ymin + margin; y <= ymax-margin+1e-9; y += pitch {
-				if !pointInPourRegion(board, pr, x, y) {
-					continue
+		// A pour that only has to be TIED wants one via per island, not a
+		// carpet: `stitch` used to lay a via on every grid site of a pour it
+		// was merely connecting, which on a 2-layer board where the second
+		// poured rail is a set of slivers meant 206 vias to solve a two-via
+		// problem.
+		tieOnly := !pr.StitchRequested()
+		sweep := func(pitch float64) int {
+			n := 0
+			for x := xmin + margin; x <= xmax-margin+1e-9; x += pitch {
+				for y := ymin + margin; y <= ymax-margin+1e-9; y += pitch {
+					if !pointInPourRegion(board, pr, x, y) {
+						continue
+					}
+					// The barrel, not just the centre, has to clear the void.
+					if pointInPourVoidMargin(board, x, y, dia/2) {
+						continue
+					}
+					if !outlineContains(board.Outline, x, y, 0.4) {
+						continue
+					}
+					if fanoutHitsPad(board, x, y, dia/2+0.15, nil, -1) {
+						continue
+					}
+					if !holeSiteOK(board, x, y, drill) {
+						continue
+					}
+					if viaNear(board, x, y, pitch*0.45) {
+						continue
+					}
+					snapV := len(board.Vias)
+					board.Vias = append(board.Vias, core.Via{
+						ID:       core.NewID(),
+						Net:      pr.Net,
+						Position: core.NewPoint(core.FromMM(x), core.FromMM(y)),
+						Drill:    core.FromMM(drill),
+						Diameter: core.FromMM(dia),
+					})
+					// The stitch adds a via and no trace, so the trace-only
+					// check could never fail: validate the barrel itself.
+					if !viaClearanceFrom(board, snapV, commitClearance(board)) {
+						board.Vias = board.Vias[:snapV]
+						continue
+					}
+					n++
+					if tieOnly && !pourNeedsViaTie(board, pr) {
+						return n
+					}
 				}
-				// The barrel, not just the centre, has to clear the void.
-				if pointInPourVoidMargin(board, x, y, dia/2) {
-					continue
-				}
-				if !outlineContains(board.Outline, x, y, 0.4) {
-					continue
-				}
-				if fanoutHitsPad(board, x, y, dia/2+0.15, nil, -1) {
-					continue
-				}
-				if !holeSiteOK(board, x, y, drill) {
-					continue
-				}
-				if viaNear(board, x, y, pitch*0.45) {
-					continue
-				}
-				snapV := len(board.Vias)
-				board.Vias = append(board.Vias, core.Via{
-					ID:       core.NewID(),
-					Net:      pr.Net,
-					Position: core.NewPoint(core.FromMM(x), core.FromMM(y)),
-					Drill:    core.FromMM(drill),
-					Diameter: core.FromMM(dia),
-				})
-				// The stitch adds a via and no trace, so the trace-only
-				// check could never fail: validate the barrel itself.
-				if !viaClearanceFrom(board, snapV, commitClearance(board)) {
-					board.Vias = board.Vias[:snapV]
-					continue
-				}
-				added++
+			}
+			return n
+		}
+		// Step the grid down before giving up. A pour squeezed into 0.5 mm
+		// slivers - which is what the SECOND poured net on a two-layer board
+		// always is - has no legal site on the 2.54 mm default grid at all, so
+		// the pour came out isolated and DRC reported net_split on a rail that
+		// was supposed to be a plane.
+		for p := pitch; p >= 0.44; p /= 2 {
+			n := sweep(p)
+			added += n
+			if tieOnly && !pourNeedsViaTie(board, pr) {
+				break
+			}
+			if !tieOnly && n > 0 {
+				break
 			}
 		}
 	}

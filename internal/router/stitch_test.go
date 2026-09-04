@@ -123,3 +123,47 @@ func TestStitchKeepsViasOutOfVoids(t *testing.T) {
 		}
 	}
 }
+
+// The second poured net on a two-layer board is a set of slivers. The default
+// 2.54 mm stitch grid lands no legal site inside one, so the pour used to come
+// out isolated - and when it did stitch, it carpeted every grid site instead of
+// stopping at the via that tied it.
+func TestStitchTiesSliverPourWithoutCarpeting(t *testing.T) {
+	n3v3 := "+3V3"
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(30)))
+	b.Outline = &o
+	// One +3V3 pad on each face, so the pour on either face needs a via tie.
+	top := &core.Footprint{
+		ID: core.NewID(), Reference: "U1", Layer: core.LayerTop,
+		Position: core.NewPoint(core.FromMM(8), core.FromMM(15)),
+		Pads: []core.Pad{{Number: "1", Offset: core.Origin,
+			Size:  [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Layer: core.LayerTop, Net: &n3v3}},
+	}
+	bot := &core.Footprint{
+		ID: core.NewID(), Reference: "C1", Layer: core.LayerBottom,
+		Position: core.NewPoint(core.FromMM(22), core.FromMM(15)),
+		Pads: []core.Pad{{Number: "1", Offset: core.Origin,
+			Size:  [2]core.Length{core.FromMM(1), core.FromMM(1)},
+			Layer: core.LayerBottom, Net: &n3v3}},
+	}
+	b.AddFootprint(top)
+	b.AddFootprint(bot)
+	b.Pours = append(b.Pours,
+		core.Pour{ID: core.NewID(), Net: "+3V3", Layer: core.LayerTop},
+		core.Pour{ID: core.NewID(), Net: "+3V3", Layer: core.LayerBottom})
+
+	added := StitchIsolatedPads(b, DefaultOptions())
+	if added == 0 {
+		t.Fatal("expected the pours to be tied")
+	}
+	if added > 8 {
+		t.Fatalf("tying two pours should not need %d vias", added)
+	}
+	for i := range b.Pours {
+		if pourNeedsViaTie(b, &b.Pours[i]) {
+			t.Fatalf("pour on layer %d still needs a tie", b.Pours[i].Layer.Index)
+		}
+	}
+}
