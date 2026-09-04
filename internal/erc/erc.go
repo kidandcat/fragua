@@ -80,11 +80,14 @@ const maxDetail = 24
 func (r Report) Detail() string {
 	var b strings.Builder
 	b.WriteString(r.Summary())
-	n := len(r.Violations)
+	// Errors first: the cap must never hide the one error behind a page of warnings.
+	vs := append([]Violation(nil), r.Violations...)
+	sort.SliceStable(vs, func(i, j int) bool { return vs[i].Severity == SeverityError && vs[j].Severity != SeverityError })
+	n := len(vs)
 	if n > maxDetail {
 		n = maxDetail
 	}
-	for _, v := range r.Violations[:n] {
+	for _, v := range vs[:n] {
 		b.WriteString(fmt.Sprintf("\n  %s %s", v.Severity, v.Kind))
 		if v.Net != "" {
 			b.WriteString(" net=" + v.Net)
