@@ -60,8 +60,10 @@ func (e *exporter) field2(uid, name, value, layer string) {
 const edgeStrokeMM = 0.1
 
 // emitEdge writes the board outline and every internal cutout on Edge.Cuts as
-// closed loops — the same outer path the gerber writer uses, so the two packs
-// cannot disagree about where the board ends.
+// closed loops. A corner radius is honoured with real arcs — note that the
+// gerber writer currently plots the sharp rectangle instead (it follows the
+// Rust outer_path, which drops the radius), so the two packs differ at the
+// corners until that is fixed on the gerber side.
 func (e *exporter) emitEdge() {
 	switch {
 	case len(e.board.OutlinePoly) >= 3:
