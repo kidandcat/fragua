@@ -1,0 +1,6008 @@
+{
+  "name": "rp2040-minimal",
+  "board": {
+    "outline": {
+      "min": {
+        "x": 0,
+        "y": 0
+      },
+      "max": {
+        "x": 36000000,
+        "y": 30000000
+      }
+    },
+    "outline_corner_radius": 1500000,
+    "footprints": {
+      "869c8084-fcb8-4280-bfff-f536db789f8b": {
+        "id": "869c8084-fcb8-4280-bfff-f536db789f8b",
+        "reference": "C3",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 25421549,
+          "y": 20663763
+        },
+        "rotation": 180.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "IOVDD3 decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "76b870a8-c1b5-4e45-8c5e-981afa42891b": {
+        "id": "76b870a8-c1b5-4e45-8c5e-981afa42891b",
+        "reference": "C13",
+        "value": "10uF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 33391854,
+          "y": 2067970
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "LDO in",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "987e5578-e772-4ecb-a69b-39570e4d7e1e": {
+        "id": "987e5578-e772-4ecb-a69b-39570e4d7e1e",
+        "reference": "J2",
+        "value": "",
+        "library": "library:header_1x03_2.54mm",
+        "position": {
+          "x": 35150000,
+          "y": 21458700
+        },
+        "rotation": 270.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "SWDIO",
+            "offset": {
+              "x": -2540000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "SWDIO",
+            "drill": 1000000
+          },
+          {
+            "number": "2",
+            "name": "GND",
+            "offset": {
+              "x": 0,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GND",
+            "drill": 1000000
+          },
+          {
+            "number": "3",
+            "name": "SWCLK",
+            "offset": {
+              "x": 2540000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "SWCLK",
+            "drill": 1000000
+          }
+        ],
+        "key": "header_1x03_2.54mm",
+        "description": "SWD",
+        "edge_mounted": true,
+        "edge_side": "top",
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 2000000
+            },
+            "text": "{REF}",
+            "size": 700000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 87500
+          }
+        ]
+      },
+      "786aaff0-0251-424e-a632-5bfa41b02de6": {
+        "id": "786aaff0-0251-424e-a632-5bfa41b02de6",
+        "reference": "J3",
+        "value": "",
+        "library": "library:header_1x10_2.54mm",
+        "position": {
+          "x": 1173344,
+          "y": 13609674
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "P1",
+            "offset": {
+              "x": -11430000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO0",
+            "drill": 1000000
+          },
+          {
+            "number": "2",
+            "name": "P2",
+            "offset": {
+              "x": -8890000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO1",
+            "drill": 1000000
+          },
+          {
+            "number": "3",
+            "name": "P3",
+            "offset": {
+              "x": -6350000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO2",
+            "drill": 1000000
+          },
+          {
+            "number": "4",
+            "name": "P4",
+            "offset": {
+              "x": -3810000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO3",
+            "drill": 1000000
+          },
+          {
+            "number": "5",
+            "name": "P5",
+            "offset": {
+              "x": -1270000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO4",
+            "drill": 1000000
+          },
+          {
+            "number": "6",
+            "name": "P6",
+            "offset": {
+              "x": 1270000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO5",
+            "drill": 1000000
+          },
+          {
+            "number": "7",
+            "name": "P7",
+            "offset": {
+              "x": 3810000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO6",
+            "drill": 1000000
+          },
+          {
+            "number": "8",
+            "name": "P8",
+            "offset": {
+              "x": 6350000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO7",
+            "drill": 1000000
+          },
+          {
+            "number": "9",
+            "name": "P9",
+            "offset": {
+              "x": 8890000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO8",
+            "drill": 1000000
+          },
+          {
+            "number": "10",
+            "name": "P10",
+            "offset": {
+              "x": 11430000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "GPIO9",
+            "drill": 1000000
+          }
+        ],
+        "key": "header_1x10_2.54mm",
+        "description": "GPIO A",
+        "edge_mounted": true,
+        "edge_side": "top",
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 2000000
+            },
+            "text": "{REF}",
+            "size": 700000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 87500
+          }
+        ]
+      },
+      "f8e1a9e9-38a9-4624-8f65-f4e7b8b50b75": {
+        "id": "f8e1a9e9-38a9-4624-8f65-f4e7b8b50b75",
+        "reference": "SW1",
+        "value": "BOOT",
+        "library": "library:sw_smd_4x4",
+        "position": {
+          "x": 6756738,
+          "y": 22810777
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -1500000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SS"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 1500000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "3",
+            "name": "3",
+            "offset": {
+              "x": 1500000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "4",
+            "name": "4",
+            "offset": {
+              "x": -1500000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SS"
+          }
+        ],
+        "key": "sw_smd_4x4",
+        "description": "BOOTSEL",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": -2000000
+            },
+            "end": {
+              "x": 2000000,
+              "y": -2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": -2000000
+            },
+            "end": {
+              "x": 2000000,
+              "y": 2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": 2000000
+            },
+            "end": {
+              "x": -2000000,
+              "y": 2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": 2000000
+            },
+            "end": {
+              "x": -2000000,
+              "y": -2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 600000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 75000
+          }
+        ]
+      },
+      "c355e8d0-7f04-4e4f-a765-01f21a181c80": {
+        "id": "c355e8d0-7f04-4e4f-a765-01f21a181c80",
+        "reference": "R7",
+        "value": "470",
+        "library": "library:r_0603",
+        "position": {
+          "x": 25393052,
+          "y": 16577497
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GPIO25"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "LED_A"
+          }
+        ],
+        "key": "r_0603",
+        "description": "LED series",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "5260a51d-1adb-4681-badb-c776ee0c2445": {
+        "id": "5260a51d-1adb-4681-badb-c776ee0c2445",
+        "reference": "C4",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 26406410,
+          "y": 24393368
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "IOVDD4 decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "65d475d1-fb82-40ec-b6f0-3d27da10da94": {
+        "id": "65d475d1-fb82-40ec-b6f0-3d27da10da94",
+        "reference": "R5",
+        "value": "1k",
+        "library": "library:r_0603",
+        "position": {
+          "x": 5742097,
+          "y": 13533781
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SS"
+          }
+        ],
+        "key": "r_0603",
+        "description": "BOOTSEL pullup",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "abd319b7-89fc-4af9-90b9-e582f441e624": {
+        "id": "abd319b7-89fc-4af9-90b9-e582f441e624",
+        "reference": "C10",
+        "value": "1uF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 29506961,
+          "y": 22275263
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "VREG_VIN bulk",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "c763dcbd-3b01-4681-8bd0-5627df41264b": {
+        "id": "c763dcbd-3b01-4681-8bd0-5627df41264b",
+        "reference": "R3",
+        "value": "5.1k",
+        "library": "library:r_0603",
+        "position": {
+          "x": 13730000,
+          "y": 1300000
+        },
+        "rotation": 180.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "CC1"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "r_0603",
+        "description": "CC1 RD",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "3f83a4b1-d6ef-4674-b205-4e0f19acc8c4": {
+        "id": "3f83a4b1-d6ef-4674-b205-4e0f19acc8c4",
+        "reference": "Y1",
+        "value": "12MHz",
+        "library": "library:xtal_3225",
+        "position": {
+          "x": 9274666,
+          "y": 16479973
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "X1",
+            "offset": {
+              "x": -1100000,
+              "y": -850000
+            },
+            "size": [
+              1200000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "XIN"
+          },
+          {
+            "number": "2",
+            "name": "GND1",
+            "offset": {
+              "x": 1100000,
+              "y": -850000
+            },
+            "size": [
+              1200000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "3",
+            "name": "X2",
+            "offset": {
+              "x": 1100000,
+              "y": 850000
+            },
+            "size": [
+              1200000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "XOUT"
+          },
+          {
+            "number": "4",
+            "name": "GND2",
+            "offset": {
+              "x": -1100000,
+              "y": 850000
+            },
+            "size": [
+              1200000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "xtal_3225",
+        "description": "12MHz crystal",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -1600000,
+              "y": -1250000
+            },
+            "end": {
+              "x": 1600000,
+              "y": -1250000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 1600000,
+              "y": -1250000
+            },
+            "end": {
+              "x": 1600000,
+              "y": 1250000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 1600000,
+              "y": 1250000
+            },
+            "end": {
+              "x": -1600000,
+              "y": 1250000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -1600000,
+              "y": 1250000
+            },
+            "end": {
+              "x": -1600000,
+              "y": -1250000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 600000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 75000
+          }
+        ]
+      },
+      "90c67ee2-5610-4dab-bb02-153bfad3d053": {
+        "id": "90c67ee2-5610-4dab-bb02-153bfad3d053",
+        "reference": "R4",
+        "value": "5.1k",
+        "library": "library:r_0603",
+        "position": {
+          "x": 29270000,
+          "y": 1300000
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "CC2"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "r_0603",
+        "description": "CC2 RD",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "a909adba-3a6a-4764-af99-a16a4b280dd5": {
+        "id": "a909adba-3a6a-4764-af99-a16a4b280dd5",
+        "reference": "C16",
+        "value": "27pF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 12749649,
+          "y": 17651627
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "XOUT"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "xtal load2",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "44d24c4f-5154-46de-bfe8-864c14ad4ff7": {
+        "id": "44d24c4f-5154-46de-bfe8-864c14ad4ff7",
+        "reference": "R1",
+        "value": "27",
+        "library": "library:r_0603",
+        "position": {
+          "x": 23950000,
+          "y": 6770000
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "USB_DM"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "USB_DM_MCU"
+          }
+        ],
+        "key": "r_0603",
+        "description": "USB DM series",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "45cb1e00-2b55-405e-8ec1-aa662b018847": {
+        "id": "45cb1e00-2b55-405e-8ec1-aa662b018847",
+        "reference": "R2",
+        "value": "27",
+        "library": "library:r_0603",
+        "position": {
+          "x": 20981298,
+          "y": 6790334
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "USB_DP"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "USB_DP_MCU"
+          }
+        ],
+        "key": "r_0603",
+        "description": "USB DP series",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "8b82b43f-a72d-434a-9a16-708920cee2c6": {
+        "id": "8b82b43f-a72d-434a-9a16-708920cee2c6",
+        "reference": "SW2",
+        "value": "RESET",
+        "library": "library:sw_smd_4x4",
+        "position": {
+          "x": 6750061,
+          "y": 3594410
+        },
+        "rotation": 270.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -1500000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "RUN"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 1500000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "3",
+            "name": "3",
+            "offset": {
+              "x": 1500000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "4",
+            "name": "4",
+            "offset": {
+              "x": -1500000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              800000
+            ],
+            "layer": "Top",
+            "net": "RUN"
+          }
+        ],
+        "key": "sw_smd_4x4",
+        "description": "RESET",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": -2000000
+            },
+            "end": {
+              "x": 2000000,
+              "y": -2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": -2000000
+            },
+            "end": {
+              "x": 2000000,
+              "y": 2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": 2000000
+            },
+            "end": {
+              "x": -2000000,
+              "y": 2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": 2000000
+            },
+            "end": {
+              "x": -2000000,
+              "y": -2000000
+            },
+            "width": 100000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 600000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 75000
+          }
+        ]
+      },
+      "e5028238-b044-4169-9fe2-774ca2854e84": {
+        "id": "e5028238-b044-4169-9fe2-774ca2854e84",
+        "reference": "R8",
+        "value": "1k",
+        "library": "library:r_0603",
+        "position": {
+          "x": 33313846,
+          "y": 7710994
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          }
+        ],
+        "key": "r_0603",
+        "description": "LDO EN to VIN",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "b73e60b6-c097-4d95-a062-3dbb4492c62f": {
+        "id": "b73e60b6-c097-4d95-a062-3dbb4492c62f",
+        "reference": "C14",
+        "value": "10uF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 25470000,
+          "y": 12400000
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "LDO out",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "f876bbbd-81b5-48ef-98b0-dbf6736afc2c": {
+        "id": "f876bbbd-81b5-48ef-98b0-dbf6736afc2c",
+        "reference": "C8",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 8665945,
+          "y": 12745359
+        },
+        "rotation": 270.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "USB_VDD decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "1621c66d-32f3-463f-85d2-fcfbc209dac8": {
+        "id": "1621c66d-32f3-463f-85d2-fcfbc209dac8",
+        "reference": "U2",
+        "value": "",
+        "library": "library:w25q16_soic8",
+        "position": {
+          "x": 16173494,
+          "y": 7918323
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "CS",
+            "offset": {
+              "x": -2700000,
+              "y": 1905000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SS"
+          },
+          {
+            "number": "2",
+            "name": "DO",
+            "offset": {
+              "x": -2700000,
+              "y": 635000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD1"
+          },
+          {
+            "number": "3",
+            "name": "WP",
+            "offset": {
+              "x": -2700000,
+              "y": -635000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD2"
+          },
+          {
+            "number": "4",
+            "name": "GND",
+            "offset": {
+              "x": -2700000,
+              "y": -1905000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "8",
+            "name": "VCC",
+            "offset": {
+              "x": 2700000,
+              "y": 1905000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "7",
+            "name": "HOLD",
+            "offset": {
+              "x": 2700000,
+              "y": 635000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD3"
+          },
+          {
+            "number": "6",
+            "name": "CLK",
+            "offset": {
+              "x": 2700000,
+              "y": -635000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SCLK"
+          },
+          {
+            "number": "5",
+            "name": "DI",
+            "offset": {
+              "x": 2700000,
+              "y": -1905000
+            },
+            "size": [
+              1550000,
+              600000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD0"
+          }
+        ],
+        "key": "w25q16_soic8",
+        "description": "16Mbit QSPI flash",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": -2600000
+            },
+            "end": {
+              "x": 2000000,
+              "y": -2600000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": -2600000
+            },
+            "end": {
+              "x": 2000000,
+              "y": 2600000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 2000000,
+              "y": 2600000
+            },
+            "end": {
+              "x": -2000000,
+              "y": 2600000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -2000000,
+              "y": 2600000
+            },
+            "end": {
+              "x": -2000000,
+              "y": -2600000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 700000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 87500
+          }
+        ]
+      },
+      "b70d5c30-ae0d-4f5f-b140-c66a176e2216": {
+        "id": "b70d5c30-ae0d-4f5f-b140-c66a176e2216",
+        "reference": "C9",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 17986677,
+          "y": 23575860
+        },
+        "rotation": 270.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "ADC_AVDD decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "beab38bc-c4e4-4f7f-9bbf-f6b5249f9470": {
+        "id": "beab38bc-c4e4-4f7f-9bbf-f6b5249f9470",
+        "reference": "C11",
+        "value": "2.2uF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 12555062,
+          "y": 22047587
+        },
+        "rotation": 270.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "VREG_VOUT bulk",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "e4b2465b-9e0f-4fe1-8072-cd2092e938b9": {
+        "id": "e4b2465b-9e0f-4fe1-8072-cd2092e938b9",
+        "reference": "D1",
+        "value": "green",
+        "library": "library:led_0603",
+        "position": {
+          "x": 29343071,
+          "y": 17417452
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "A",
+            "offset": {
+              "x": -750000,
+              "y": 0
+            },
+            "size": [
+              800000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "LED_A"
+          },
+          {
+            "number": "2",
+            "name": "K",
+            "offset": {
+              "x": 750000,
+              "y": 0
+            },
+            "size": [
+              800000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "led_0603",
+        "description": "GPIO25 LED",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": []
+      },
+      "c45f89ec-aec6-4ecf-9e46-7b98f01b95a2": {
+        "id": "c45f89ec-aec6-4ecf-9e46-7b98f01b95a2",
+        "reference": "C17",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 29387630,
+          "y": 13583734
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "LDO_BYP"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "LDO bypass",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "6c4a8ca0-dec7-4d93-a21c-6677f140d81e": {
+        "id": "6c4a8ca0-dec7-4d93-a21c-6677f140d81e",
+        "reference": "C5",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 11530000,
+          "y": 12400000
+        },
+        "rotation": 180.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "IOVDD5 decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "8da6f93a-caf1-4607-9bc9-db11156de0be": {
+        "id": "8da6f93a-caf1-4607-9bc9-db11156de0be",
+        "reference": "C2",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 23885041,
+          "y": 24479474
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "IOVDD2 decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "db26efda-9f20-465b-9970-a2da65aa98eb": {
+        "id": "db26efda-9f20-465b-9970-a2da65aa98eb",
+        "reference": "C12",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 32415191,
+          "y": 15186316
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "flash VCC",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "3a572a99-18b0-4859-917b-04ae517eedc3": {
+        "id": "3a572a99-18b0-4859-917b-04ae517eedc3",
+        "reference": "J1",
+        "value": "",
+        "library": "library:usbc_16p",
+        "position": {
+          "x": 22000000,
+          "y": 1300000
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "GND1",
+            "offset": {
+              "x": -3250000,
+              "y": 0
+            },
+            "size": [
+              700000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "2",
+            "name": "VBUS1",
+            "offset": {
+              "x": -2400000,
+              "y": 0
+            },
+            "size": [
+              550000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "3",
+            "name": "CC1",
+            "offset": {
+              "x": -1550000,
+              "y": 0
+            },
+            "size": [
+              450000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "CC1"
+          },
+          {
+            "number": "4",
+            "name": "DP",
+            "offset": {
+              "x": -700000,
+              "y": 0
+            },
+            "size": [
+              400000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "USB_DP"
+          },
+          {
+            "number": "5",
+            "name": "DM",
+            "offset": {
+              "x": 0,
+              "y": 0
+            },
+            "size": [
+              400000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "USB_DM"
+          },
+          {
+            "number": "6",
+            "name": "SBU",
+            "offset": {
+              "x": 700000,
+              "y": 0
+            },
+            "size": [
+              400000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "7",
+            "name": "CC2",
+            "offset": {
+              "x": 1550000,
+              "y": 0
+            },
+            "size": [
+              450000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "CC2"
+          },
+          {
+            "number": "8",
+            "name": "VBUS2",
+            "offset": {
+              "x": 2400000,
+              "y": 0
+            },
+            "size": [
+              550000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "9",
+            "name": "GND2",
+            "offset": {
+              "x": 3250000,
+              "y": 0
+            },
+            "size": [
+              700000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "10",
+            "name": "SH1",
+            "offset": {
+              "x": -4200000,
+              "y": -500000
+            },
+            "size": [
+              1600000,
+              1600000
+            ],
+            "layer": "Top",
+            "net": "GND",
+            "drill": 900000
+          },
+          {
+            "number": "11",
+            "name": "SH2",
+            "offset": {
+              "x": 4200000,
+              "y": -500000
+            },
+            "size": [
+              1600000,
+              1600000
+            ],
+            "layer": "Top",
+            "net": "GND",
+            "drill": 900000
+          }
+        ],
+        "key": "usbc_16p",
+        "description": "USB-C",
+        "edge_mounted": true,
+        "edge_side": "bottom",
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -4500000,
+              "y": 1000000
+            },
+            "end": {
+              "x": 4500000,
+              "y": 1000000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1800000
+            },
+            "text": "{REF}",
+            "size": 700000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 87500
+          }
+        ]
+      },
+      "ad376ffb-0fc7-445d-80a6-1a18fa010c0e": {
+        "id": "ad376ffb-0fc7-445d-80a6-1a18fa010c0e",
+        "reference": "C6",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 20077692,
+          "y": 24190008
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "DVDD decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "f7cf4563-0b6e-4cb8-8ecf-4ceac398fa6d": {
+        "id": "f7cf4563-0b6e-4cb8-8ecf-4ceac398fa6d",
+        "reference": "J4",
+        "value": "",
+        "library": "library:header_1x10_2.54mm",
+        "position": {
+          "x": 22861944,
+          "y": 28708792
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "P1",
+            "offset": {
+              "x": -11430000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "HDRB1",
+            "drill": 1000000
+          },
+          {
+            "number": "2",
+            "name": "P2",
+            "offset": {
+              "x": -8890000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "HDRB2",
+            "drill": 1000000
+          },
+          {
+            "number": "3",
+            "name": "P3",
+            "offset": {
+              "x": -6350000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "HDRB3",
+            "drill": 1000000
+          },
+          {
+            "number": "4",
+            "name": "P4",
+            "offset": {
+              "x": -3810000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "HDRB4",
+            "drill": 1000000
+          },
+          {
+            "number": "5",
+            "name": "P5",
+            "offset": {
+              "x": -1270000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": "HDRB5",
+            "drill": 1000000
+          },
+          {
+            "number": "6",
+            "name": "P6",
+            "offset": {
+              "x": 1270000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": null,
+            "drill": 1000000
+          },
+          {
+            "number": "7",
+            "name": "P7",
+            "offset": {
+              "x": 3810000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": null,
+            "drill": 1000000
+          },
+          {
+            "number": "8",
+            "name": "P8",
+            "offset": {
+              "x": 6350000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": null,
+            "drill": 1000000
+          },
+          {
+            "number": "9",
+            "name": "P9",
+            "offset": {
+              "x": 8890000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": null,
+            "drill": 1000000
+          },
+          {
+            "number": "10",
+            "name": "P10",
+            "offset": {
+              "x": 11430000,
+              "y": 0
+            },
+            "size": [
+              1700000,
+              1700000
+            ],
+            "layer": "Top",
+            "net": null,
+            "drill": 1000000
+          }
+        ],
+        "key": "header_1x10_2.54mm",
+        "description": "GPIO B",
+        "edge_mounted": true,
+        "edge_side": "top",
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 2000000
+            },
+            "text": "{REF}",
+            "size": 700000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 87500
+          }
+        ]
+      },
+      "ab87ba54-fe8f-4691-8211-b85e841ec2d7": {
+        "id": "ab87ba54-fe8f-4691-8211-b85e841ec2d7",
+        "reference": "C1",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 15276239,
+          "y": 24350640
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "IOVDD decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "06dea41e-c046-4c2b-b0e9-8e0f5cedea78": {
+        "id": "06dea41e-c046-4c2b-b0e9-8e0f5cedea78",
+        "reference": "U1",
+        "value": "",
+        "library": "library:rp2040_qfn56",
+        "position": {
+          "x": 18000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "IOVDD",
+            "offset": {
+              "x": -3450000,
+              "y": -2600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "GPIO0",
+            "offset": {
+              "x": -3450000,
+              "y": -2200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO0"
+          },
+          {
+            "number": "3",
+            "name": "GPIO1",
+            "offset": {
+              "x": -3450000,
+              "y": -1800000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO1"
+          },
+          {
+            "number": "4",
+            "name": "GPIO2",
+            "offset": {
+              "x": -3450000,
+              "y": -1400000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO2"
+          },
+          {
+            "number": "5",
+            "name": "GPIO3",
+            "offset": {
+              "x": -3450000,
+              "y": -1000000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO3"
+          },
+          {
+            "number": "6",
+            "name": "GPIO4",
+            "offset": {
+              "x": -3450000,
+              "y": -600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO4"
+          },
+          {
+            "number": "7",
+            "name": "GPIO5",
+            "offset": {
+              "x": -3450000,
+              "y": -200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO5"
+          },
+          {
+            "number": "8",
+            "name": "GPIO6",
+            "offset": {
+              "x": -3450000,
+              "y": 200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO6"
+          },
+          {
+            "number": "9",
+            "name": "GPIO7",
+            "offset": {
+              "x": -3450000,
+              "y": 600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO7"
+          },
+          {
+            "number": "10",
+            "name": "GPIO8",
+            "offset": {
+              "x": -3450000,
+              "y": 1000000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO8"
+          },
+          {
+            "number": "11",
+            "name": "GPIO9",
+            "offset": {
+              "x": -3450000,
+              "y": 1400000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO9"
+          },
+          {
+            "number": "12",
+            "name": "GPIO10",
+            "offset": {
+              "x": -3450000,
+              "y": 1800000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "13",
+            "name": "GPIO11",
+            "offset": {
+              "x": -3450000,
+              "y": 2200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "14",
+            "name": "GPIO12",
+            "offset": {
+              "x": -3450000,
+              "y": 2600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "15",
+            "name": "GPIO13",
+            "offset": {
+              "x": -2600000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "16",
+            "name": "GPIO14",
+            "offset": {
+              "x": -2200000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "17",
+            "name": "GPIO15",
+            "offset": {
+              "x": -1800000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "18",
+            "name": "TESTEN",
+            "offset": {
+              "x": -1400000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "19",
+            "name": "XIN",
+            "offset": {
+              "x": -1000000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "XIN"
+          },
+          {
+            "number": "20",
+            "name": "XOUT",
+            "offset": {
+              "x": -600000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "XOUT"
+          },
+          {
+            "number": "21",
+            "name": "IOVDD2",
+            "offset": {
+              "x": -200000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "22",
+            "name": "DVDD",
+            "offset": {
+              "x": 200000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "23",
+            "name": "SWCLK",
+            "offset": {
+              "x": 600000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "SWCLK"
+          },
+          {
+            "number": "24",
+            "name": "SWD",
+            "offset": {
+              "x": 1000000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "SWDIO"
+          },
+          {
+            "number": "25",
+            "name": "RUN",
+            "offset": {
+              "x": 1400000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "RUN"
+          },
+          {
+            "number": "26",
+            "name": "GPIO16",
+            "offset": {
+              "x": 1800000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "HDRB1"
+          },
+          {
+            "number": "27",
+            "name": "GPIO17",
+            "offset": {
+              "x": 2200000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "HDRB2"
+          },
+          {
+            "number": "28",
+            "name": "GPIO18",
+            "offset": {
+              "x": 2600000,
+              "y": 3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "HDRB3"
+          },
+          {
+            "number": "29",
+            "name": "GPIO19",
+            "offset": {
+              "x": 3450000,
+              "y": 2600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "HDRB4"
+          },
+          {
+            "number": "30",
+            "name": "GPIO20",
+            "offset": {
+              "x": 3450000,
+              "y": 2200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "HDRB5"
+          },
+          {
+            "number": "31",
+            "name": "GPIO21",
+            "offset": {
+              "x": 3450000,
+              "y": 1800000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "32",
+            "name": "GPIO22",
+            "offset": {
+              "x": 3450000,
+              "y": 1400000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "33",
+            "name": "GPIO23",
+            "offset": {
+              "x": 3450000,
+              "y": 1000000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "34",
+            "name": "GPIO24",
+            "offset": {
+              "x": 3450000,
+              "y": 600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "35",
+            "name": "GPIO25",
+            "offset": {
+              "x": 3450000,
+              "y": 200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "GPIO25"
+          },
+          {
+            "number": "36",
+            "name": "GPIO26",
+            "offset": {
+              "x": 3450000,
+              "y": -200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "37",
+            "name": "GPIO27",
+            "offset": {
+              "x": 3450000,
+              "y": -600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "38",
+            "name": "GPIO28",
+            "offset": {
+              "x": 3450000,
+              "y": -1000000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "39",
+            "name": "GPIO29",
+            "offset": {
+              "x": 3450000,
+              "y": -1400000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "40",
+            "name": "IOVDD3",
+            "offset": {
+              "x": 3450000,
+              "y": -1800000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "41",
+            "name": "ADC_AVDD",
+            "offset": {
+              "x": 3450000,
+              "y": -2200000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "42",
+            "name": "VREG_VIN",
+            "offset": {
+              "x": 3450000,
+              "y": -2600000
+            },
+            "size": [
+              500000,
+              200000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "43",
+            "name": "VREG_VOUT",
+            "offset": {
+              "x": 2600000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "44",
+            "name": "USB_DM",
+            "offset": {
+              "x": 2200000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "USB_DM_MCU"
+          },
+          {
+            "number": "45",
+            "name": "USB_DP",
+            "offset": {
+              "x": 1800000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "USB_DP_MCU"
+          },
+          {
+            "number": "46",
+            "name": "USB_VDD",
+            "offset": {
+              "x": 1400000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "47",
+            "name": "IOVDD4",
+            "offset": {
+              "x": 1000000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "48",
+            "name": "DVDD2",
+            "offset": {
+              "x": 600000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "49",
+            "name": "QSPI_SD3",
+            "offset": {
+              "x": 200000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD3"
+          },
+          {
+            "number": "50",
+            "name": "QSPI_SCLK",
+            "offset": {
+              "x": -200000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SCLK"
+          },
+          {
+            "number": "51",
+            "name": "QSPI_SD0",
+            "offset": {
+              "x": -600000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD0"
+          },
+          {
+            "number": "52",
+            "name": "QSPI_SD2",
+            "offset": {
+              "x": -1000000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD2"
+          },
+          {
+            "number": "53",
+            "name": "QSPI_SD1",
+            "offset": {
+              "x": -1400000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SD1"
+          },
+          {
+            "number": "54",
+            "name": "QSPI_SS",
+            "offset": {
+              "x": -1800000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "QSPI_SS"
+          },
+          {
+            "number": "55",
+            "name": "GND",
+            "offset": {
+              "x": -2200000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "56",
+            "name": "IOVDD5",
+            "offset": {
+              "x": -2600000,
+              "y": -3450000
+            },
+            "size": [
+              200000,
+              500000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "57",
+            "name": "GND_EP",
+            "offset": {
+              "x": 0,
+              "y": 0
+            },
+            "size": [
+              1600000,
+              1600000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "rp2040_qfn56",
+        "description": "RP2040 MCU",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -3500000,
+              "y": -3500000
+            },
+            "end": {
+              "x": 3500000,
+              "y": -3500000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 3500000,
+              "y": -3500000
+            },
+            "end": {
+              "x": 3500000,
+              "y": 3500000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": 3500000,
+              "y": 3500000
+            },
+            "end": {
+              "x": -3500000,
+              "y": 3500000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -3500000,
+              "y": 3500000
+            },
+            "end": {
+              "x": -3500000,
+              "y": -3500000
+            },
+            "width": 120000
+          },
+          {
+            "kind": "line",
+            "layer": "Top",
+            "start": {
+              "x": -3800000,
+              "y": -2600000
+            },
+            "end": {
+              "x": -3800000,
+              "y": -2000000
+            },
+            "width": 150000
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 800000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 100000
+          }
+        ]
+      },
+      "a82f0530-a85d-488a-827e-abd6b6531b41": {
+        "id": "a82f0530-a85d-488a-827e-abd6b6531b41",
+        "reference": "C7",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 19394004,
+          "y": 20664534
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+1V1"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "DVDD2 decap",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "b83af47b-b24f-4e70-ac65-1b4451aace01": {
+        "id": "b83af47b-b24f-4e70-ac65-1b4451aace01",
+        "reference": "U3",
+        "value": "",
+        "library": "library:ldo_sot23_5",
+        "position": {
+          "x": 28093846,
+          "y": 8710994
+        },
+        "rotation": 90.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "IN",
+            "offset": {
+              "x": -950000,
+              "y": -1000000
+            },
+            "size": [
+              600000,
+              900000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "2",
+            "name": "GND",
+            "offset": {
+              "x": 0,
+              "y": -1000000
+            },
+            "size": [
+              600000,
+              900000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "3",
+            "name": "EN",
+            "offset": {
+              "x": 950000,
+              "y": -1000000
+            },
+            "size": [
+              600000,
+              900000
+            ],
+            "layer": "Top",
+            "net": "VBUS"
+          },
+          {
+            "number": "4",
+            "name": "BYP",
+            "offset": {
+              "x": 950000,
+              "y": 1000000
+            },
+            "size": [
+              600000,
+              900000
+            ],
+            "layer": "Top",
+            "net": "LDO_BYP"
+          },
+          {
+            "number": "5",
+            "name": "OUT",
+            "offset": {
+              "x": -950000,
+              "y": 1000000
+            },
+            "size": [
+              600000,
+              900000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          }
+        ],
+        "key": "ldo_sot23_5",
+        "description": "3.3V LDO",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 600000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 75000
+          }
+        ]
+      },
+      "e77f4536-82b0-4758-9958-32a0c78ff6c3": {
+        "id": "e77f4536-82b0-4758-9958-32a0c78ff6c3",
+        "reference": "R6",
+        "value": "10k",
+        "library": "library:r_0603",
+        "position": {
+          "x": 9384214,
+          "y": 8363254
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "RUN"
+          }
+        ],
+        "key": "r_0603",
+        "description": "RUN pullup",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1100000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      },
+      "0de445c7-111a-4b00-b82c-15e119f942c3": {
+        "id": "0de445c7-111a-4b00-b82c-15e119f942c3",
+        "reference": "C15",
+        "value": "27pF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 4915952,
+          "y": 16560362
+        },
+        "rotation": 0.0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "1",
+            "offset": {
+              "x": -775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "XIN"
+          },
+          {
+            "number": "2",
+            "name": "2",
+            "offset": {
+              "x": 775000,
+              "y": 0
+            },
+            "size": [
+              950000,
+              950000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "xtal load1",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "position": {
+              "x": 0,
+              "y": 1200000
+            },
+            "text": "{REF}",
+            "size": 500000,
+            "rotation": 0.0,
+            "anchor": "Middle",
+            "width": 62500
+          }
+        ]
+      }
+    },
+    "footprint_order": [
+      "3a572a99-18b0-4859-917b-04ae517eedc3",
+      "987e5578-e772-4ecb-a69b-39570e4d7e1e",
+      "786aaff0-0251-424e-a632-5bfa41b02de6",
+      "f7cf4563-0b6e-4cb8-8ecf-4ceac398fa6d",
+      "1621c66d-32f3-463f-85d2-fcfbc209dac8",
+      "3f83a4b1-d6ef-4674-b205-4e0f19acc8c4",
+      "b83af47b-b24f-4e70-ac65-1b4451aace01",
+      "0de445c7-111a-4b00-b82c-15e119f942c3",
+      "a909adba-3a6a-4764-af99-a16a4b280dd5",
+      "44d24c4f-5154-46de-bfe8-864c14ad4ff7",
+      "45cb1e00-2b55-405e-8ec1-aa662b018847",
+      "c763dcbd-3b01-4681-8bd0-5627df41264b",
+      "90c67ee2-5610-4dab-bb02-153bfad3d053",
+      "76b870a8-c1b5-4e45-8c5e-981afa42891b",
+      "b73e60b6-c097-4d95-a062-3dbb4492c62f",
+      "c45f89ec-aec6-4ecf-9e46-7b98f01b95a2",
+      "e5028238-b044-4169-9fe2-774ca2854e84",
+      "db26efda-9f20-465b-9970-a2da65aa98eb",
+      "ab87ba54-fe8f-4691-8211-b85e841ec2d7",
+      "8da6f93a-caf1-4607-9bc9-db11156de0be",
+      "869c8084-fcb8-4280-bfff-f536db789f8b",
+      "5260a51d-1adb-4681-badb-c776ee0c2445",
+      "6c4a8ca0-dec7-4d93-a21c-6677f140d81e",
+      "ad376ffb-0fc7-445d-80a6-1a18fa010c0e",
+      "b70d5c30-ae0d-4f5f-b140-c66a176e2216",
+      "abd319b7-89fc-4af9-90b9-e582f441e624",
+      "beab38bc-c4e4-4f7f-9bbf-f6b5249f9470",
+      "f8e1a9e9-38a9-4624-8f65-f4e7b8b50b75",
+      "8b82b43f-a72d-434a-9a16-708920cee2c6",
+      "65d475d1-fb82-40ec-b6f0-3d27da10da94",
+      "e77f4536-82b0-4758-9958-32a0c78ff6c3",
+      "c355e8d0-7f04-4e4f-a765-01f21a181c80",
+      "f876bbbd-81b5-48ef-98b0-dbf6736afc2c",
+      "e4b2465b-9e0f-4fe1-8072-cd2092e938b9",
+      "a82f0530-a85d-488a-827e-abd6b6531b41",
+      "06dea41e-c046-4c2b-b0e9-8e0f5cedea78"
+    ],
+    "traces": [],
+    "vias": [],
+    "pours": [
+      {
+        "net": "GND",
+        "layer": "Top",
+        "thermal_relief": {
+          "kind": "spokes4",
+          "spoke_width_mm": 0.4,
+          "gap_mm": 0.4
+        },
+        "stitching": {
+          "kind": "none"
+        }
+      },
+      {
+        "net": "GND",
+        "layer": "Bottom",
+        "thermal_relief": {
+          "kind": "spokes4",
+          "spoke_width_mm": 0.4,
+          "gap_mm": 0.4
+        },
+        "stitching": {
+          "kind": "none"
+        }
+      }
+    ],
+    "keepouts": [],
+    "silk_lines": [],
+    "silk_texts": [],
+    "rule_areas": [
+      {
+        "id": "11adb3e6-4797-46e3-a461-04c9fd9aa95d",
+        "name": "fine",
+        "rect": {
+          "min": {
+            "x": 12800000,
+            "y": 9800000
+          },
+          "max": {
+            "x": 23200000,
+            "y": 20200000
+          }
+        },
+        "clearance_mm": 0.12,
+        "via_drill_mm": 0.2,
+        "via_diameter_mm": 0.45,
+        "priority": 0,
+        "anchor_ref": "U1",
+        "anchor_margin_mm": 1.5
+      },
+      {
+        "id": "6ccc1ecd-3ca1-4fa8-aad3-bc14b7f257b2",
+        "name": "usb",
+        "rect": {
+          "min": {
+            "x": 16000000,
+            "y": -1000000
+          },
+          "max": {
+            "x": 28000000,
+            "y": 3000000
+          }
+        },
+        "clearance_mm": 0.127,
+        "via_drill_mm": 0.2,
+        "via_diameter_mm": 0.45,
+        "priority": 0,
+        "anchor_ref": "J1",
+        "anchor_margin_mm": 1.0
+      }
+    ],
+    "fab_rules": {
+      "preset": "jlcpcb-2l-via02",
+      "min_trace_width_mm": 0.127,
+      "min_clearance_mm": 0.127,
+      "min_via_drill_mm": 0.2,
+      "min_via_diameter_mm": 0.45,
+      "min_annular_ring_mm": 0.125,
+      "min_edge_clearance_mm": 0.2,
+      "max_board_size_mm": [
+        100.0,
+        100.0
+      ]
+    }
+  },
+  "schematic": {
+    "symbols": {
+      "0bd0827f-b4d9-4dff-90c1-9323332c5004": {
+        "id": "0bd0827f-b4d9-4dff-90c1-9323332c5004",
+        "reference": "R2",
+        "value": "27",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 115000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "USB DP series"
+      },
+      "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8": {
+        "id": "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8",
+        "reference": "J2",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "SWDIO",
+              "side": "top",
+              "role": "bidir"
+            },
+            {
+              "number": "2",
+              "name": "GND",
+              "side": "top",
+              "role": "power_in"
+            },
+            {
+              "number": "3",
+              "name": "SWCLK",
+              "side": "top",
+              "role": "input"
+            }
+          ]
+        },
+        "position": {
+          "x": 90000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "header_1x03_2.54mm",
+        "description": "SWD"
+      },
+      "81c768c1-9d0c-43fb-9bd5-a10bc9d86722": {
+        "id": "81c768c1-9d0c-43fb-9bd5-a10bc9d86722",
+        "reference": "C9",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 15000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "ADC_AVDD decap"
+      },
+      "e1d48d36-79f9-4c5f-98d1-963f23095aff": {
+        "id": "e1d48d36-79f9-4c5f-98d1-963f23095aff",
+        "reference": "C4",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 40000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "IOVDD4 decap"
+      },
+      "2d314e21-5660-4547-89c4-90d1352034b7": {
+        "id": "2d314e21-5660-4547-89c4-90d1352034b7",
+        "reference": "C11",
+        "value": "2.2uF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 65000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "VREG_VOUT bulk"
+      },
+      "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067": {
+        "id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+        "reference": "J1",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "GND1",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "2",
+              "name": "VBUS1",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "3",
+              "name": "CC1",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "4",
+              "name": "DP",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "5",
+              "name": "DM",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "7",
+              "name": "CC2",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "8",
+              "name": "VBUS2",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "9",
+              "name": "GND2",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "10",
+              "name": "SH1",
+              "side": "bottom",
+              "role": "passive"
+            },
+            {
+              "number": "11",
+              "name": "SH2",
+              "side": "bottom",
+              "role": "passive"
+            }
+          ]
+        },
+        "position": {
+          "x": 65000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "usbc_16p",
+        "description": "USB-C"
+      },
+      "ad59ede6-d99d-4b65-95d8-4ff86b741066": {
+        "id": "ad59ede6-d99d-4b65-95d8-4ff86b741066",
+        "reference": "C14",
+        "value": "10uF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 140000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "LDO out"
+      },
+      "2c47f0c7-c90a-431d-a9f9-21689ee80687": {
+        "id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+        "reference": "J3",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "P1",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "2",
+              "name": "P2",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "3",
+              "name": "P3",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "4",
+              "name": "P4",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "5",
+              "name": "P5",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "6",
+              "name": "P6",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "7",
+              "name": "P7",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "8",
+              "name": "P8",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "9",
+              "name": "P9",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "10",
+              "name": "P10",
+              "side": "left",
+              "role": "bidir"
+            }
+          ]
+        },
+        "position": {
+          "x": 115000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "header_1x10_2.54mm",
+        "description": "GPIO A"
+      },
+      "d32e758e-4170-4688-98c2-412f2ee16b88": {
+        "id": "d32e758e-4170-4688-98c2-412f2ee16b88",
+        "reference": "C1",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 115000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "IOVDD decap"
+      },
+      "a1cd5001-3177-4fa6-9c0d-97ba263edb50": {
+        "id": "a1cd5001-3177-4fa6-9c0d-97ba263edb50",
+        "reference": "R1",
+        "value": "27",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 90000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "USB DM series"
+      },
+      "e87f6846-4252-4fd9-81dd-828d6bc0c138": {
+        "id": "e87f6846-4252-4fd9-81dd-828d6bc0c138",
+        "reference": "C3",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 15000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "IOVDD3 decap"
+      },
+      "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f": {
+        "id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+        "reference": "J4",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "P1",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "2",
+              "name": "P2",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "3",
+              "name": "P3",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "4",
+              "name": "P4",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "5",
+              "name": "P5",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "6",
+              "name": "P6",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "7",
+              "name": "P7",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "8",
+              "name": "P8",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "9",
+              "name": "P9",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "10",
+              "name": "P10",
+              "side": "right",
+              "role": "bidir"
+            }
+          ]
+        },
+        "position": {
+          "x": 140000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "header_1x10_2.54mm",
+        "description": "GPIO B"
+      },
+      "afbaf2eb-75d3-4e83-b9e3-e799e132ff55": {
+        "id": "afbaf2eb-75d3-4e83-b9e3-e799e132ff55",
+        "reference": "R8",
+        "value": "1k",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 115000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "LDO EN to VIN"
+      },
+      "6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9": {
+        "id": "6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9",
+        "reference": "D1",
+        "value": "green",
+        "kind": {
+          "kind": "led"
+        },
+        "position": {
+          "x": 140000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "led_0603",
+        "description": "GPIO25 LED"
+      },
+      "c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a": {
+        "id": "c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a",
+        "reference": "C6",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 90000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "DVDD decap"
+      },
+      "0b92839a-2cd4-4a4a-bbb8-db6e52dc8083": {
+        "id": "0b92839a-2cd4-4a4a-bbb8-db6e52dc8083",
+        "reference": "C10",
+        "value": "1uF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 40000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "VREG_VIN bulk"
+      },
+      "ac47332a-32ea-412a-8c26-7ed125d00c2b": {
+        "id": "ac47332a-32ea-412a-8c26-7ed125d00c2b",
+        "reference": "C13",
+        "value": "10uF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 115000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "LDO in"
+      },
+      "f36794af-80f6-4c9f-850e-3bac7ace8929": {
+        "id": "f36794af-80f6-4c9f-850e-3bac7ace8929",
+        "reference": "SW2",
+        "value": "RESET",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "P1",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "2",
+              "name": "P2",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "3",
+              "name": "P3",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "4",
+              "name": "P4",
+              "side": "left",
+              "role": "passive"
+            }
+          ]
+        },
+        "position": {
+          "x": 40000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "sw_smd_4x4",
+        "description": "RESET"
+      },
+      "bfd1e995-364e-49b7-a61d-6c42f90ce8e8": {
+        "id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+        "reference": "U3",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "IN",
+              "side": "left",
+              "role": "power_in"
+            },
+            {
+              "number": "2",
+              "name": "GND",
+              "side": "left",
+              "role": "power_in"
+            },
+            {
+              "number": "3",
+              "name": "EN",
+              "side": "left",
+              "role": "input"
+            },
+            {
+              "number": "4",
+              "name": "BYP",
+              "side": "right",
+              "role": "passive"
+            },
+            {
+              "number": "5",
+              "name": "OUT",
+              "side": "right",
+              "role": "power_out"
+            }
+          ]
+        },
+        "position": {
+          "x": 65000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "ldo_sot23_5",
+        "description": "3.3V LDO"
+      },
+      "28281e46-2366-4424-ae72-d4ace4d670f4": {
+        "id": "28281e46-2366-4424-ae72-d4ace4d670f4",
+        "reference": "C8",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 140000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "USB_VDD decap"
+      },
+      "a009a756-5629-4bf3-8105-c734001881f3": {
+        "id": "a009a756-5629-4bf3-8105-c734001881f3",
+        "reference": "C5",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 65000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "IOVDD5 decap"
+      },
+      "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1": {
+        "id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+        "reference": "U2",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "CS",
+              "side": "left",
+              "role": "input"
+            },
+            {
+              "number": "2",
+              "name": "DO",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "3",
+              "name": "WP",
+              "side": "left",
+              "role": "input"
+            },
+            {
+              "number": "4",
+              "name": "GND",
+              "side": "left",
+              "role": "power_in"
+            },
+            {
+              "number": "5",
+              "name": "DI",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "6",
+              "name": "CLK",
+              "side": "right",
+              "role": "input"
+            },
+            {
+              "number": "7",
+              "name": "HOLD",
+              "side": "right",
+              "role": "input"
+            },
+            {
+              "number": "8",
+              "name": "VCC",
+              "side": "right",
+              "role": "power_in"
+            }
+          ]
+        },
+        "position": {
+          "x": 40000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "w25q16_soic8",
+        "description": "16Mbit QSPI flash"
+      },
+      "13006c44-059b-42b0-aff0-57f607b8eaad": {
+        "id": "13006c44-059b-42b0-aff0-57f607b8eaad",
+        "reference": "R4",
+        "value": "5.1k",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 15000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "CC2 RD"
+      },
+      "27523ce0-1ced-47cb-8e4f-1bb23e0f80c8": {
+        "id": "27523ce0-1ced-47cb-8e4f-1bb23e0f80c8",
+        "reference": "C17",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 65000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "LDO bypass"
+      },
+      "91d2a9b0-110b-4246-9639-eb00fc95cd29": {
+        "id": "91d2a9b0-110b-4246-9639-eb00fc95cd29",
+        "reference": "C15",
+        "value": "27pF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 15000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "xtal load1"
+      },
+      "c8c12ff3-f1ba-4989-a860-9b611699a4fc": {
+        "id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+        "reference": "U1",
+        "value": "",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "IOVDD",
+              "side": "left",
+              "role": "power_in"
+            },
+            {
+              "number": "2",
+              "name": "GPIO0",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "3",
+              "name": "GPIO1",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "4",
+              "name": "GPIO2",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "5",
+              "name": "GPIO3",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "6",
+              "name": "GPIO4",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "7",
+              "name": "GPIO5",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "8",
+              "name": "GPIO6",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "9",
+              "name": "GPIO7",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "10",
+              "name": "GPIO8",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "11",
+              "name": "GPIO9",
+              "side": "left",
+              "role": "bidir"
+            },
+            {
+              "number": "18",
+              "name": "TESTEN",
+              "side": "top",
+              "role": "input"
+            },
+            {
+              "number": "19",
+              "name": "XIN",
+              "side": "top",
+              "role": "input"
+            },
+            {
+              "number": "20",
+              "name": "XOUT",
+              "side": "top",
+              "role": "output"
+            },
+            {
+              "number": "21",
+              "name": "IOVDD2",
+              "side": "top",
+              "role": "power_in"
+            },
+            {
+              "number": "22",
+              "name": "DVDD",
+              "side": "top",
+              "role": "power_in"
+            },
+            {
+              "number": "23",
+              "name": "SWCLK",
+              "side": "top",
+              "role": "input"
+            },
+            {
+              "number": "24",
+              "name": "SWD",
+              "side": "top",
+              "role": "bidir"
+            },
+            {
+              "number": "25",
+              "name": "RUN",
+              "side": "top",
+              "role": "input"
+            },
+            {
+              "number": "26",
+              "name": "GPIO16",
+              "side": "top",
+              "role": "bidir"
+            },
+            {
+              "number": "27",
+              "name": "GPIO17",
+              "side": "top",
+              "role": "bidir"
+            },
+            {
+              "number": "28",
+              "name": "GPIO18",
+              "side": "top",
+              "role": "bidir"
+            },
+            {
+              "number": "29",
+              "name": "GPIO19",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "30",
+              "name": "GPIO20",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "35",
+              "name": "GPIO25",
+              "side": "right",
+              "role": "bidir"
+            },
+            {
+              "number": "40",
+              "name": "IOVDD3",
+              "side": "right",
+              "role": "power_in"
+            },
+            {
+              "number": "41",
+              "name": "ADC_AVDD",
+              "side": "right",
+              "role": "power_in"
+            },
+            {
+              "number": "42",
+              "name": "VREG_VIN",
+              "side": "right",
+              "role": "power_in"
+            },
+            {
+              "number": "43",
+              "name": "VREG_VOUT",
+              "side": "bottom",
+              "role": "power_out"
+            },
+            {
+              "number": "44",
+              "name": "USB_DM",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "45",
+              "name": "USB_DP",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "46",
+              "name": "USB_VDD",
+              "side": "bottom",
+              "role": "power_in"
+            },
+            {
+              "number": "47",
+              "name": "IOVDD4",
+              "side": "bottom",
+              "role": "power_in"
+            },
+            {
+              "number": "48",
+              "name": "DVDD2",
+              "side": "bottom",
+              "role": "power_in"
+            },
+            {
+              "number": "49",
+              "name": "QSPI_SD3",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "50",
+              "name": "QSPI_SCLK",
+              "side": "bottom",
+              "role": "output"
+            },
+            {
+              "number": "51",
+              "name": "QSPI_SD0",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "52",
+              "name": "QSPI_SD2",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "53",
+              "name": "QSPI_SD1",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "54",
+              "name": "QSPI_SS",
+              "side": "bottom",
+              "role": "bidir"
+            },
+            {
+              "number": "55",
+              "name": "GND",
+              "side": "bottom",
+              "role": "power_in"
+            },
+            {
+              "number": "56",
+              "name": "IOVDD5",
+              "side": "bottom",
+              "role": "power_in"
+            },
+            {
+              "number": "57",
+              "name": "GND_EP",
+              "side": "bottom",
+              "role": "power_in"
+            }
+          ]
+        },
+        "position": {
+          "x": 15000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "rp2040_qfn56",
+        "description": "RP2040 MCU"
+      },
+      "30267868-fe59-4a48-8f5e-c514514aba01": {
+        "id": "30267868-fe59-4a48-8f5e-c514514aba01",
+        "reference": "C12",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 90000000,
+          "y": 55000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "flash VCC"
+      },
+      "627c76ac-30d2-4242-a45e-a71b1296a710": {
+        "id": "627c76ac-30d2-4242-a45e-a71b1296a710",
+        "reference": "Y1",
+        "value": "12MHz",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "X1",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "2",
+              "name": "GND1",
+              "side": "left",
+              "role": "power_in"
+            },
+            {
+              "number": "3",
+              "name": "X2",
+              "side": "right",
+              "role": "passive"
+            },
+            {
+              "number": "4",
+              "name": "GND2",
+              "side": "right",
+              "role": "power_in"
+            }
+          ]
+        },
+        "position": {
+          "x": 90000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "xtal_3225",
+        "description": "12MHz crystal"
+      },
+      "420fe4cb-b392-4f5f-91ed-339cb326dc1e": {
+        "id": "420fe4cb-b392-4f5f-91ed-339cb326dc1e",
+        "reference": "R7",
+        "value": "470",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 90000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "LED series"
+      },
+      "6b586390-c36c-4fac-aaf8-44022f316c37": {
+        "id": "6b586390-c36c-4fac-aaf8-44022f316c37",
+        "reference": "C16",
+        "value": "27pF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 40000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "xtal load2"
+      },
+      "ca953a51-41fc-49cb-947a-a213bc31968f": {
+        "id": "ca953a51-41fc-49cb-947a-a213bc31968f",
+        "reference": "C2",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 140000000,
+          "y": 15000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "IOVDD2 decap"
+      },
+      "b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c": {
+        "id": "b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c",
+        "reference": "R3",
+        "value": "5.1k",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 140000000,
+          "y": 75000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "CC1 RD"
+      },
+      "ea747205-5637-4877-91ca-cf7d192ebba4": {
+        "id": "ea747205-5637-4877-91ca-cf7d192ebba4",
+        "reference": "C7",
+        "value": "100nF",
+        "kind": {
+          "kind": "capacitor"
+        },
+        "position": {
+          "x": 115000000,
+          "y": 35000000
+        },
+        "rotation": 0.0,
+        "key": "c_0603",
+        "description": "DVDD2 decap"
+      },
+      "b0f0c06f-56cb-40c9-909a-ae0b034c7b48": {
+        "id": "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+        "reference": "SW1",
+        "value": "BOOT",
+        "kind": {
+          "kind": "generic_ic",
+          "pins": [
+            {
+              "number": "1",
+              "name": "P1",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "2",
+              "name": "P2",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "3",
+              "name": "P3",
+              "side": "left",
+              "role": "passive"
+            },
+            {
+              "number": "4",
+              "name": "P4",
+              "side": "left",
+              "role": "passive"
+            }
+          ]
+        },
+        "position": {
+          "x": 15000000,
+          "y": 115000000
+        },
+        "rotation": 0.0,
+        "key": "sw_smd_4x4",
+        "description": "BOOTSEL"
+      },
+      "796eb1d7-1d75-4373-afba-688e7eb83029": {
+        "id": "796eb1d7-1d75-4373-afba-688e7eb83029",
+        "reference": "R6",
+        "value": "10k",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 65000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "RUN pullup"
+      },
+      "5eed3782-184b-4e67-90dd-c57899931235": {
+        "id": "5eed3782-184b-4e67-90dd-c57899931235",
+        "reference": "R5",
+        "value": "1k",
+        "kind": {
+          "kind": "resistor"
+        },
+        "position": {
+          "x": 40000000,
+          "y": 95000000
+        },
+        "rotation": 0.0,
+        "key": "r_0603",
+        "description": "BOOTSEL pullup"
+      }
+    },
+    "symbol_order": [
+      "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+      "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+      "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+      "627c76ac-30d2-4242-a45e-a71b1296a710",
+      "d32e758e-4170-4688-98c2-412f2ee16b88",
+      "ca953a51-41fc-49cb-947a-a213bc31968f",
+      "e87f6846-4252-4fd9-81dd-828d6bc0c138",
+      "e1d48d36-79f9-4c5f-98d1-963f23095aff",
+      "a009a756-5629-4bf3-8105-c734001881f3",
+      "c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a",
+      "ea747205-5637-4877-91ca-cf7d192ebba4",
+      "28281e46-2366-4424-ae72-d4ace4d670f4",
+      "81c768c1-9d0c-43fb-9bd5-a10bc9d86722",
+      "0b92839a-2cd4-4a4a-bbb8-db6e52dc8083",
+      "2d314e21-5660-4547-89c4-90d1352034b7",
+      "30267868-fe59-4a48-8f5e-c514514aba01",
+      "ac47332a-32ea-412a-8c26-7ed125d00c2b",
+      "ad59ede6-d99d-4b65-95d8-4ff86b741066",
+      "91d2a9b0-110b-4246-9639-eb00fc95cd29",
+      "6b586390-c36c-4fac-aaf8-44022f316c37",
+      "27523ce0-1ced-47cb-8e4f-1bb23e0f80c8",
+      "a1cd5001-3177-4fa6-9c0d-97ba263edb50",
+      "0bd0827f-b4d9-4dff-90c1-9323332c5004",
+      "b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c",
+      "13006c44-059b-42b0-aff0-57f607b8eaad",
+      "5eed3782-184b-4e67-90dd-c57899931235",
+      "796eb1d7-1d75-4373-afba-688e7eb83029",
+      "420fe4cb-b392-4f5f-91ed-339cb326dc1e",
+      "afbaf2eb-75d3-4e83-b9e3-e799e132ff55",
+      "6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9",
+      "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+      "f36794af-80f6-4c9f-850e-3bac7ace8929",
+      "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+      "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8",
+      "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+      "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f"
+    ],
+    "nets": {
+      "GPIO7": {
+        "name": "GPIO7",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "9"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "8"
+          }
+        ]
+      },
+      "SWDIO": {
+        "name": "SWDIO",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "24"
+          },
+          {
+            "symbol_id": "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "GPIO0": {
+        "name": "GPIO0",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "USB_DM_MCU": {
+        "name": "USB_DM_MCU",
+        "connections": [
+          {
+            "symbol_id": "a1cd5001-3177-4fa6-9c0d-97ba263edb50",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "44"
+          }
+        ],
+        "class": "usb"
+      },
+      "USB_DM": {
+        "name": "USB_DM",
+        "connections": [
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "5"
+          },
+          {
+            "symbol_id": "a1cd5001-3177-4fa6-9c0d-97ba263edb50",
+            "pin_number": "1"
+          }
+        ],
+        "class": "usb"
+      },
+      "GPIO8": {
+        "name": "GPIO8",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "10"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "9"
+          }
+        ]
+      },
+      "QSPI_SCLK": {
+        "name": "QSPI_SCLK",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "50"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "6"
+          }
+        ]
+      },
+      "QSPI_SS": {
+        "name": "QSPI_SS",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "54"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "5eed3782-184b-4e67-90dd-c57899931235",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+            "pin_number": "4"
+          }
+        ]
+      },
+      "LDO_BYP": {
+        "name": "LDO_BYP",
+        "connections": [
+          {
+            "symbol_id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+            "pin_number": "4"
+          },
+          {
+            "symbol_id": "27523ce0-1ced-47cb-8e4f-1bb23e0f80c8",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "USB_DP_MCU": {
+        "name": "USB_DP_MCU",
+        "connections": [
+          {
+            "symbol_id": "0bd0827f-b4d9-4dff-90c1-9323332c5004",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "45"
+          }
+        ],
+        "class": "usb"
+      },
+      "GPIO25": {
+        "name": "GPIO25",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "35"
+          },
+          {
+            "symbol_id": "420fe4cb-b392-4f5f-91ed-339cb326dc1e",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "GPIO1": {
+        "name": "GPIO1",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "3"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "2"
+          }
+        ]
+      },
+      "GND": {
+        "name": "GND",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "55"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "57"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "18"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "4"
+          },
+          {
+            "symbol_id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "627c76ac-30d2-4242-a45e-a71b1296a710",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "627c76ac-30d2-4242-a45e-a71b1296a710",
+            "pin_number": "4"
+          },
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "9"
+          },
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "10"
+          },
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "11"
+          },
+          {
+            "symbol_id": "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "d32e758e-4170-4688-98c2-412f2ee16b88",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "ca953a51-41fc-49cb-947a-a213bc31968f",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "e87f6846-4252-4fd9-81dd-828d6bc0c138",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "e1d48d36-79f9-4c5f-98d1-963f23095aff",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "a009a756-5629-4bf3-8105-c734001881f3",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "ea747205-5637-4877-91ca-cf7d192ebba4",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "28281e46-2366-4424-ae72-d4ace4d670f4",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "81c768c1-9d0c-43fb-9bd5-a10bc9d86722",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "0b92839a-2cd4-4a4a-bbb8-db6e52dc8083",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "2d314e21-5660-4547-89c4-90d1352034b7",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "30267868-fe59-4a48-8f5e-c514514aba01",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "ac47332a-32ea-412a-8c26-7ed125d00c2b",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "ad59ede6-d99d-4b65-95d8-4ff86b741066",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "91d2a9b0-110b-4246-9639-eb00fc95cd29",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "6b586390-c36c-4fac-aaf8-44022f316c37",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "27523ce0-1ced-47cb-8e4f-1bb23e0f80c8",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "13006c44-059b-42b0-aff0-57f607b8eaad",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9",
+            "pin_number": "K"
+          },
+          {
+            "symbol_id": "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "b0f0c06f-56cb-40c9-909a-ae0b034c7b48",
+            "pin_number": "3"
+          },
+          {
+            "symbol_id": "f36794af-80f6-4c9f-850e-3bac7ace8929",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "f36794af-80f6-4c9f-850e-3bac7ace8929",
+            "pin_number": "3"
+          }
+        ],
+        "class": "ground"
+      },
+      "CC1": {
+        "name": "CC1",
+        "connections": [
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "3"
+          },
+          {
+            "symbol_id": "b358e4b4-8acc-47e7-a764-6e0e2dc0ff8c",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "GPIO3": {
+        "name": "GPIO3",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "5"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "4"
+          }
+        ]
+      },
+      "HDRB4": {
+        "name": "HDRB4",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "29"
+          },
+          {
+            "symbol_id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+            "pin_number": "4"
+          }
+        ]
+      },
+      "GPIO2": {
+        "name": "GPIO2",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "4"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "3"
+          }
+        ]
+      },
+      "QSPI_SD2": {
+        "name": "QSPI_SD2",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "52"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "3"
+          }
+        ]
+      },
+      "USB_DP": {
+        "name": "USB_DP",
+        "connections": [
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "4"
+          },
+          {
+            "symbol_id": "0bd0827f-b4d9-4dff-90c1-9323332c5004",
+            "pin_number": "1"
+          }
+        ],
+        "class": "usb"
+      },
+      "XIN": {
+        "name": "XIN",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "19"
+          },
+          {
+            "symbol_id": "627c76ac-30d2-4242-a45e-a71b1296a710",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "91d2a9b0-110b-4246-9639-eb00fc95cd29",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "GPIO6": {
+        "name": "GPIO6",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "8"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "7"
+          }
+        ]
+      },
+      "QSPI_SD3": {
+        "name": "QSPI_SD3",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "49"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "7"
+          }
+        ]
+      },
+      "+1V1": {
+        "name": "+1V1",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "43"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "22"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "48"
+          },
+          {
+            "symbol_id": "c3dd1dae-f12e-4c6d-8fa8-09ab9d4fd92a",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "ea747205-5637-4877-91ca-cf7d192ebba4",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "2d314e21-5660-4547-89c4-90d1352034b7",
+            "pin_number": "1"
+          }
+        ],
+        "class": "power"
+      },
+      "GPIO5": {
+        "name": "GPIO5",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "7"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "6"
+          }
+        ]
+      },
+      "SWCLK": {
+        "name": "SWCLK",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "23"
+          },
+          {
+            "symbol_id": "0da88a93-be8a-4ab8-922c-b1b09ed8e2b8",
+            "pin_number": "3"
+          }
+        ]
+      },
+      "VBUS": {
+        "name": "VBUS",
+        "connections": [
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "8"
+          },
+          {
+            "symbol_id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+            "pin_number": "3"
+          },
+          {
+            "symbol_id": "afbaf2eb-75d3-4e83-b9e3-e799e132ff55",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "ac47332a-32ea-412a-8c26-7ed125d00c2b",
+            "pin_number": "1"
+          }
+        ],
+        "class": "power"
+      },
+      "HDRB1": {
+        "name": "HDRB1",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "26"
+          },
+          {
+            "symbol_id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "HDRB5": {
+        "name": "HDRB5",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "30"
+          },
+          {
+            "symbol_id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+            "pin_number": "5"
+          }
+        ]
+      },
+      "GPIO4": {
+        "name": "GPIO4",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "6"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "5"
+          }
+        ]
+      },
+      "HDRB3": {
+        "name": "HDRB3",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "28"
+          },
+          {
+            "symbol_id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+            "pin_number": "3"
+          }
+        ]
+      },
+      "LED_A": {
+        "name": "LED_A",
+        "connections": [
+          {
+            "symbol_id": "420fe4cb-b392-4f5f-91ed-339cb326dc1e",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "6a34e132-1bf3-40d9-b31f-5e20b7b3a6b9",
+            "pin_number": "A"
+          }
+        ]
+      },
+      "+3V3": {
+        "name": "+3V3",
+        "connections": [
+          {
+            "symbol_id": "bfd1e995-364e-49b7-a61d-6c42f90ce8e8",
+            "pin_number": "5"
+          },
+          {
+            "symbol_id": "afbaf2eb-75d3-4e83-b9e3-e799e132ff55",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "ad59ede6-d99d-4b65-95d8-4ff86b741066",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "0b92839a-2cd4-4a4a-bbb8-db6e52dc8083",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "21"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "40"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "47"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "56"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "41"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "42"
+          },
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "46"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "8"
+          },
+          {
+            "symbol_id": "d32e758e-4170-4688-98c2-412f2ee16b88",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "ca953a51-41fc-49cb-947a-a213bc31968f",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "e87f6846-4252-4fd9-81dd-828d6bc0c138",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "e1d48d36-79f9-4c5f-98d1-963f23095aff",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "a009a756-5629-4bf3-8105-c734001881f3",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "28281e46-2366-4424-ae72-d4ace4d670f4",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "81c768c1-9d0c-43fb-9bd5-a10bc9d86722",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "30267868-fe59-4a48-8f5e-c514514aba01",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "5eed3782-184b-4e67-90dd-c57899931235",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "796eb1d7-1d75-4373-afba-688e7eb83029",
+            "pin_number": "1"
+          }
+        ],
+        "class": "power"
+      },
+      "RUN": {
+        "name": "RUN",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "25"
+          },
+          {
+            "symbol_id": "796eb1d7-1d75-4373-afba-688e7eb83029",
+            "pin_number": "2"
+          },
+          {
+            "symbol_id": "f36794af-80f6-4c9f-850e-3bac7ace8929",
+            "pin_number": "1"
+          },
+          {
+            "symbol_id": "f36794af-80f6-4c9f-850e-3bac7ace8929",
+            "pin_number": "4"
+          }
+        ]
+      },
+      "HDRB2": {
+        "name": "HDRB2",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "27"
+          },
+          {
+            "symbol_id": "5c5794ea-4fc5-4023-8f89-4d5a0eab1f6f",
+            "pin_number": "2"
+          }
+        ]
+      },
+      "GPIO9": {
+        "name": "GPIO9",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "11"
+          },
+          {
+            "symbol_id": "2c47f0c7-c90a-431d-a9f9-21689ee80687",
+            "pin_number": "10"
+          }
+        ]
+      },
+      "CC2": {
+        "name": "CC2",
+        "connections": [
+          {
+            "symbol_id": "b9ac1ce9-3f1e-49d2-8c23-cb0c64119067",
+            "pin_number": "7"
+          },
+          {
+            "symbol_id": "13006c44-059b-42b0-aff0-57f607b8eaad",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "QSPI_SD0": {
+        "name": "QSPI_SD0",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "51"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "5"
+          }
+        ]
+      },
+      "XOUT": {
+        "name": "XOUT",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "20"
+          },
+          {
+            "symbol_id": "627c76ac-30d2-4242-a45e-a71b1296a710",
+            "pin_number": "3"
+          },
+          {
+            "symbol_id": "6b586390-c36c-4fac-aaf8-44022f316c37",
+            "pin_number": "1"
+          }
+        ]
+      },
+      "QSPI_SD1": {
+        "name": "QSPI_SD1",
+        "connections": [
+          {
+            "symbol_id": "c8c12ff3-f1ba-4989-a860-9b611699a4fc",
+            "pin_number": "53"
+          },
+          {
+            "symbol_id": "2c29e140-2adf-42c1-bbf4-f6eaae5d04f1",
+            "pin_number": "2"
+          }
+        ]
+      }
+    },
+    "net_classes": {
+      "usb": {
+        "name": "usb",
+        "trace_width_mm": 0.25,
+        "clearance_mm": 0.2,
+        "length_tolerance_mm": 0.5
+      },
+      "power": {
+        "name": "power",
+        "trace_width_mm": 0.35,
+        "clearance_mm": 0.2,
+        "length_tolerance_mm": 0.5
+      },
+      "ground": {
+        "name": "ground",
+        "pour_layers": [
+          "Top",
+          "Bottom"
+        ],
+        "length_tolerance_mm": 0.5
+      }
+    },
+    "net_to_class": {}
+  },
+  "palette": []
+}

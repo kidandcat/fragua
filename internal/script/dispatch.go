@@ -649,6 +649,11 @@ func packBoard(p *core.Project, args string) (string, error) {
 	provider := "jlcpcb"
 	out := ""
 	for _, f := range strings.Fields(args) {
+		if strings.HasPrefix(f, "fab=") && IsKiCadProvider(strings.TrimPrefix(f, "fab=")) {
+			return packKiCad(p, args)
+		}
+	}
+	for _, f := range strings.Fields(args) {
 		if strings.HasPrefix(f, "fab=") {
 			provider = strings.TrimPrefix(f, "fab=")
 		} else if strings.HasPrefix(f, "out=") {

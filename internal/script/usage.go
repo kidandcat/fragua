@@ -325,11 +325,15 @@ var Verbs = []VerbHelp{
 		Examples: []string{"compact allow_failed=0 route_seconds=90", "compact step=0.5 aspect=free max_seconds=300"},
 	},
 	{
-		Name:     "pack",
-		Aliases:  []string{"export"},
-		Usage:    "pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)",
-		Describe: "Write the manufacturing bundle — Gerbers, Excellon drill, BOM, CPL and a README — as <project>-<fab>.zip in DIR. Fabs: jlcpcb, pcbway, generic. Refuses to run while ERC reports errors.",
-		Examples: []string{"pack fab=jlcpcb out=/tmp", "pack fab=pcbway out=./out teardrop=true"},
+		Name:    "pack",
+		Aliases: []string{"export"},
+		Usage:   "pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)",
+		Notes: []string{
+			"  pack fab=kicad [out=board.kicad_pcb] [zones=filled|outline] [grid=MM]",
+			"                              (KiCad 9 .kicad_pcb; zones ship pre-filled)",
+		},
+		Describe: "Write the manufacturing bundle — Gerbers, Excellon drill, BOM, CPL, a README and the board as .kicad_pcb — as <project>-<fab>.zip in DIR. Fabs: jlcpcb, pcbway, generic. `fab=kicad` writes only the KiCad 9 board file (zones pre-filled so KiCad shows copper without refilling). Refuses to run while ERC reports errors.",
+		Examples: []string{"pack fab=jlcpcb out=/tmp", "pack fab=pcbway out=./out teardrop=true", "pack fab=kicad out=/tmp/board.kicad_pcb"},
 	},
 	{
 		Name:     "screenshot",
@@ -487,6 +491,8 @@ Usage:
   fragua run [file]      start local HTTP API (default 127.0.0.1:7878)
   fragua mcp [file]      same host, plus an MCP server on stdio (for AI agents)
   fragua init [dir]      write agent onboarding files into a project directory
+  fragua bench [dir]     run the reference boards (place → route → drc)
+                         [--seed N] [--budget S] [--json f] [--md f] [--strict]
 
 Environment:
   FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)

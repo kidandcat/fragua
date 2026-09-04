@@ -5,6 +5,7 @@
 //	fragua run [file]    start HTTP API + open browser
 //	fragua mcp [file]    same host, plus an MCP server on stdio
 //	fragua init [dir]    write agent onboarding files into a directory
+//	fragua bench [dir]   run the reference bench suite (place → route → drc)
 package main
 
 import (
@@ -38,6 +39,8 @@ func main() {
 		err = runMCP(arg(args, 1))
 	case "init":
 		err = runInit(args[1:])
+	case "bench":
+		err = runBench(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q — try `fragua help` or `fragua run [file.fragua]`\n", args[0])
 		os.Exit(2)
