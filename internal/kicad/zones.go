@@ -20,8 +20,13 @@ func (e *exporter) emitZones() {
 			}
 			poly = rectPoly(*k.Rect)
 		}
-		e.emitKeepout(e.uuid("keepout/"+k.ID.String()), fmt.Sprintf("keepout%d", i+1), poly,
-			k.NoCopper || (!k.NoCopper && !k.NoPlace), k.NoPlace)
+		// A keepout with neither flag set is a JSON board that predates them;
+		// treat it the way the `keepout` verb does and block both.
+		noCopper, noPlace := k.NoCopper, k.NoPlace
+		if !noCopper && !noPlace {
+			noCopper, noPlace = true, true
+		}
+		e.emitKeepout(e.uuid("keepout/"+k.ID.String()), fmt.Sprintf("keepout%d", i+1), poly, noCopper, noPlace)
 	}
 	// A rule area is a local override, not a keepout; KiCad has no matching
 	// object, so it is exported as a documented placement keepout that keeps
