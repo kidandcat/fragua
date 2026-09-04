@@ -1650,9 +1650,7 @@ func screenshot(p *core.Project, args string) (string, error) {
 	case "board", "":
 		content = render.BoardSVG(p.Board())
 	case "schematic":
-		// schematic SVG not yet; fall back to board
-		content = render.BoardSVG(p.Board())
-		view = "board"
+		content = render.SchematicSVG(p.Schematic())
 	default:
 		p.RUnlock()
 		return "", fmt.Errorf("screenshot: unknown view %q (use board or schematic)", view)
