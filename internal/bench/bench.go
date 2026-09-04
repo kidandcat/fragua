@@ -319,6 +319,9 @@ func (r Run) Markdown() string {
 	fmt.Fprintf(&b, "\nTotal wall time: %.1f s — seed %d, per-board router budget %.0f s, Fragua %s, %s %s/%s, %d CPUs, generated %s.\n",
 		float64(totWall)/1000, r.Meta.Seed, r.Meta.BudgetSeconds, r.Meta.FraguaVersion,
 		r.Meta.Go, r.Meta.OS, r.Meta.Arch, r.Meta.CPUs, r.Meta.GeneratedAt)
+	b.WriteString("Placement is deterministic for a given seed. Routing is not: the router " +
+		"spends a wall-clock slice per net, so an idle machine searches further than a busy one " +
+		"and the routed / vias / copper columns move a little between runs.\n")
 	for _, x := range r.Results {
 		switch {
 		case x.Error != "":
