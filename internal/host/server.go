@@ -26,27 +26,39 @@ import (
 //go:embed ui/*
 var embeddedUI embed.FS
 
-// Run starts the HTTP API, optionally loads path, opens browser, blocks until signal.
-func Run(projectPath string) error {
+// Addr returns the API listen address (FRAGUA_API_ADDR, else the default).
+func Addr() string {
+	if a := os.Getenv("FRAGUA_API_ADDR"); a != "" {
+		return a
+	}
+	return "127.0.0.1:7878"
+}
+
+// Server is a started host: the project it mutates plus its shutdown hook.
+type Server struct {
+	Project  *core.Project
+	Addr     string
+	Shutdown func(context.Context) error
+}
+
+// Start loads path, serves the API in the background and opens the browser.
+// Progress notes go to logw (stderr when stdout is a protocol channel).
+// A failure to bind usually means another fragua already owns the address.
+func Start(projectPath string, logw io.Writer) (*Server, error) {
 	p, err := loadProject(projectPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	addr := os.Getenv("FRAGUA_API_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:7878"
-	}
-
+	addr := Addr()
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	srv := &http.Server{Handler: Handler(p), ReadHeaderTimeout: 10 * time.Second}
 
-	fmt.Printf("Fragua (Go) — API on http://%s  ·  UI http://%s/ui/  ·  GET /help for the script reference\n", addr, addr)
+	fmt.Fprintf(logw, "Fragua (Go) — API on http://%s  ·  UI http://%s/ui/  ·  GET /help for the script reference\n", addr, addr)
 	if projectPath != "" {
-		fmt.Printf("Opened %s\n", projectPath)
+		fmt.Fprintf(logw, "Opened %s\n", projectPath)
 	}
 
 	go func() {
@@ -58,13 +70,33 @@ func Run(projectPath string) error {
 	if os.Getenv("FRAGUA_NO_BROWSER") == "" {
 		openBrowser("http://" + addr + "/ui/")
 	}
+	return &Server{Project: p, Addr: addr, Shutdown: srv.Shutdown}, nil
+}
 
+// Run starts the HTTP API, optionally loads path, opens browser, blocks until signal.
+func Run(projectPath string) error {
+	s, err := Start(projectPath, os.Stdout)
+	if err != nil {
+		return err
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return srv.Shutdown(ctx)
+	return s.Shutdown(ctx)
+}
+
+// Alive reports whether a fragua host already answers /health at addr.
+func Alive(addr string) bool {
+	c := &http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Get("http://" + addr + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	return resp.StatusCode == http.StatusOK && strings.TrimSpace(string(body)) == "ok"
 }
 
 func loadProject(projectPath string) (*core.Project, error) {
@@ -90,6 +122,14 @@ func Handler(p *core.Project) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if verb := r.URL.Query().Get("verb"); verb != "" {
+			out, ok := script.VerbUsage(verb)
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+			}
+			_, _ = io.WriteString(w, out)
+			return
+		}
 		_, _ = io.WriteString(w, script.Usage())
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
