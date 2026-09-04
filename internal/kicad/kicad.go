@@ -240,6 +240,7 @@ func (e *exporter) emit() {
 	e.emitBoardSilk()
 	e.emitTracks()
 	e.emitZones()
+	e.line(1, "(embedded_fonts no)")
 	e.line(0, ")")
 }
 
@@ -362,6 +363,7 @@ func (e *exporter) emitFootprint(fp *core.Footprint) {
 	for i := range fp.Pads {
 		e.emitPad(fp, &fp.Pads[i])
 	}
+	e.line(2, "(embedded_fonts no)")
 	e.line(1, ")")
 }
 
@@ -378,7 +380,7 @@ func refOffsetMM(fp *core.Footprint) float64 {
 
 func (e *exporter) field(fp *core.Footprint, name, value string, dx, dy float64, layer string) {
 	e.line(2, "(property %q %q", name, value)
-	e.line(3, "(at %s %s)", num(dx), num(dy))
+	e.line(3, "(at %s %s 0)", num(dx), num(dy))
 	e.line(3, "(layer %q)", layer)
 	e.line(3, "(uuid %q)", uuidFor("field/"+fp.ID.String()+"/"+name))
 	e.line(3, "(effects")
@@ -509,9 +511,9 @@ func (e *exporter) padLayers(pad *core.Pad) string {
 	name := e.layerName(pad.Layer)
 	switch name {
 	case "F.Cu":
-		return `"F.Cu" "F.Paste" "F.Mask"`
+		return `"F.Cu" "F.Mask" "F.Paste"`
 	case "B.Cu":
-		return `"B.Cu" "B.Paste" "B.Mask"`
+		return `"B.Cu" "B.Mask" "B.Paste"`
 	default:
 		return strconv.Quote(name)
 	}

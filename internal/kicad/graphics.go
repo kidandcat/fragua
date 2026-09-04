@@ -39,13 +39,14 @@ func (e *exporter) emitHoles() {
 		e.line(3, "(layers %q %q)", "*.Cu", "*.Mask")
 		e.line(3, "(uuid %q)", uuidFor("holepad/"+h.ID.String()))
 		e.line(2, ")")
+		e.line(2, "(embedded_fonts no)")
 		e.line(1, ")")
 	}
 }
 
 func (e *exporter) field2(uid, name, value, layer string) {
 	e.line(2, "(property %q %q", name, value)
-	e.line(3, "(at 0 0)")
+	e.line(3, "(at 0 0 0)")
 	e.line(3, "(layer %q)", layer)
 	e.line(3, "(uuid %q)", uid)
 	e.line(3, "(effects")
