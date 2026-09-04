@@ -9,4 +9,10 @@
 # Browser-automation (Playwright MCP) scratch output
 .playwright-mcp/
 *.fragua
+# The bench corpus is the exception: those boards are the benchmark.
 !/bench/boards/*.fragua
+
+# Local bench output (BENCH.md is the committed one)
+/bench.json
+/bench.md
+*.kicad_pcb
