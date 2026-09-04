@@ -152,3 +152,26 @@ pack fab=jlcpcb out=/tmp
 The final line writes `/tmp/<project>-jlcpcb.zip` ready to upload.
 Recommended pipeline: ERC → power planes / classes → place → auto-place →
 route → (compact) → pack.
+
+## Open it in KiCad
+
+The zip carries the board as a KiCad 9 file next to the gerbers, and you can
+write one on its own:
+
+```text
+pack fab=kicad out=/tmp/board.kicad_pcb
+```
+
+Footprints, pads and nets, tracks, vias, Edge.Cuts, silkscreen, courtyards,
+keepouts and the 4-layer stackup all come across, and pours ship pre-filled so
+the copper shows without a refill.
+
+## Benchmark
+
+`fragua bench` runs the reference boards in `bench/boards/` through the same
+auto-place → route → drc loop an agent runs and prints one row per board.
+Measured numbers from this machine are in [BENCH.md](BENCH.md).
+
+```bash
+fragua bench bench/boards --seed 42 --budget 60 --md bench.md --json bench.json
+```
