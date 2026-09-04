@@ -30,7 +30,7 @@ func (e *exporter) emitHoles() {
 		e.line(2, "(at %s %s)", e.x(h.Center.X), e.y(h.Center.Y))
 		e.line(2, "(descr %q)", "NPTH mounting hole")
 		e.line(2, "(attr exclude_from_pos_files exclude_from_bom)")
-		e.field2(e.uuid("holeref/"+h.ID.String()), "Reference", label, "F.SilkS")
+		e.field2(e.uuid("holeref/"+h.ID.String()), "Reference", clean(label), "F.SilkS")
 		e.field2(e.uuid("holeval/"+h.ID.String()), "Value", "NPTH "+d+"mm", "F.Fab")
 		e.line(2, "(pad %q np_thru_hole circle", "")
 		e.line(3, "(at 0 0)")
@@ -173,7 +173,7 @@ func (e *exporter) emitBoardSilk() {
 		if th <= 0 {
 			th = size / 8
 		}
-		e.line(1, "(gr_text %q", t.Text)
+		e.line(1, "(gr_text %q", clean(t.Text))
 		e.line(2, "(at %s %s%s)", e.x(t.Position.X), e.y(t.Position.Y), angleSuffix(t.Rotation))
 		e.line(2, "(layer %q)", silkLayerName(t.Layer))
 		e.line(2, "(uuid %q)", e.uuid(fmt.Sprintf("silktext/%d", i)))

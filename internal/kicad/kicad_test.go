@@ -324,6 +324,33 @@ func TestExportDeterministic(t *testing.T) {
 	}
 }
 
+// A reference or value carrying a quote, a backslash or a control byte must
+// still produce a file that parses: KiCad escapes only " and \.
+func TestHostileStringsStayParseable(t *testing.T) {
+	b := smallBoard()
+	fp := b.FootprintByRef("R1")
+	fp.Value = "10k \"±1%\" \\ line\nbreak\x1b"
+	fp.Description = "a \"quoted\" \\ description\t"
+	s, err := Export(b, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := parseSexpr(s)
+	if err != nil {
+		t.Fatalf("hostile strings broke the s-expression: %v", err)
+	}
+	for _, f := range root.findAll("property") {
+		if f.arg(0) != "Value" || !strings.Contains(f.arg(1), "±1%") {
+			continue
+		}
+		if strings.ContainsAny(f.arg(1), "\n\x1b\t") {
+			t.Fatalf("control characters survived into the file: %q", f.arg(1))
+		}
+		return
+	}
+	t.Fatal("the hostile Value field never made it into the export")
+}
+
 func TestNumFormatting(t *testing.T) {
 	cases := map[float64]string{0: "0", -0.0000001: "0", 1: "1", 1.5: "1.5", -2.25: "-2.25", 0.0001: "0.0001"}
 	for in, want := range cases {

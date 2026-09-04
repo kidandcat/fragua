@@ -319,7 +319,7 @@ func (e *exporter) emitStackup() {
 
 func (e *exporter) emitNets() {
 	for i, n := range e.nets.names {
-		e.line(1, "(net %d %q)", i, n)
+		e.line(1, "(net %d %q)", i, clean(n))
 	}
 }
 
@@ -346,7 +346,7 @@ func (e *exporter) emitFootprint(fp *core.Footprint) {
 	e.line(2, "(uuid %q)", e.uuid("fp/"+fp.Reference+"/"+fp.ID.String()))
 	e.line(2, "(at %s %s%s)", e.x(fp.Position.X), e.y(fp.Position.Y), angleSuffix(fp.Rotation))
 	if fp.Description != "" {
-		e.line(2, "(descr %q)", fp.Description)
+		e.line(2, "(descr %q)", clean(fp.Description))
 	}
 	e.line(2, "(attr %s)", footprintAttr(fp))
 	silkSide := "F.SilkS"
@@ -355,8 +355,8 @@ func (e *exporter) emitFootprint(fp *core.Footprint) {
 		silkSide, fabSide = "B.SilkS", "B.Fab"
 	}
 	ry := refOffsetMM(fp)
-	e.field(fp, "Reference", fp.Reference, 0, -ry, silkSide)
-	e.field(fp, "Value", fp.Value, 0, ry, fabSide)
+	e.field(fp, "Reference", clean(fp.Reference), 0, -ry, silkSide)
+	e.field(fp, "Value", clean(fp.Value), 0, ry, fabSide)
 	e.emitCourtyard(fp)
 	for i := range fp.Silk {
 		e.emitFootprintSilk(fp, &fp.Silk[i], i)
@@ -463,7 +463,7 @@ func (e *exporter) emitFootprintSilk(fp *core.Footprint, s *core.FootprintSilkIt
 		if th <= 0 {
 			th = size / 8
 		}
-		e.line(2, "(fp_text user %q", core.ResolveSilkText(fp, s.Text))
+		e.line(2, "(fp_text user %q", clean(core.ResolveSilkText(fp, s.Text)))
 		e.line(3, "(at %s %s%s)", px, py, angleSuffix(s.Rotation))
 		e.line(3, "(layer %q)", layer)
 		e.line(3, "(uuid %q)", uid)
@@ -491,7 +491,7 @@ func (e *exporter) emitPad(fp *core.Footprint, pad *core.Pad) {
 	if number == "" {
 		number = pad.Name
 	}
-	e.line(2, "(pad %q %s %s", number, kind, shape)
+	e.line(2, "(pad %q %s %s", clean(number), kind, shape)
 	e.line(3, "(at %s %s%s)", px, py, angleSuffix(fp.Rotation))
 	e.line(3, "(size %s %s)", num(pad.Size[0].ToMM()), num(pad.Size[1].ToMM()))
 	if pad.Drill != nil && *pad.Drill > 0 {
@@ -499,7 +499,7 @@ func (e *exporter) emitPad(fp *core.Footprint, pad *core.Pad) {
 	}
 	e.line(3, "(layers %s)", e.padLayers(pad))
 	if pad.Net != nil && *pad.Net != "" {
-		e.line(3, "(net %d %q)", e.nets.idx(*pad.Net), *pad.Net)
+		e.line(3, "(net %d %q)", e.nets.idx(*pad.Net), clean(*pad.Net))
 	}
 	e.line(3, "(uuid %q)", e.uuid("pad/"+fp.ID.String()+"/"+pad.Number))
 	e.line(2, ")")
@@ -586,6 +586,18 @@ func angleSuffix(deg float64) string {
 }
 
 // ---------------------------------------------------------------- helpers
+
+// clean strips control characters from a string that reaches the file. Go's
+// %q escapes " and backslash exactly as KiCad does, but it would also turn a
+// stray newline or escape byte into an escape KiCad reads back literally.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // num formats a millimetre value the way KiCad does: fixed point, no trailing
 // zeros, never "-0".
