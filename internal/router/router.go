@@ -1332,6 +1332,19 @@ func routeDirect(board *core.Board, g *grid, name string, pads []padLoc, opts Op
 	if span > 25 {
 		return Outcome{Status: "failed", Reason: "direct-span"}
 	}
+	// Every hop this function lays is a single trace on ONE layer, so a net
+	// whose pads are not all on the same layer cannot be closed here — it
+	// needs a via and this path never emits one. Without this test the fast
+	// path drew a bottom-layer trace from the centre of a TOP pad and returned
+	// "ok": the router reported the net routed, DRC found the pad with no
+	// copper (a *warning*), and `pack` would have shipped an open net. Its
+	// sibling routeClearHops has always skipped cross-layer pairs; this is the
+	// same rule, hoisted because a mixed-layer net has no legal hop at all.
+	for i := range pads {
+		if pads[i].layer != pads[0].layer {
+			return Outcome{Status: "failed", Reason: "direct-layer"}
+		}
+	}
 	connected := map[int]bool{0: true}
 	var segs []core.Trace
 	length := 0.0

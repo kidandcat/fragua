@@ -446,3 +446,79 @@ func TestPadIslandsAcceptsTeeJunction(t *testing.T) {
 		t.Fatalf("an unconnected pad is its own island, got %d", n)
 	}
 }
+
+// routeDirect lays every hop as a single trace on one layer, so it must refuse
+// a net whose pads are not all on the same layer: there is no via in that code
+// path. It used to take the layer of whichever pad it was reaching for and draw
+// the whole segment on it, which produced a BOTTOM trace starting at the centre
+// of a TOP pad — copper that touches nothing, reported as "ok" by the router
+// and only ever caught by DRC as an `unconnected_pad` *warning*. The minus
+// pilot board shipped three open nets that way (MSP_TX, CRSF_TX, XSHUT_D).
+func TestRouteDirectRefusesCrossLayerNets(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(20)))
+	b.Outline = &o
+	top := footprint("U1", 8, 10, []core.Pad{pad("1", 0, 0, "SIG")})
+	bot := footprint("J1", 14, 10, []core.Pad{pad("1", 0, 0, "SIG")})
+	bot.Layer = core.LayerBottom
+	bot.Pads[0].Layer = core.LayerBottom
+	b.AddFootprint(top)
+	b.AddFootprint(bot)
+
+	opts := DefaultOptions()
+	g := newGrid(b, opts)
+	pads := []padLoc{
+		{ref: "U1", p: core.PadWorldCenter(top, &top.Pads[0]), layer: core.LayerTop.Index},
+		{ref: "J1", p: core.PadWorldCenter(bot, &bot.Pads[0]), layer: core.LayerBottom.Index},
+	}
+	if out := routeDirect(b, g, "SIG", pads, opts); out.Status == "ok" {
+		t.Fatalf("routeDirect closed a cross-layer net with no via: %+v", out)
+	}
+	if len(b.Traces) != 0 {
+		t.Fatalf("routeDirect must commit no copper when it refuses, got %d traces", len(b.Traces))
+	}
+	// Same-layer pads are still its job.
+	bot.Layer = core.LayerTop
+	bot.Pads[0].Layer = core.LayerTop
+	pads[1].layer = core.LayerTop.Index
+	if out := routeDirect(b, newGrid(b, opts), "SIG", pads, opts); out.Status != "ok" {
+		t.Fatalf("routeDirect must still close a same-layer net: %+v", out)
+	}
+}
+
+// End to end: a two-pad net across the two faces comes back with a via and
+// with copper on both layers, or it is not routed at all. Never a silent open.
+func TestCrossLayerNetGetsAVia(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(20)))
+	b.Outline = &o
+	top := footprint("U1", 8, 10, []core.Pad{pad("1", 0, 0, "SIG"), pad("2", 0, 3, "GND")})
+	bot := footprint("J1", 20, 10, []core.Pad{pad("1", 0, 0, "SIG"), pad("2", 0, 3, "GND")})
+	bot.Layer = core.LayerBottom
+	for i := range bot.Pads {
+		bot.Pads[i].Layer = core.LayerBottom
+	}
+	b.AddFootprint(top)
+	b.AddFootprint(bot)
+	opts := DefaultOptions()
+	opts.MaxSeconds = 30
+	rep := Route(b, opts)
+	ok := false
+	for _, n := range rep.PerNet {
+		if n.Net == "SIG" && n.Outcome.Status == "ok" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Skip("SIG not routed; the invariant under test is only about ok nets")
+	}
+	vias := 0
+	for _, v := range b.Vias {
+		if v.Net == "SIG" {
+			vias++
+		}
+	}
+	if vias == 0 {
+		t.Fatal("a routed cross-layer net must own at least one via")
+	}
+}

@@ -108,3 +108,81 @@ func TestReportDetailNamesTheViolations(t *testing.T) {
 		}
 	}
 }
+
+// The decoupling rule says "within N mm of U1.1" and must measure to that pad,
+// not to the part's origin. On a big part — the minus pilot board's 18 x 23.5 mm
+// castellated ESP32-S3-Zero — the 5V land is 12 mm from the origin, so a bulk
+// cap sitting 2 mm from the land still reported `missing_decoupling_cap` and no
+// legal placement could have cleared it.
+func TestDecouplingMeasuresToThePinNotTheOrigin(t *testing.T) {
+	sch := core.NewSchematic()
+	uid, cid := core.NewID(), core.NewID()
+	sch.Symbols[uid.String()] = &core.Symbol{
+		ID: uid, Reference: "U1",
+		Kind: core.SymbolKind{Kind: "generic_ic", ICPins: []core.SchPin{
+			{Number: "1", Name: "P5V", Side: core.PinLeft, Role: core.PinPowerIn},
+		}},
+	}
+	sch.Symbols[cid.String()] = &core.Symbol{
+		ID: cid, Reference: "C5V", Kind: core.SymbolKind{Kind: "capacitor"},
+	}
+	sch.SymbolOrder = []string{uid.String(), cid.String()}
+	sch.Nets["+5V"] = &core.Net{Name: "+5V", Connections: []core.NetConnection{
+		{SymbolID: uid, PinNumber: "1"}, {SymbolID: cid, PinNumber: "1"},
+	}}
+
+	net5 := "+5V"
+	b := core.NewBoard()
+	// U1's origin is at (16, 14.3); its 5V land is 8.42 mm west and 10.16 mm
+	// north of that, at (7.58, 24.46) — 13.2 mm from the origin.
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "U1", Library: "esp32_s3_zero_cast",
+		Position: core.NewPoint(core.FromMM(16), core.FromMM(14.3)),
+		Layer:    core.LayerTop,
+		Pads: []core.Pad{{
+			Number: "1", Offset: core.NewPoint(core.FromMM(-8.42), core.FromMM(10.16)),
+			Size:  [2]core.Length{core.FromMM(2.4), core.FromMM(1.5)},
+			Layer: core.LayerTop, Net: &net5,
+		}},
+	})
+	// The cap sits 2.7 mm from that land and 12.4 mm from U1's origin.
+	b.AddFootprint(&core.Footprint{
+		ID: core.NewID(), Reference: "C5V", Library: "c_0805",
+		Position: core.NewPoint(core.FromMM(10.3), core.FromMM(23.6)),
+		Layer:    core.LayerBottom,
+		Pads: []core.Pad{{
+			Number: "1", Offset: core.Origin,
+			Size:  [2]core.Length{core.FromMM(1.2), core.FromMM(1.3)},
+			Layer: core.LayerBottom, Net: &net5,
+		}},
+	})
+
+	rep := Check(sch, b, DefaultOptions())
+	for _, v := range rep.Violations {
+		if v.Kind == KindMissingDecoupling {
+			t.Fatalf("cap is 2.7 mm from U1.1: %s", v.Message)
+		}
+	}
+
+	// And it still fires when the cap really is far from the pin.
+	b.Footprints[fpID(b, "C5V")].Position = core.NewPoint(core.FromMM(24), core.FromMM(4))
+	rep = Check(sch, b, DefaultOptions())
+	found := false
+	for _, v := range rep.Violations {
+		if v.Kind == KindMissingDecoupling {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected missing_decoupling_cap with the cap 25 mm from the pin")
+	}
+}
+
+func fpID(b *core.Board, ref string) string {
+	for id, fp := range b.Footprints {
+		if fp != nil && fp.Reference == ref {
+			return id
+		}
+	}
+	return ""
+}

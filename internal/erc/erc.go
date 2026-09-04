@@ -409,15 +409,37 @@ func checkDecoupling(board *core.Board, sch *core.Schematic, maxDistMM float64, 
 	if board == nil {
 		return
 	}
-	// symbol id → footprint position mm
+	// symbol id → footprint position mm, and symbol id → its footprint so the
+	// distance can be taken to the PIN rather than to the part's origin.
 	symPos := map[core.ID][2]float64{}
+	symFp := map[core.ID]*core.Footprint{}
 	for _, sym := range symbolsInOrder(sch) {
 		for _, fp := range board.Footprints {
 			if fp != nil && fp.Reference == sym.Reference {
 				symPos[sym.ID] = [2]float64{fp.Position.X.ToMM(), fp.Position.Y.ToMM()}
+				symFp[sym.ID] = fp
 				break
 			}
 		}
+	}
+	// pinPos returns the world centre of the pad carrying a pin, falling back
+	// to the part's origin. The rule is "a cap within N mm of the POWER PIN"
+	// and the message says so, but it used to measure from the footprint
+	// ORIGIN — which on a 18 x 23.5 mm castellated module puts the part's own
+	// 5V land 12 mm from the point being measured, so no legal placement could
+	// ever satisfy it. Small parts hid the bug; modules do not.
+	pinPos := func(symID core.ID, pinNumber string) ([2]float64, bool) {
+		fp := symFp[symID]
+		if fp != nil {
+			for i := range fp.Pads {
+				if fp.Pads[i].Number == pinNumber {
+					c := core.PadWorldCenter(fp, &fp.Pads[i])
+					return [2]float64{c.X.ToMM(), c.Y.ToMM()}, true
+				}
+			}
+		}
+		p, ok := symPos[symID]
+		return p, ok
 	}
 
 	// caps by net name
@@ -453,15 +475,18 @@ func checkDecoupling(board *core.Board, sch *core.Schematic, maxDistMM float64, 
 		if !isGenericIC(sym) {
 			continue
 		}
-		sxsy, ok := symPos[sym.ID]
-		if !ok {
+		if _, ok := symPos[sym.ID]; !ok {
 			continue
 		}
-		sx, sy := sxsy[0], sxsy[1]
 		for _, pin := range sym.Kind.Pins() {
 			if pin.Role != core.PinPowerIn {
 				continue
 			}
+			sxsy, ok := pinPos(sym.ID, pin.Number)
+			if !ok {
+				continue
+			}
+			sx, sy := sxsy[0], sxsy[1]
 			netName := netForPin(sch, sym.ID, pin.Number)
 			if netName == "" {
 				continue

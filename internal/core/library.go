@@ -162,6 +162,8 @@ type LibrarySilk struct {
 }
 
 // LibraryEntry is one component footprint in the user library.
+// Source/Datasheet/JLCClass/Pins/SymbolKindName are optional: entries written
+// before they existed still load, and hand-authored `lib` entries omit them.
 type LibraryEntry struct {
 	Key                    string          `json:"key"`
 	Description            string          `json:"description"`
@@ -180,6 +182,34 @@ type LibraryEntry struct {
 	FootprintViewTransform ViewTransform   `json:"footprint_view_transform"`
 	PlacementMargin        PlacementMargin `json:"placement_margin"`
 	BodyRect               *BodyRect       `json:"body_rect,omitempty"`
+	// Source is where the entry came from: "lcsc", "kicad", "ipc" (empty = hand-authored).
+	Source string `json:"source,omitempty"`
+	// Datasheet is the vendor PDF/product URL, when the source knew one.
+	Datasheet *string `json:"datasheet,omitempty"`
+	// JLCClass is the JLCPCB part class ("Basic Part" / "Extended Part").
+	JLCClass *string `json:"jlc_class,omitempty"`
+	// Pins is the schematic pin list captured alongside the footprint, so a
+	// second spawn needs no refetch. Numbers match Pads.Number.
+	Pins []SchPin `json:"pins,omitempty"`
+	// SymbolKindName is the SymbolKind.Kind to spawn ("generic_ic", "resistor", …).
+	SymbolKindName string `json:"symbol_kind,omitempty"`
+}
+
+// SymbolKindFor returns the symbol kind this entry should spawn, defaulting to
+// generic_ic when pins are known and to freeform (empty) when they are not.
+func (e *LibraryEntry) SymbolKindFor() (SymbolKind, bool) {
+	kind := e.SymbolKindName
+	if kind == "" {
+		if len(e.Pins) == 0 {
+			return SymbolKind{}, false
+		}
+		kind = "generic_ic"
+	}
+	sk := SymbolKind{Kind: kind}
+	if kind == "generic_ic" {
+		sk.ICPins = append([]SchPin(nil), e.Pins...)
+	}
+	return sk, true
 }
 
 // PadsBBoxMM returns the axis-aligned pad bounding box, or false if no pads.
@@ -616,6 +646,17 @@ func cloneEntry(e LibraryEntry) LibraryEntry {
 	if e.Manufacturer != nil {
 		s := *e.Manufacturer
 		out.Manufacturer = &s
+	}
+	if e.Datasheet != nil {
+		s := *e.Datasheet
+		out.Datasheet = &s
+	}
+	if e.JLCClass != nil {
+		s := *e.JLCClass
+		out.JLCClass = &s
+	}
+	if e.Pins != nil {
+		out.Pins = append([]SchPin(nil), e.Pins...)
 	}
 	return out
 }

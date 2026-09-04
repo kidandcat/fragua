@@ -179,8 +179,9 @@ func cmdNC(p *core.Project, args string) (string, error) {
 				if sym == nil || sym.Reference != ref {
 					continue
 				}
+				num := resolvePinAlias(s, p.Board(), ref, pin) // nc U1.XIN → U1.20
 				for i := range sym.Kind.ICPins {
-					if sym.Kind.ICPins[i].Number == pin {
+					if sym.Kind.ICPins[i].Number == num {
 						sym.Kind.ICPins[i].NC = true
 						sym.Kind.ICPins[i].Role = core.PinNC
 						marked++

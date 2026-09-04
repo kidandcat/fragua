@@ -66,9 +66,50 @@ var Verbs = []VerbHelp{
 		},
 	},
 	{
+		Name:  "part",
+		Usage: "part LCSC:C2040 [as=REF] [key=KEY] [value=V] [rot=DEG] [refresh=true]",
+		Notes: []string{
+			"        (real part: footprint + named pins from EasyEDA, cached in the library;",
+			"         \"part C2040\" works too; FRAGUA_OFFLINE=1 = cache only)",
+			"  part kicad:Library:Footprint [as=REF] [sym=Library:Symbol]",
+			"        (e.g. part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1; FRAGUA_KICAD_LIBS)",
+		},
+		Describe: "Pull a real part into the library and, with `as=REF`, spawn its symbol and bind the footprint so `place`/`net` work on the next line. `LCSC:Cnnnn` (or bare `Cnnnn`) fetches footprint, named pins, datasheet and JLCPCB class from EasyEDA and caches it under ~/.pcb-library; `kicad:Library:Footprint` reads a stock or FRAGUA_KICAD_LIBS KiCad footprint (add `sym=` for the matching .kicad_sym). Without `as=` the next free reference for the part's prefix is used. `refresh=true` bypasses the cache.",
+		Examples: []string{"part C2040", "part LCSC:C25804 as=R1 value=10k", "part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1 sym=Regulator_Linear:AP1117-15"},
+	},
+	{
+		Name:  "lib-gen",
+		Usage: "lib-gen NAME family=F … [density=N|L|M] [as=REF] [kind=r|c|l|led|d|ic]",
+		Notes: []string{
+			"        chip size=0201|0402|0603|0805|1206|1210|2512",
+			"        sot23 | sot23-5 | sot23-6 | sot223 | sot89",
+			"        soic|tssop|ssop|msop pins=N [pitch=P] [body=W]",
+			"        qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]",
+			"        qfp|lqfp pins=N pitch=P body=W",
+			"        dip pins=N [pitch=2.54] [spacing=7.62]",
+			"        header rows=1|2 pins=N [pitch=2.54|2.0|1.27]",
+		},
+		Describe: "Generate an IPC-7351 land pattern offline (courtyard, silk and pin-1 marker included) and store it under NAME. `density` picks the IPC nominal/least/most fillet; `as=REF` also spawns the symbol and binds the footprint; `kind` sets the symbol kind (default from the family).",
+		Examples: []string{"lib-gen R0603 family=chip size=0603 as=R1 kind=r", "lib-gen U2 family=qfn pins=32 pitch=0.5 body=5 ep=3.2", "lib-gen J1x04 family=header rows=1 pins=4 as=J1"},
+	},
+	{
+		Name:     "lib-import",
+		Aliases:  []string{"lib_import"},
+		Usage:    "lib-import kicad FILE|DIR [key=KEY] [as=REF]   (.kicad_mod, .pretty, .kicad_sym)",
+		Describe: "Import KiCad library files from disk: a single .kicad_mod, a whole .pretty directory, or a .kicad_sym (needs `key=` to say which entry receives the pins). `as=REF` spawns the symbol and binds the footprint.",
+		Examples: []string{"lib-import kicad ~/libs/MyParts.pretty", "lib-import kicad ~/libs/usb_c.kicad_mod as=J1", "lib-import kicad ~/libs/MyParts.kicad_sym key=usb_c"},
+	},
+	{
+		Name:     "list-parts",
+		Aliases:  []string{"list_parts"},
+		Usage:    "list-parts [lcsc|kicad|ipc|SUBSTRING]",
+		Describe: "List library entries that came from `part`, `lib-gen` or `lib-import`, with source, pin count and LCSC id. Filter by source or by a substring of the key.",
+		Examples: []string{"list-parts", "list-parts lcsc", "list-parts sot"},
+	},
+	{
 		Name:     "net",
-		Usage:    "net NAME REF.PIN …",
-		Describe: "Create or extend a net by listing the pins on it. Repeat the verb to add more pins later. `class=NAME` assigns a net class inline.",
+		Usage:    "net NAME REF.PIN …            (REF.NAME works too when pins are named)",
+		Describe: "Create or extend a net by listing the pins on it. Repeat the verb to add more pins later. `class=NAME` assigns a net class inline. Pins can be addressed by number or, for parts with named pins, by name.",
 		Examples: []string{"net GND U1.GND C1.2 R1.2 class=ground", "net +3V3 U1.3V3 C1.1 class=power"},
 	},
 	{
@@ -448,6 +489,8 @@ Usage:
 Environment:
   FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)
   FRAGUA_NO_BROWSER      if set, do not open a browser window
+  FRAGUA_OFFLINE         if 1, part LCSC:… uses the library cache only
+  FRAGUA_KICAD_LIBS      extra KiCad library roots (path-list separated)
 
 HTTP API:
   GET  /  /help          this reference (?verb=route for one verb)

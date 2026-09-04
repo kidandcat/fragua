@@ -191,6 +191,8 @@ Usage:
 Environment:
   FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)
   FRAGUA_NO_BROWSER      if set, do not open a browser window
+  FRAGUA_OFFLINE         if 1, part LCSC:… uses the library cache only
+  FRAGUA_KICAD_LIBS      extra KiCad library roots (path-list separated)
 
 HTTP API:
   GET  /  /help          this reference (?verb=route for one verb)
@@ -221,7 +223,22 @@ Script verbs (line-oriented, agent-first):
   keepout X1 Y1 X2 Y2 [no_copper=true] [no_place=true]
   lib KEY … + indented pad NUMBER X Y W H
   sym REF KIND … + indented pin for generic_ic
-  net NAME REF.PIN …
+  part LCSC:C2040 [as=REF] [key=KEY] [value=V] [rot=DEG] [refresh=true]
+        (real part: footprint + named pins from EasyEDA, cached in the library;
+         "part C2040" works too; FRAGUA_OFFLINE=1 = cache only)
+  part kicad:Library:Footprint [as=REF] [sym=Library:Symbol]
+        (e.g. part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1; FRAGUA_KICAD_LIBS)
+  lib-gen NAME family=F … [density=N|L|M] [as=REF] [kind=r|c|l|led|d|ic]
+        chip size=0201|0402|0603|0805|1206|1210|2512
+        sot23 | sot23-5 | sot23-6 | sot223 | sot89
+        soic|tssop|ssop|msop pins=N [pitch=P] [body=W]
+        qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]
+        qfp|lqfp pins=N pitch=P body=W
+        dip pins=N [pitch=2.54] [spacing=7.62]
+        header rows=1|2 pins=N [pitch=2.54|2.0|1.27]
+  lib-import kicad FILE|DIR [key=KEY] [as=REF]   (.kicad_mod, .pretty, .kicad_sym)
+  list-parts [lcsc|kicad|ipc|SUBSTRING]
+  net NAME REF.PIN …            (REF.NAME works too when pins are named)
   class NAME [clearance=N] [width=N] [impedance=Z]
   net-class NET CLASS
   palette REF KEY | palette list
@@ -414,16 +431,119 @@ Examples:
 Full reference: `fragua help` or GET /help
 ```
 
+## part
+
+```text
+part — fragua script verb
+
+Usage:
+  part LCSC:C2040 [as=REF] [key=KEY] [value=V] [rot=DEG] [refresh=true]
+  (real part: footprint + named pins from EasyEDA, cached in the library;
+  "part C2040" works too; FRAGUA_OFFLINE=1 = cache only)
+  part kicad:Library:Footprint [as=REF] [sym=Library:Symbol]
+  (e.g. part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1; FRAGUA_KICAD_LIBS)
+
+Pull a real part into the library and, with `as=REF`, spawn its symbol and
+bind the footprint so `place`/`net` work on the next line. `LCSC:Cnnnn` (or
+bare `Cnnnn`) fetches footprint, named pins, datasheet and JLCPCB class from
+EasyEDA and caches it under ~/.pcb-library; `kicad:Library:Footprint` reads
+a stock or FRAGUA_KICAD_LIBS KiCad footprint (add `sym=` for the matching
+.kicad_sym). Without `as=` the next free reference for the part's prefix is
+used. `refresh=true` bypasses the cache.
+
+Examples:
+  part C2040
+  part LCSC:C25804 as=R1 value=10k
+  part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1 sym=Regulator_Linear:AP1117-15
+
+Full reference: `fragua help` or GET /help
+```
+
+## lib-gen
+
+```text
+lib-gen — fragua script verb
+
+Usage:
+  lib-gen NAME family=F … [density=N|L|M] [as=REF] [kind=r|c|l|led|d|ic]
+  chip size=0201|0402|0603|0805|1206|1210|2512
+  sot23 | sot23-5 | sot23-6 | sot223 | sot89
+  soic|tssop|ssop|msop pins=N [pitch=P] [body=W]
+  qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]
+  qfp|lqfp pins=N pitch=P body=W
+  dip pins=N [pitch=2.54] [spacing=7.62]
+  header rows=1|2 pins=N [pitch=2.54|2.0|1.27]
+
+Generate an IPC-7351 land pattern offline (courtyard, silk and pin-1 marker
+included) and store it under NAME. `density` picks the IPC
+nominal/least/most fillet; `as=REF` also spawns the symbol and binds the
+footprint; `kind` sets the symbol kind (default from the family).
+
+Examples:
+  lib-gen R0603 family=chip size=0603 as=R1 kind=r
+  lib-gen U2 family=qfn pins=32 pitch=0.5 body=5 ep=3.2
+  lib-gen J1x04 family=header rows=1 pins=4 as=J1
+
+Full reference: `fragua help` or GET /help
+```
+
+## lib-import
+
+```text
+lib-import — fragua script verb
+
+Usage:
+  lib-import kicad FILE|DIR [key=KEY] [as=REF]   (.kicad_mod, .pretty, .kicad_sym)
+
+Aliases:
+  lib_import
+
+Import KiCad library files from disk: a single .kicad_mod, a whole .pretty
+directory, or a .kicad_sym (needs `key=` to say which entry receives the
+pins). `as=REF` spawns the symbol and binds the footprint.
+
+Examples:
+  lib-import kicad ~/libs/MyParts.pretty
+  lib-import kicad ~/libs/usb_c.kicad_mod as=J1
+  lib-import kicad ~/libs/MyParts.kicad_sym key=usb_c
+
+Full reference: `fragua help` or GET /help
+```
+
+## list-parts
+
+```text
+list-parts — fragua script verb
+
+Usage:
+  list-parts [lcsc|kicad|ipc|SUBSTRING]
+
+Aliases:
+  list_parts
+
+List library entries that came from `part`, `lib-gen` or `lib-import`, with
+source, pin count and LCSC id. Filter by source or by a substring of the
+key.
+
+Examples:
+  list-parts
+  list-parts lcsc
+  list-parts sot
+
+Full reference: `fragua help` or GET /help
+```
+
 ## net
 
 ```text
 net — fragua script verb
 
 Usage:
-  net NAME REF.PIN …
+  net NAME REF.PIN …            (REF.NAME works too when pins are named)
 
 Create or extend a net by listing the pins on it. Repeat the verb to add
-more pins later. `class=NAME` assigns a net class inline.
+more pins later. `class=NAME` assigns a net class inline. Pins can be
+addressed by number or, for parts with named pins, by name.
 
 Examples:
   net GND U1.GND C1.2 R1.2 class=ground

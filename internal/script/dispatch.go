@@ -211,6 +211,11 @@ func finishBlock(p *core.Project, b *openBlock) (string, error) {
 }
 
 func dispatch(p *core.Project, tool, args string) (string, error) {
+	// Real-part verbs (part / lib-gen / lib-import / list-parts) live in
+	// parts_verbs.go; ok=false falls through to the switch below.
+	if msg, err, ok := partsVerb(p, tool, args); ok {
+		return msg, err
+	}
 	switch tool {
 	case "status", "view":
 		return status(p), nil
@@ -384,6 +389,9 @@ func listLib(p *core.Project) string {
 			continue
 		}
 		fmt.Fprintf(&b, "%s pads=%d", e.Key, len(e.Pads))
+		if e.Source != "" {
+			fmt.Fprintf(&b, " src=%s pins=%d", e.Source, len(e.Pins))
+		}
 		if e.EdgeMounted {
 			b.WriteString(" edge")
 			if e.EdgeSide != nil {
@@ -570,6 +578,7 @@ func addNet(p *core.Project, args string) (string, error) {
 			return "", fmt.Errorf("net: bad pin %q", tok)
 		}
 		ref, pin := parts[0], parts[1]
+		pin = resolvePinAlias(sch, board, ref, pin) // U1.GND → U1.57
 		var sid core.ID
 		for _, s := range sch.Symbols {
 			if s != nil && s.Reference == ref {
