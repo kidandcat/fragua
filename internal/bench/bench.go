@@ -212,7 +212,13 @@ func load(path string) (p *core.Project, autoPlace bool, err error) {
 		if err != nil {
 			return nil, false, err
 		}
-		return p, placeDirective(text, false), nil
+		// A saved project has no comments, so it carries the directive in a
+		// "bench" key the project loader ignores.
+		var meta struct {
+			Bench string `json:"bench"`
+		}
+		_ = json.Unmarshal(raw, &meta)
+		return p, placeDirective(meta.Bench, false), nil
 	}
 	p = core.NewProject(boardName(path))
 	for _, r := range script.RunScript(p, text) {

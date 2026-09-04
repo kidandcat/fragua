@@ -1,4 +1,5 @@
 {
+  "bench": "# bench: place=auto",
   "name": "vl53l9-usb-bridge",
   "board": {
     "outline": {
