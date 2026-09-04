@@ -3963,12 +3963,12 @@
       }
     ],
     "fab_rules": {
-      "preset": "jlcpcb-2l",
+      "preset": "jlcpcb-2l-via02",
       "min_trace_width_mm": 0.127,
       "min_clearance_mm": 0.127,
       "min_via_drill_mm": 0.2,
       "min_via_diameter_mm": 0.45,
-      "min_annular_ring_mm": 0.13,
+      "min_annular_ring_mm": 0.125,
       "min_edge_clearance_mm": 0.2,
       "max_board_size_mm": [
         100.0,

@@ -44,9 +44,23 @@ type Result struct {
 	LengthMM    float64 `json:"trace_length_mm"`
 	DRCErrors   int     `json:"drc_errors"`
 	DRCWarnings int     `json:"drc_warnings"`
-	AutoPlaced  bool    `json:"auto_placed"`
-	WallMS      int64   `json:"wall_ms"`
-	Error       string  `json:"error,omitempty"`
+	// DRCKinds counts error violations by kind, so a DRC number in the table
+	// can always be traced back to what actually failed.
+	DRCKinds   map[string]int `json:"drc_error_kinds,omitempty"`
+	AutoPlaced bool           `json:"auto_placed"`
+	WallMS     int64          `json:"wall_ms"`
+	Error      string         `json:"error,omitempty"`
+}
+
+// topKind is the violation kind that dominates a board's DRC errors.
+func (r Result) topKind() (string, int) {
+	best, n := "", 0
+	for k, c := range r.DRCKinds {
+		if c > n || (c == n && k < best) {
+			best, n = k, c
+		}
+	}
+	return best, n
 }
 
 // Meta records what produced a run so a table can be reproduced.
@@ -172,6 +186,15 @@ func RunFile(path string, opts Options) Result {
 	p.RUnlock()
 	res.DRCErrors = drcRep.Errors
 	res.DRCWarnings = drcRep.Warnings
+	for _, v := range drcRep.Violations {
+		if v.Severity != drc.SeverityError {
+			continue
+		}
+		if res.DRCKinds == nil {
+			res.DRCKinds = map[string]int{}
+		}
+		res.DRCKinds[string(v.Kind)]++
+	}
 	res.WallMS = time.Since(start).Milliseconds()
 	return res
 }
@@ -268,25 +291,33 @@ func boardName(path string) string {
 // Markdown renders the published table.
 func (r Run) Markdown() string {
 	var b strings.Builder
-	b.WriteString("| board | layers | parts | nets | routed | DRC err | vias | trace mm | wall s |\n")
-	b.WriteString("|---|--:|--:|--:|--:|--:|--:|--:|--:|\n")
+	b.WriteString("| board | layers | place | parts | nets | routed | DRC err | vias | trace mm | wall s |\n")
+	b.WriteString("|---|--:|:--|--:|--:|--:|--:|--:|--:|--:|\n")
 	var totWall int64
 	for _, x := range r.Results {
 		totWall += x.WallMS
 		if x.Error != "" {
-			fmt.Fprintf(&b, "| %s | — | — | — | — | — | — | — | %.1f | \n", x.Name, float64(x.WallMS)/1000)
+			fmt.Fprintf(&b, "| %s | — | — | — | — | — | — | — | — | %.1f |\n", x.Name, float64(x.WallMS)/1000)
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d/%d | %d | %d | %.0f | %.1f |\n",
-			x.Name, x.Layers, x.Parts, x.Nets, x.RoutedNets, x.Nets,
+		place := "given"
+		if x.AutoPlaced {
+			place = "auto"
+		}
+		fmt.Fprintf(&b, "| %s | %d | %s | %d | %d | %d/%d | %d | %d | %.0f | %.1f |\n",
+			x.Name, x.Layers, place, x.Parts, x.Nets, x.RoutedNets, x.Nets,
 			x.DRCErrors, x.Vias, x.LengthMM, float64(x.WallMS)/1000)
 	}
 	fmt.Fprintf(&b, "\nTotal wall time: %.1f s — seed %d, per-board router budget %.0f s, Fragua %s, %s %s/%s, %d CPUs, generated %s.\n",
 		float64(totWall)/1000, r.Meta.Seed, r.Meta.BudgetSeconds, r.Meta.FraguaVersion,
 		r.Meta.Go, r.Meta.OS, r.Meta.Arch, r.Meta.CPUs, r.Meta.GeneratedAt)
 	for _, x := range r.Results {
-		if x.Error != "" {
+		switch {
+		case x.Error != "":
 			fmt.Fprintf(&b, "\n%s FAILED: %s\n", x.Name, x.Error)
+		case x.DRCErrors > 0:
+			kind, n := x.topKind()
+			fmt.Fprintf(&b, "\n%s: %d DRC errors, %d of them %s.\n", x.Name, x.DRCErrors, n, kind)
 		}
 	}
 	return b.String()

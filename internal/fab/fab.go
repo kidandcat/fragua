@@ -49,7 +49,7 @@ func ProfileByName(name string) (Profile, error) {
 	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2":
 		return Profile{
 			Name: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
-			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
+			MinDrillMM: 0.20, MinAnnularRingMM: 0.125, MinViaDiameterMM: 0.45,
 			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
 			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil
@@ -63,7 +63,7 @@ func ProfileByName(name string) (Profile, error) {
 	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2":
 		return Profile{
 			Name: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
-			MinDrillMM: 0.20, MinAnnularRingMM: 0.13, MinViaDiameterMM: 0.45,
+			MinDrillMM: 0.20, MinAnnularRingMM: 0.125, MinViaDiameterMM: 0.45,
 			MinEdgeClearanceMM: 0.3, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
 			MaxBoardSizeMM: [2]float64{500, 500},
 		}, nil

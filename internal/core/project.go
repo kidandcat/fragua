@@ -330,10 +330,13 @@ func FabRulesPreset(name string) *FabRules {
 			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
 			MaxBoardSizeMM: &sz,
 		}
+	// The via02 presets' annular floor is 0.125 mm, not 0.13: a 0.20 mm drill
+	// in the 0.45 mm pad the same preset allows leaves exactly 0.125 mm of
+	// ring, so a 0.13 rule failed every via the preset's own minimum produces.
 	case "jlcpcb-2l-via02", "jlcpcb-2l-via0.2", "jlcpcb_2l_via02":
 		return &FabRules{
 			Preset: "jlcpcb-2l-via02", MinTraceWidthMM: 0.127, MinClearanceMM: 0.127,
-			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
+			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.125,
 			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
 			MaxBoardSizeMM: &sz,
 		}
@@ -347,7 +350,7 @@ func FabRulesPreset(name string) *FabRules {
 	case "jlcpcb-4l-via02", "jlcpcb-4l-via0.2", "jlcpcb_4l_via02":
 		return &FabRules{
 			Preset: "jlcpcb-4l-via02", MinTraceWidthMM: 0.0889, MinClearanceMM: 0.0889,
-			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.13,
+			MinViaDrillMM: 0.20, MinViaDiameterMM: 0.45, MinAnnularRingMM: 0.125,
 			MinEdgeClearanceMM: 0.30, MinHoleToHoleMM: 0.50, MinSliverMM: 0.15,
 			MaxBoardSizeMM: &sz,
 		}
