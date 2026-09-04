@@ -13,6 +13,7 @@ import (
 	"github.com/mentasystems/fragua/internal/drc"
 	"github.com/mentasystems/fragua/internal/erc"
 	"github.com/mentasystems/fragua/internal/gerber"
+	"github.com/mentasystems/fragua/internal/kicad"
 )
 
 // Provider names.
@@ -161,11 +162,21 @@ func Pack(p *core.Project, provider, outDir string) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The pack also carries the board as a KiCad 9 file: whoever receives the
+	// gerbers can open the design itself and check it, not just the plots.
+	kicadPath := filepath.Join(work, name+".kicad_pcb")
+	if err := kicad.WriteFile(board, kicadPath, kicad.Options{Name: name, FillZones: true}); err != nil {
+		return nil, err
+	}
+	files = append(files, kicadPath)
+
 	// Append ERC/DRC status to the gerber README (do not replace the layer map).
 	rp := filepath.Join(work, "README.txt")
 	existing, _ := os.ReadFile(rp)
-	status := fmt.Sprintf("\nPack status\nprovider=%s\nerc_errors=%d drc_errors=%d\n",
-		prof.Name, ercRep.Errors, drcRep.Errors)
+	status := fmt.Sprintf("\nAlso in this pack:\n  %s.kicad_pcb    the same board as a KiCad 9 file\n"+
+		"    (format %s; zones ship pre-filled, so the copper shows without a refill)\n"+
+		"\nPack status\nprovider=%s\nerc_errors=%d drc_errors=%d\n",
+		name, kicad.FormatVersion, prof.Name, ercRep.Errors, drcRep.Errors)
 	_ = os.WriteFile(rp, append(existing, []byte(status)...), 0o644)
 	has := false
 	for _, f := range files {
