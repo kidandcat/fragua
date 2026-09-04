@@ -53,7 +53,7 @@ var Verbs = []VerbHelp{
 	{
 		Name:     "lib",
 		Usage:    "lib KEY … + indented pad NUMBER X Y W H",
-		Describe: "Define a custom footprint under KEY. Follow it with indented `pad NUMBER X Y W H` lines (mm, relative to the footprint origin). Use the built-in palette first — see `list-lib` — and only define a footprint the library lacks.",
+		Describe: "Define a custom footprint under KEY. Follow it with indented `pad NUMBER X Y W H` lines (mm, relative to the footprint origin). Use the built-in palette first — see `list-lib` — and only define a footprint the library lacks. `lcsc=`/`mpn=` name ONE part: on a passive they only reach the BOM when the entry also sets `value=` and the symbol's value agrees (put per-value ids on the `sym` line instead).",
 		Examples: []string{"lib my_conn\n  pad 1 -1.27 0 1.0 1.8\n  pad 2 1.27 0 1.0 1.8"},
 	},
 	{
