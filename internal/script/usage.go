@@ -8,6 +8,8 @@ Usage:
   fragua                 print this help and exit
   fragua help            same
   fragua run [file]      start local HTTP API (default 127.0.0.1:7878)
+  fragua bench [dir]     run the reference boards (place → route → drc)
+                         [--seed N] [--budget S] [--json f] [--md f] [--strict]
 
 Environment:
   FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)
