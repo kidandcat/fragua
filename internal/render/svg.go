@@ -236,7 +236,7 @@ func writePours(b *strings.Builder, board *core.Board, stack core.LayerStackup) 
 
 func writeCopperLayer(b *strings.Builder, board *core.Board, stack core.LayerStackup, idx int) {
 	name := stack.LayerName(idx)
-	fmt.Fprintf(b, `<g data-layer="%s" data-kind="copper">`, escape(name))
+	fmt.Fprintf(b, `<g data-layer="%s" data-kind="copper" data-index="%d">`, escape(name), idx)
 	for _, tr := range board.Traces {
 		if int(tr.Layer.Index) != idx {
 			continue

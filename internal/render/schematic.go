@@ -35,19 +35,30 @@ func SchematicSVG(s *core.Schematic) string {
 	nets := schPinNets(s)
 
 	cells := make([]schCell, len(syms))
-	cw, ch := 0.0, 0.0
+	area, widest := 0.0, 0.0
 	for i, sym := range syms {
 		cells[i] = layoutSymbol(sym, nets)
-		cw = math.Max(cw, cells[i].w)
-		ch = math.Max(ch, cells[i].h)
+		area += cells[i].w * cells[i].h
+		widest = math.Max(widest, cells[i].w)
 	}
-	cols := int(math.Ceil(math.Sqrt(float64(len(cells)) * 1.35)))
-	if cols < 1 {
-		cols = 1
+	// Shelf-pack, not a uniform grid: one 57-pin QFN next to thirty 0603s
+	// would size every cell to the QFN and shrink the sheet to nothing.
+	shelfW := math.Max(widest, math.Sqrt(area*1.9))
+	x, y, rowH, totalW := schMargin, schMargin, 0.0, 0.0
+	for i := range cells {
+		if x > schMargin && x+cells[i].w > shelfW+schMargin {
+			x = schMargin
+			y += rowH + schGutter
+			rowH = 0
+		}
+		cells[i].x = x + cells[i].w/2
+		cells[i].y = y + cells[i].h/2
+		x += cells[i].w + schGutter
+		totalW = math.Max(totalW, x-schGutter)
+		rowH = math.Max(rowH, cells[i].h)
 	}
-	rows := (len(cells) + cols - 1) / cols
-	totalW := schMargin*2 + float64(cols)*cw + float64(cols-1)*schGutter
-	totalH := schMargin*2 + float64(rows)*ch + float64(rows-1)*schGutter
+	totalW += schMargin
+	totalH := y + rowH + schMargin
 
 	var b strings.Builder
 	pw, ph := svgPixelSize(totalW, totalH)
@@ -58,12 +69,9 @@ func SchematicSVG(s *core.Schematic) string {
 	fmt.Fprintf(&b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" fill="none" stroke="#222a35" stroke-width="0.12"/></g>`,
 		schMargin/2, schMargin/2, totalW-schMargin, totalH-schMargin)
 	b.WriteString(`<g data-layer="symbols">`)
-	for i, c := range cells {
-		col, row := i%cols, i/cols
-		x := schMargin + float64(col)*(cw+schGutter) + cw/2
-		y := schMargin + float64(row)*(ch+schGutter) + ch/2
+	for _, c := range cells {
 		fmt.Fprintf(&b, `<g data-sym="%s" data-kind="%s" data-value="%s" data-key="%s" transform="translate(%.3f,%.3f)">`,
-			escape(c.sym.Reference), escape(strings.ToLower(c.sym.Kind.Kind)), escape(c.sym.Value), escape(c.sym.Key), x, y)
+			escape(c.sym.Reference), escape(strings.ToLower(c.sym.Kind.Kind)), escape(c.sym.Value), escape(c.sym.Key), c.x, c.y)
 		b.WriteString(c.body)
 		b.WriteString(`</g>`)
 	}
@@ -74,6 +82,7 @@ func SchematicSVG(s *core.Schematic) string {
 type schCell struct {
 	sym  *core.Symbol
 	w, h float64
+	x, y float64 // sheet position of the symbol origin
 	body string
 }
 
@@ -168,25 +177,58 @@ func schPinNets(s *core.Schematic) map[string]string {
 	return out
 }
 
-func layoutSymbol(sym *core.Symbol, nets map[string]string) schCell {
-	pins := sym.Kind.Pins()
-	var left, right, top, bottom []core.SchPin
-	for _, p := range pins {
-		switch p.Side {
-		case core.PinRight:
-			right = append(right, p)
-		case core.PinTop:
-			top = append(top, p)
-		case core.PinBottom:
-			bottom = append(bottom, p)
-		default:
-			left = append(left, p)
+// pinPlan is one pin with the flag it will carry, sized before anything is
+// drawn: the sheet has to reserve the room the flags need, not discover it.
+type pinPlan struct {
+	pin   core.SchPin
+	net   string
+	label string
+	width float64
+}
+
+func planPin(sym *core.Symbol, p core.SchPin, nets map[string]string) pinPlan {
+	net := nets[sym.ID.String()+"."+p.Number]
+	label := net
+	if label == "" {
+		label = "?"
+		if p.IsNC() {
+			label = "NC"
 		}
 	}
-	longestName := 0.0
-	for _, p := range pins {
-		longestName = math.Max(longestName, float64(len([]rune(pinLabel(p)))))
+	return pinPlan{pin: p, net: net, label: label,
+		width: float64(len([]rune(label)))*schFont*schCharW + 1.2}
+}
+
+func maxFlagWidth(groups ...[]pinPlan) float64 {
+	w := 0.0
+	for _, g := range groups {
+		for _, p := range g {
+			w = math.Max(w, p.width)
+		}
 	}
+	return w
+}
+
+func layoutSymbol(sym *core.Symbol, nets map[string]string) schCell {
+	var left, right, top, bottom []pinPlan
+	longestName := 0.0
+	for _, p := range sym.Kind.Pins() {
+		pp := planPin(sym, p, nets)
+		longestName = math.Max(longestName, float64(len([]rune(pinLabel(p)))))
+		switch p.Side {
+		case core.PinRight:
+			right = append(right, pp)
+		case core.PinTop:
+			top = append(top, pp)
+		case core.PinBottom:
+			bottom = append(bottom, pp)
+		default:
+			left = append(left, pp)
+		}
+	}
+	flagLR := maxFlagWidth(left, right)
+	flagTB := maxFlagWidth(top, bottom)
+
 	bodyW := math.Max(schMinBodyW, longestName*schFont*schCharW*2+4)
 	if n := math.Max(float64(len(top)), float64(len(bottom))); n > 0 {
 		bodyW = math.Max(bodyW, n*schPitch+2)
@@ -202,18 +244,25 @@ func layoutSymbol(sym *core.Symbol, nets map[string]string) schCell {
 		fmt.Fprintf(&g, `<rect class="sym-body" x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="0.5" fill="#151a22" stroke="#8b949e" stroke-width="0.16"/>`,
 			-bodyW/2, -bodyH/2, bodyW, bodyH)
 	}
-	// Reference above the body, value below: the two things a human scans for.
+	// Reference above the body, value below — clear of the flags on those
+	// sides, which is where a bottom-pinned connector used to bury its value.
+	refY, valY := -bodyH/2-1.1, bodyH/2+1.8
+	if len(top) > 0 {
+		refY = -bodyH/2 - schLead - flagTB - 1.4
+	}
+	if len(bottom) > 0 {
+		valY = bodyH/2 + schLead + flagTB + 2.6
+	}
 	fmt.Fprintf(&g, `<text x="0" y="%.3f" text-anchor="middle" font-family="ui-monospace, monospace" font-size="%.2f" fill="#d6905b">%s</text>`,
-		-bodyH/2-1.1, schRefFont, escape(sym.Reference))
+		refY, schRefFont, escape(sym.Reference))
 	if v := symValue(sym); v != "" {
 		fmt.Fprintf(&g, `<text x="0" y="%.3f" text-anchor="middle" font-family="ui-monospace, monospace" font-size="%.2f" fill="#9aa3b2">%s</text>`,
-			bodyH/2+1.8, schFont, escape(v))
+			valY, schFont, escape(v))
 	}
 
-	flagW := 0.0
-	place := func(list []core.SchPin, side core.PinSide) {
+	place := func(list []pinPlan, side core.PinSide) {
 		n := len(list)
-		for i, p := range list {
+		for i, pp := range list {
 			off := (float64(i) - float64(n-1)/2) * schPitch
 			var px, py, lx, ly float64
 			switch side {
@@ -230,14 +279,13 @@ func layoutSymbol(sym *core.Symbol, nets map[string]string) schCell {
 				px, py = -bodyW/2, off
 				lx, ly = px-schLead, off
 			}
-			net := nets[sym.ID.String()+"."+p.Number]
+			p := pp.pin
 			fmt.Fprintf(&g, `<g data-pin="%s" data-pin-name="%s" data-role="%s" data-net="%s" data-sym="%s">`,
-				escape(p.Number), escape(pinLabel(p)), escape(string(p.Role)), escape(net), escape(sym.Reference))
+				escape(p.Number), escape(pinLabel(p)), escape(string(p.Role)), escape(pp.net), escape(sym.Reference))
 			fmt.Fprintf(&g, `<line x1="%.3f" y1="%.3f" x2="%.3f" y2="%.3f" stroke="%s" stroke-width="0.14"/>`,
-				px, py, lx, ly, pinStroke(p, net))
-			fmt.Fprintf(&g, `<circle cx="%.3f" cy="%.3f" r="0.24" fill="%s"/>`, lx, ly, pinStroke(p, net))
-			w := writeNetFlag(&g, lx, ly, side, net, p)
-			flagW = math.Max(flagW, w)
+				px, py, lx, ly, pinStroke(p, pp.net))
+			fmt.Fprintf(&g, `<circle cx="%.3f" cy="%.3f" r="0.24" fill="%s"/>`, lx, ly, pinStroke(p, pp.net))
+			writeNetFlag(&g, lx, ly, side, pp)
 			if !discrete && pinLabel(p) != "" {
 				writePinLabel(&g, px, py, side, pinLabel(p))
 			}
@@ -249,10 +297,17 @@ func layoutSymbol(sym *core.Symbol, nets map[string]string) schCell {
 	place(top, core.PinTop)
 	place(bottom, core.PinBottom)
 
-	reach := schLead + flagW + 1.5
-	w := bodyW + 2*reach
-	h := bodyH + 2*math.Max(reach, 4.0)
-	return schCell{sym: sym, w: w, h: h, body: g.String()}
+	// Reserve room where the pins actually stick out. A 2-pin passive with
+	// left/right flags needs width, not the height of its widest flag.
+	hReach := 2.0
+	if len(left)+len(right) > 0 {
+		hReach = schLead + flagLR + 1.5
+	}
+	vReach := 4.0 // reference above, value below
+	if len(top)+len(bottom) > 0 {
+		vReach = schLead + flagTB + 4.0
+	}
+	return schCell{sym: sym, w: bodyW + 2*hReach, h: bodyH + 2*vReach, body: g.String()}
 }
 
 func symValue(sym *core.Symbol) string {
@@ -282,48 +337,43 @@ func pinStroke(p core.SchPin, net string) string {
 	}
 }
 
-// writeNetFlag draws the net-name tag at the end of a pin lead and returns
-// its width, so the sheet can leave room for the longest one.
-func writeNetFlag(g *strings.Builder, x, y float64, side core.PinSide, net string, p core.SchPin) float64 {
-	label := net
-	fill := "#1b222c"
-	stroke := "#3a4452"
-	text := "#e6edf3"
-	if label == "" {
-		if p.IsNC() {
-			label = "NC"
-			text = "#7d8590"
-		} else {
-			label = "?"
-			fill = "#2a1416"
-			stroke = "#b0303a"
-			text = "#ff9d9d"
-		}
-	} else if core.IsPowerNamedNet(net) {
-		fill = "#2a1c10"
-		stroke = "#d6905b"
-		text = "#f0c49a"
+// writeNetFlag draws the net-name tag at the end of a pin lead. Top and
+// bottom flags are turned 90°: laid flat they are wider than the pin pitch,
+// so a connector's bottom row wrote its net names over each other.
+func writeNetFlag(g *strings.Builder, x, y float64, side core.PinSide, pp pinPlan) {
+	fill, stroke, text := "#1b222c", "#3a4452", "#e6edf3"
+	switch {
+	case pp.net == "" && pp.pin.IsNC():
+		text = "#7d8590"
+	case pp.net == "":
+		fill, stroke, text = "#2a1416", "#b0303a", "#ff9d9d"
+	case core.IsPowerNamedNet(pp.net):
+		fill, stroke, text = "#2a1c10", "#d6905b", "#f0c49a"
 	}
-	tw := float64(len([]rune(label)))*schFont*schCharW + 1.2
-	th := schFont + 0.9
-	var rx, ry, tx float64
-	anchor := "middle"
+	tw, th := pp.width, schFont+0.9
+	// Each flag is drawn in a local frame whose +x runs away from the body.
+	frame := fmt.Sprintf(`translate(%.3f,%.3f)`, x, y)
 	switch side {
-	case core.PinRight:
-		rx, ry = x+0.3, y-th/2
-		tx, anchor = rx+0.6, "start"
-	case core.PinTop, core.PinBottom:
-		rx, ry = x-tw/2, y-th/2
-		tx = x
-	default:
-		rx, ry = x-0.3-tw, y-th/2
-		tx, anchor = rx+tw-0.6, "end"
+	case core.PinTop:
+		frame += ` rotate(-90)`
+	case core.PinBottom:
+		frame += ` rotate(90)`
+	case core.PinLeft:
+		frame += ` rotate(180)`
 	}
-	fmt.Fprintf(g, `<rect class="net-flag" data-net="%s" x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="0.4" fill="%s" stroke="%s" stroke-width="0.1"/>`,
-		escape(net), rx, ry, tw, th, fill, stroke)
-	fmt.Fprintf(g, `<text x="%.3f" y="%.3f" text-anchor="%s" dominant-baseline="middle" font-family="ui-monospace, monospace" font-size="%.2f" fill="%s">%s</text>`,
-		tx, y+0.05, anchor, schFont, text, escape(label))
-	return tw
+	fmt.Fprintf(g, `<g transform="%s">`, frame)
+	fmt.Fprintf(g, `<rect class="net-flag" data-net="%s" x="0.3" y="%.3f" width="%.3f" height="%.3f" rx="0.4" fill="%s" stroke="%s" stroke-width="0.1"/>`,
+		escape(pp.net), -th/2, tw, th, fill, stroke)
+	if side == core.PinLeft {
+		// The 180° frame would mirror the lettering: counter-rotate the text
+		// and anchor it at the far end of its own tag.
+		fmt.Fprintf(g, `<g transform="translate(%.3f,0) rotate(180)"><text x="0" y="0" text-anchor="start" dominant-baseline="middle" font-family="ui-monospace, monospace" font-size="%.2f" fill="%s">%s</text></g>`,
+			tw-0.3, schFont, text, escape(pp.label))
+	} else {
+		fmt.Fprintf(g, `<text x="0.9" y="0" text-anchor="start" dominant-baseline="middle" font-family="ui-monospace, monospace" font-size="%.2f" fill="%s">%s</text>`,
+			schFont, text, escape(pp.label))
+	}
+	g.WriteString(`</g>`)
 }
 
 func writePinLabel(g *strings.Builder, x, y float64, side core.PinSide, label string) {
