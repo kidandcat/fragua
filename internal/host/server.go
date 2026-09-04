@@ -204,6 +204,22 @@ func Handler(p *core.Project) http.Handler {
 	mux.HandleFunc("/summary", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, summarize(p))
 	})
+	// /part is the library entry behind a footprint key — description,
+	// datasheet, LCSC id. It lives on disk, not in the project file, so the
+	// inspector cannot read it out of /state.
+	mux.HandleFunc("/part", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "key required", http.StatusBadRequest)
+			return
+		}
+		e, ok := p.FindLibrary(key)
+		if !ok {
+			http.Error(w, "no such library entry", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, e)
+	})
 	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
