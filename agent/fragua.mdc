@@ -1,0 +1,83 @@
+---
+description: Design PCBs with Fragua — schematic, placement, routing, DRC, Gerber/BOM packs, .fragua files
+globs: ["**/*.fragua"]
+alwaysApply: false
+---
+
+# Fragua
+
+AI-native PCB design tool. One Go binary: a script API for you, a live browser UI for the
+human at <http://127.0.0.1:7878/ui/>.
+
+## Launch
+
+Bare `fragua` prints help and exits — always use a subcommand:
+
+```sh
+fragua mcp board.fragua   # MCP on stdio + HTTP API + UI
+fragua run board.fragua   # HTTP API + UI only
+```
+
+## Drive it
+
+Use the `fragua_*` MCP tools if configured, otherwise HTTP:
+
+```sh
+curl -s http://127.0.0.1:7878/help                  # full verb reference
+curl -s 'http://127.0.0.1:7878/help?verb=route'     # one verb
+curl -s http://127.0.0.1:7878/script -H 'content-type: application/json' \
+  -d '{"script":"outline 30 20\nstatus"}'
+```
+
+Script is line-oriented; indented lines continue a `sym`/`lib` block. **Execution stops at
+the first failing line.** Results are `ok <verb>: …` or `error line <n> <verb>: …`.
+
+Do not guess argument names — read `/help?verb=<verb>` first.
+
+## Recipe
+
+```text
+outline 30 20 radius=2
+fab-rules jlcpcb                 # set BEFORE routing
+class ground pour=both
+
+sym U1 ic key=esp32_s3_zero      # kinds: ic resistor capacitor inductor led diode
+  pin 1 L GND role=power_in
+  pin 2 R IO1 role=bidir
+sym C1 capacitor key=c_0603
+net GND U1.GND C1.2 class=ground
+nc U1.IO9                        # unused pins, or ERC calls them floating
+erc                              # iterate to 0 errors
+
+list-lib                         # 70+ footprints exist; look before authoring with `lib`
+palette U1 esp32_s3_zero         # binds the footprint — does NOT place it
+place U1 15 10                   # anchor what matters
+edge-place J1 bottom             # connectors
+place C1 22 14
+auto-place C1 seed=42            # only moves already-placed parts
+
+route max_seconds=120            # re-run: it only attacks open nets
+auto-pour
+stitch
+drc
+pack fab=jlcpcb out=/tmp
+save /abs/path/board.fragua
+```
+
+## Rules
+
+- `palette` binds a footprint; the part still needs `place` / `place-legal` / `edge-place`.
+  `auto-place` on an unplaced part fails with `no movable footprints`.
+- Anchor ICs and connectors before `auto-place`, or passives scatter from their IC.
+- `route: N/M nets ok` — re-run while `N` improves. When it plateaus, the geometry is
+  blocking; more seconds will not help. Add area, move a part, or `layer add`.
+- `erc`/`drc` return counts, not locations. Errors must be 0. See where via the UI or
+  `screenshot`.
+- `pack` only refuses on **ERC** errors; it will pack a DRC-dirty board and report
+  `drc_err=N`. Never ship that silently.
+- Re-routing order: `clear-pour` → `route` → `auto-pour` → `stitch`.
+- Memory-only sessions lose everything: `save /abs/path.fragua` early.
+- Budgets: `route max_seconds=90..180`, always pass `auto-place seed=N`.
+
+When the router plateaus or a design decision is ambiguous, ask the human — they are
+watching the UI and can drag a part or relax a constraint.
