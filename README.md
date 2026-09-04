@@ -119,6 +119,17 @@ The browser opens at `http://127.0.0.1:7878/ui/` and the HTTP API listens
 on `127.0.0.1:7878` (override: `FRAGUA_API_ADDR`). Set `FRAGUA_NO_BROWSER=1`
 to skip the browser.
 
+The UI is where the human watches the agent work and steps in. The board is
+live inline SVG — pan, zoom, per-layer visibility, top/bottom view, ratsnest
+on the nets still open. Hover or click a pad, trace or via to highlight the
+whole net and inspect it; click a part for its key, LCSC id, datasheet and
+pins. Drag a part and drop it and the UI runs `move REF X Y` for you (`R`
+rotates), showing the exact script line it sent — you and the agent are
+editing the same live project. `route`, `auto-place` and `compact` stream a
+progress bar you can cancel, DRC/ERC findings are clickable markers on the
+canvas, and there is a schematic tab. Everything is served from the binary:
+no CDN, no build step, works offline.
+
 ## Drive it from an agent
 
 Stateless HTTP — every request is independent. From any tool that can
@@ -153,9 +164,14 @@ curl -s http://127.0.0.1:7878/save \
 | `GET` | `/state` | JSON project snapshot |
 | `GET` | `/events` | SSE project change stream |
 | `GET` | `/ui/` | Browser UI |
-| `GET` | `/screenshot` | Board SVG |
+| `GET` | `/screenshot` | Board SVG (`?drc=1` bakes in the violation markers) |
+| `GET` | `/schematic` | Schematic SVG |
+| `GET` | `/summary` | Status line as JSON: outline, layers, parts, nets routed, op in flight |
+| `GET` | `/drc`, `/erc` | Violations as JSON, each with a stable id and a location |
+| `GET` | `/part?key=K` | Library entry behind a footprint key (description, datasheet, LCSC) |
 | `POST` | `/script` | Multi-line script body `{"script":"..."}` |
 | `POST` | `/save` | Atomic write + bind autosave `{"path":"..."}` |
+| `POST` | `/cancel` | Stop the long op in flight; it keeps the work already committed |
 
 Replies are `text/plain`: per-line outcomes in the form
 `[L<n> ok|FAIL <tool>] <text>`, plus a warning when the session is
