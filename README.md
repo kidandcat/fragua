@@ -118,6 +118,30 @@ Replies are `text/plain`: per-line outcomes in the form
 `[L<n> ok|FAIL <tool>] <text>`, plus a warning when the session is
 memory-only.
 
+## Real parts
+
+Three ways to get a footprint *and* its schematic symbol in one line — no
+hand-typed pads. Each one caches into `~/.pcb-library`, so the second call is
+instant and works offline.
+
+```text
+part C2040                       # LCSC/JLCPCB via the EasyEDA API → U1, 57 pads,
+                                 # named pins (GPIO7, GND…), MPN + datasheet
+part LCSC:C25804 as=R1 value=10k
+part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1   # offline, from a KiCad install
+lib-gen R0603 family=chip size=0603 as=R2    # IPC-7351B land pattern, no library
+lib-gen U2_QFN family=qfn pins=32 pitch=0.5 body=5 ep=3.2 as=U2
+lib-import kicad ~/my.pretty                 # bulk-import .kicad_mod files
+list-parts                                   # key, source, pins, LCSC/MPN/datasheet
+```
+
+After any of those the reference is ready to use: `place U1 15 15`,
+`net GND U1.GND C1.2`, `auto-place`, `route`. `as=` names the reference,
+`key=` the library entry. `FRAGUA_OFFLINE=1` makes `part LCSC:…` cache-only;
+`FRAGUA_KICAD_LIBS` adds KiCad library roots beyond the stock install paths.
+`lib-gen` covers chip (0201…2512), sot23/-5/-6, sot223, sot89, soic, tssop,
+ssop, msop, qfn, dfn, qfp, lqfp, dip and pin headers, at `density=N|L|M`.
+
 ## End-to-end recipe
 
 ```text

@@ -12,6 +12,8 @@ Usage:
 Environment:
   FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)
   FRAGUA_NO_BROWSER      if set, do not open a browser window
+  FRAGUA_OFFLINE         if 1, part LCSC:… uses the library cache only
+  FRAGUA_KICAD_LIBS      extra KiCad library roots (path-list separated)
 
 HTTP API:
   GET  /  /help          this reference
@@ -30,7 +32,22 @@ Script verbs (line-oriented, agent-first):
   keepout X1 Y1 X2 Y2 [no_copper=true] [no_place=true]
   lib KEY … + indented pad NUMBER X Y W H
   sym REF KIND … + indented pin for generic_ic
-  net NAME REF.PIN …
+  part LCSC:C2040 [as=REF] [key=KEY] [value=V] [rot=DEG] [refresh=true]
+        (real part: footprint + named pins from EasyEDA, cached in the library;
+         "part C2040" works too; FRAGUA_OFFLINE=1 = cache only)
+  part kicad:Library:Footprint [as=REF] [sym=Library:Symbol]
+        (e.g. part kicad:Package_TO_SOT_SMD:SOT-23 as=Q1; FRAGUA_KICAD_LIBS)
+  lib-gen NAME family=F … [density=N|L|M] [as=REF] [kind=r|c|l|led|d|ic]
+        chip size=0201|0402|0603|0805|1206|1210|2512
+        sot23 | sot23-5 | sot23-6 | sot223 | sot89
+        soic|tssop|ssop|msop pins=N [pitch=P] [body=W]
+        qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]
+        qfp|lqfp pins=N pitch=P body=W
+        dip pins=N [pitch=2.54] [spacing=7.62]
+        header rows=1|2 pins=N [pitch=2.54|2.0|1.27]
+  lib-import kicad FILE|DIR [key=KEY] [as=REF]   (.kicad_mod, .pretty, .kicad_sym)
+  list-parts [lcsc|kicad|ipc|SUBSTRING]
+  net NAME REF.PIN …            (REF.NAME works too when pins are named)
   class NAME [clearance=N] [width=N] [impedance=Z]
   net-class NET CLASS
   palette REF KEY | palette list
