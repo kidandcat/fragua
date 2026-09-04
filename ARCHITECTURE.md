@@ -12,11 +12,15 @@ One process. One static binary (`cmd/fragua`). Inside it:
   state.
 - A **local HTTP API** on `127.0.0.1:7878` (override: `FRAGUA_API_ADDR`) —
   agents and humans run script verbs through `POST /script`. Also: `GET /`
-  and `GET /help` (usage + script reference), `GET /health`, `GET /screenshot`,
-  `GET /ui/`, `POST /save`.
-- An **embedded browser UI** (`internal/host/ui`) — SVG of the live board,
-  script box, DRC/route buttons. The agent and the human edit the same
-  `Project`. Every mutation emits a change event consumed by the UI.
+  and `GET /help` (usage + script reference), `GET /health`, `GET /state`,
+  `GET /events`, `GET /screenshot`, `GET /schematic`, `GET /summary`,
+  `GET /drc`, `GET /erc`, `GET /part`, `GET /ui/`, `POST /save`,
+  `POST /cancel`.
+- An **embedded browser UI** (`internal/host/ui`) — live board and schematic
+  as inline SVG, layer panel, net inspector, DRC/ERC list, progress with
+  cancel, script console. The agent and the human edit the same `Project`.
+  Every mutation emits a change event consumed by the UI; long operations
+  stream progress events of their own.
 
 CLI: **`fragua run [file.fragua]`** starts the server and opens the browser.
 Bare `fragua` (or `fragua help`) prints usage + the full script reference
@@ -40,8 +44,9 @@ pcb/   (repo: mentasystems/fragua)
 │   ├── placer/            SA legalisation + decoupling ring + edge snap
 │   ├── drc/  erc/  si/
 │   ├── fab/  gerber/  odb/
-│   ├── render/            board SVG
+│   ├── render/            board + schematic SVG
 │   └── host/              HTTP API + UI
+│       └── ui/            index.html, app.css, js/ (go:embed, no build step)
 ├── scripts/install.sh
 ├── stress/                RP2040 open-hardware stress campaign
 ├── docs/                  GitHub Pages landing
@@ -131,7 +136,74 @@ One verb per line. `internal/script/usage.go` is the agent-facing
 reference (also `GET /` and `fragua help`).
 
 ### `internal/host`
-`cmd/fragua` embeds `ui/` and serves it at `/ui/`. Loopback only.
+`cmd/fragua` embeds `ui/` and serves it at `/ui/`. Loopback only. Beyond
+`/script`, `/state`, `/events`, `/screenshot` and `/save`, the observer UI
+is fed by `GET /drc`, `GET /erc` (violations as JSON, each with a stable
+`id` and, where the check knows one, a location), `GET /summary` (the whole
+status bar in one cheap read), `GET /schematic`, `GET /part?key=` (the
+disk library entry behind a footprint — description, datasheet, LCSC id)
+and `POST /cancel`.
+
+`/summary` and `/drc` take the project read lock, so they queue behind a
+long op the way everything else does; `/cancel` deliberately does not —
+`Project.Ops()` is lock-free, or a cancel could never reach the route it is
+trying to stop.
+
+## The observer UI
+
+`internal/host/ui/` is one static bundle: `index.html`, `app.css` and
+dependency-free ES modules under `js/` (`api.js` HTTP + SSE, `canvas.js`
+the SVG board, `panels.js` inspector/checks/layers/log, `app.js` wiring).
+No framework, no build step, no CDN — it must work offline, and
+`go:embed ui/*` ships it inside the binary. A `internal/host/ui` directory
+on disk wins over the embedded copy, so editing the UI needs no rebuild.
+
+The page is 80% observation, 20% steering, per [VISION.md](VISION.md):
+
+- **Canvas.** The SVG from `/screenshot` is *injected*, not an `<img>`, so
+  every element is addressable. Pan and zoom are a transform on a `g.vp`
+  wrapper the UI inserts around the render's root group — never a refetch.
+- **Steering.** Dragging a footprint rewrites its group transform live and,
+  on drop, issues `move REF X Y` snapped to 0.1 mm through `/script`; `R`
+  issues `rotate`. Every line the UI sends is echoed in the log, so the
+  gesture teaches the verb.
+- **Long ops.** `op_start` / `progress` / `op_end` events drive the bar. The
+  canvas does *not* refresh while an op is in flight: the op holds the write
+  lock, so a refresh would only queue. It catches up on `op_end`.
+- **Checks.** A board change invalidates the last DRC/ERC run — the findings
+  describe a board that no longer exists.
+
+### SVG data-attribute contract
+
+`internal/render` is what makes the canvas addressable. The board document
+guarantees:
+
+| Attribute | On | Meaning |
+|-----------|----|---------|
+| `data-root="1"` | one group | the Y-flip group; pan/zoom wraps it |
+| `data-view-mm` | `<svg>` | `x y w h` of the view in board mm |
+| `data-copper-layers` | `<svg>` | copper layer count |
+| `data-layer` | groups **and** pads/pours | `F.Cu`, `In1.Cu`, `B.Cu`, `pours`, `vias`, `drills`, `mask`, `silk`, `pad-names`, `edge`, `ratsnest`, `drc`, `footprints`, `substrate`, `background` |
+| `data-kind="copper"` + `data-index` | copper groups | index into the stackup, so the UI can list it top-down |
+| `data-ref`, `data-value`, `data-key`, `data-side` | footprint group | the part |
+| `data-pad`, `data-pad-name`, `data-net`, `data-layer`, `data-through` | pad rect | `data-through` marks a drilled pad: copper on every layer, so layer toggles must not hide it |
+| `data-id`, `data-net` | trace lines, via circles | selection and net highlight |
+| `data-net` | pour paths, ratsnest lines, mask openings | net highlight |
+| `data-marker`, `data-severity` | DRC marker group | matches the `id` in `/drc` |
+
+Layer visibility is "hide everything with this `data-layer`", which is why
+pads carry their own — hiding `F.Cu` has to take the top pads with it.
+
+The `drc` group ships empty from the renderer and the UI fills it from
+`/drc` (markers are counter-scaled so they stay the same size on screen).
+`GET /screenshot?drc=1` bakes them in server-side instead, for a
+screenshot that has to stand alone.
+
+The schematic (`/schematic`) is the same idea: `data-sym`, `data-kind`,
+`data-pin`, `data-pin-name`, `data-role`, `data-net`. It is a deterministic
+shelf-packed sheet of symbol bodies with a net *flag* per pin rather than
+drawn wiring — a label next to every pin always reads, where auto-routed
+wires on a generated layout do not.
 
 ## Data flow
 

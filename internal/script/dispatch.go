@@ -237,10 +237,15 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		opts := router.DefaultOptions()
 		opts = router.ParseOptions(opts, args)
 		var rep router.Report
-		p.MutateBoard(func(b *core.Board) {
-			// Net classes drive per-net width (impedance target first).
-			opts.Schematic = p.Schematic()
-			rep = router.Route(b, opts)
+		runOp(p, "route", func() {
+			emit := progressEmitter(p, "route")
+			opts.Progress = func(pr router.Progress) { emit(pr.Net, pr.Done, pr.Total) }
+			opts.Cancel = p.Ops().Cancelled
+			p.MutateBoard(func(b *core.Board) {
+				// Net classes drive per-net width (impedance target first).
+				opts.Schematic = p.Schematic()
+				rep = router.Route(b, opts)
+			})
 		})
 		return rep.Summary(), nil
 	case "auto-place", "auto_place":
@@ -254,8 +259,13 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		opts := placer.DefaultOptions()
 		opts = placer.ParseOptions(opts, kv)
 		var rep placer.Report
-		p.MutateBoard(func(b *core.Board) {
-			rep, err = placer.Place(b, refs, opts)
+		runOp(p, "auto-place", func() {
+			emit := progressEmitter(p, "auto-place")
+			opts.Progress = func(done, total int) { emit("annealing", done, total) }
+			opts.Cancel = p.Ops().Cancelled
+			p.MutateBoard(func(b *core.Board) {
+				rep, err = placer.Place(b, refs, opts)
+			})
 		})
 		if err != nil {
 			return "", err
@@ -1663,9 +1673,7 @@ func screenshot(p *core.Project, args string) (string, error) {
 	case "board", "":
 		content = render.BoardSVG(p.Board())
 	case "schematic":
-		// schematic SVG not yet; fall back to board
-		content = render.BoardSVG(p.Board())
-		view = "board"
+		content = render.SchematicSVG(p.Schematic())
 	default:
 		p.RUnlock()
 		return "", fmt.Errorf("screenshot: unknown view %q (use board or schematic)", view)

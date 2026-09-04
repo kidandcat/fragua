@@ -28,6 +28,10 @@ type Project struct {
 	library  *Library
 	savePath string
 	bus      *EventBus
+	// ops tracks the long operation in flight (route / auto-place / compact).
+	// A value, not a pointer: Ops() must never take p.mu, or POST /cancel
+	// would deadlock behind the very route it is trying to stop.
+	ops OpTracker
 	// Fab profile (memory-only, re-adopted per session).
 	fabProfile *FabProfileHandle
 }

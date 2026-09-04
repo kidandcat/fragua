@@ -174,12 +174,59 @@ func Handler(p *core.Project) http.Handler {
 		}
 	})
 	mux.HandleFunc("/screenshot", func(w http.ResponseWriter, r *http.Request) {
+		var opts render.Options
+		// drc=1 costs a full check, so it is opt-in: the UI normally draws
+		// the markers itself from GET /drc into the same `drc` group.
+		if r.URL.Query().Get("drc") == "1" {
+			opts.Markers = markersFor(runDRC(p))
+		}
 		p.RLock()
-		svg := render.BoardSVG(p.Board())
+		svg := render.BoardSVGWith(p.Board(), opts)
 		p.RUnlock()
 		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		_, _ = io.WriteString(w, svg)
+	})
+	mux.HandleFunc("/schematic", func(w http.ResponseWriter, _ *http.Request) {
+		p.RLock()
+		svg := render.SchematicSVG(p.Schematic())
+		p.RUnlock()
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		_, _ = io.WriteString(w, svg)
+	})
+	mux.HandleFunc("/drc", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, runDRC(p))
+	})
+	mux.HandleFunc("/erc", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, runERC(p))
+	})
+	mux.HandleFunc("/summary", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, summarize(p))
+	})
+	// /part is the library entry behind a footprint key — description,
+	// datasheet, LCSC id. It lives on disk, not in the project file, so the
+	// inspector cannot read it out of /state.
+	mux.HandleFunc("/part", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "key required", http.StatusBadRequest)
+			return
+		}
+		e, ok := p.FindLibrary(key)
+		if !ok {
+			http.Error(w, "no such library entry", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, e)
+	})
+	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		op := p.Ops().Cancel()
+		writeJSON(w, map[string]any{"cancelled": op != "", "op": op})
 	})
 	mux.HandleFunc("/script", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
