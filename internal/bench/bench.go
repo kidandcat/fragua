@@ -240,7 +240,9 @@ func placeDirective(text string, def bool) bool {
 	return def
 }
 
-// scriptPlaces reports whether the script already positions its parts.
+// scriptPlaces reports whether the script already ran the placer itself. A
+// plain `place` does not count: a script has to drop its parts on the board
+// before anything can move them, and optimising that drop is the measurement.
 func scriptPlaces(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
@@ -248,7 +250,7 @@ func scriptPlaces(text string) bool {
 		}
 		verb, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		switch strings.ToLower(verb) {
-		case "auto-place", "auto_place", "compact", "place", "place-legal", "place_legal":
+		case "auto-place", "auto_place", "compact":
 			return true
 		}
 	}
