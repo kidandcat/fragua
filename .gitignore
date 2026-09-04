@@ -9,3 +9,4 @@
 # Browser-automation (Playwright MCP) scratch output
 .playwright-mcp/
 *.fragua
+!/bench/boards/*.fragua

@@ -3,6 +3,7 @@
 //	fragua              print usage + script reference
 //	fragua help         same
 //	fragua run [file]   start HTTP API + open browser
+//	fragua bench [dir]  run the reference bench suite (place → route → drc)
 package main
 
 import (
@@ -17,6 +18,13 @@ func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Print(script.Usage())
+		return
+	}
+	if args[0] == "bench" {
+		if err := runBench(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "fragua: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if args[0] != "run" {
