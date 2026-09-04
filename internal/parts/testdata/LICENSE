@@ -1,0 +1,28 @@
+Test fixtures — third-party provenance
+=====================================
+
+testdata/kicad/
+---------------
+SOT-23.kicad_mod
+SOT-23_v9.kicad_mod
+R_0603_1608Metric.kicad_mod
+PinHeader_1x04_P2.54mm_Vertical.kicad_mod
+    From the KiCad footprint library (github.com/KiCad/kicad-footprints,
+    gitlab.com/kicad/libraries/kicad-footprints).
+
+R_Small.kicad_sym
+AP1117-15.kicad_sym
+    From the KiCad symbol library (gitlab.com/kicad/libraries/kicad-symbols).
+
+Both libraries are licensed CC-BY-SA-4.0 with the KiCad library exception:
+using these files in a design (or, as here, as parser test fixtures) does not
+place any licence requirement on the resulting work. Full text:
+https://www.kicad.org/libraries/license/
+
+testdata/easyeda/
+-----------------
+C1525.json, C2040.json, C25804.json, C165948.json
+    Unmodified responses from the public EasyEDA component API
+    (https://easyeda.com/api/products/<LCSC>/components). Component data ©
+    LCSC / EasyEDA and the respective part manufacturers; kept verbatim so the
+    importer tests run offline.
