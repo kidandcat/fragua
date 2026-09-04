@@ -66,6 +66,8 @@ Script verbs (line-oriented, agent-first):
   drc / erc
   compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [max_seconds=600] [aspect=keep|free]
   pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)
+  pack fab=kicad [out=board.kicad_pcb] [zones=filled|outline] [grid=MM]
+                              (KiCad 9 .kicad_pcb; zones ship pre-filled)
   screenshot PATH
   save [PATH] | view | status | reset | help
 
