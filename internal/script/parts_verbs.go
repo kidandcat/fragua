@@ -142,11 +142,17 @@ func resolveLCSCPart(p *core.Project, spec string, opt map[string]string) (*part
 
 // findCachedLCSC looks the part up by key first, then by stored LCSC id.
 func findCachedLCSC(p *core.Project, lcsc, key string) (core.LibraryEntry, bool) {
-	if e, ok := p.FindLibrary(key); ok && len(e.Pads) > 0 {
+	// A hand-authored entry that merely carries the LCSC id (pads, no pins) is
+	// not a cache hit: `part` promises named pins, so only an lcsc-sourced
+	// entry with a pin list satisfies the lookup; anything else is refetched.
+	usable := func(e core.LibraryEntry) bool {
+		return e.Source == parts.SourceLCSC && len(e.Pads) > 0 && len(e.Pins) > 0
+	}
+	if e, ok := p.FindLibrary(key); ok && usable(e) {
 		return e, true
 	}
 	for _, e := range p.Library().ListEntries() {
-		if e.LcscID != nil && strings.EqualFold(*e.LcscID, lcsc) && len(e.Pads) > 0 {
+		if e.LcscID != nil && strings.EqualFold(*e.LcscID, lcsc) && usable(e) {
 			return e, true
 		}
 	}
