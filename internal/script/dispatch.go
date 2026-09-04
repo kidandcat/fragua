@@ -221,12 +221,12 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		p.RLock()
 		rep := drc.Check(p.Board(), p.Schematic(), drc.DefaultOptions())
 		p.RUnlock()
-		return rep.Summary(), nil
+		return rep.Detail(), nil
 	case "erc":
 		p.RLock()
 		rep := erc.Check(p.Schematic(), p.Board(), erc.DefaultOptions())
 		p.RUnlock()
-		return rep.Summary(), nil
+		return rep.Detail(), nil
 	case "route":
 		opts := router.DefaultOptions()
 		opts = router.ParseOptions(opts, args)
@@ -550,12 +550,19 @@ func addNet(p *core.Project, args string) (string, error) {
 	}
 	name := fields[0]
 	var conns []core.NetConnection
+	// `net NAME REF.PIN ... class=X` used to SKIP the class token and drop it on
+	// the floor: the class was never stored, so `class signal width=0.20` had no
+	// effect on any net that asked for it and every trace on the board came out
+	// at the router default. It is silent, and it is the difference between a
+	// 0.20 mm trace leaving a 0.24 mm DFN pad and a 0.25 mm one that cannot.
+	className := ""
 	p.Lock()
 	defer p.Unlock()
 	sch := p.Schematic()
 	board := p.Board()
 	for _, tok := range fields[1:] {
 		if strings.HasPrefix(tok, "class=") {
+			className = strings.TrimPrefix(tok, "class=")
 			continue
 		}
 		parts := strings.SplitN(tok, ".", 2)
@@ -595,8 +602,43 @@ func addNet(p *core.Project, args string) (string, error) {
 	if sch.Nets == nil {
 		sch.Nets = make(map[string]*core.Net)
 	}
-	sch.Nets[name] = &core.Net{Name: name, Connections: conns}
+	// `net` ACCUMULATES. A ground net on a module-heavy board does not fit on
+	// one line, and every script in the wild splits it - but this used to
+	// overwrite sch.Nets[name], so only the last line survived in the
+	// schematic. The board side never had the bug (the loop above tags
+	// fp.Pads[i].Net on every line, cumulatively), so the router and the pour
+	// saw the whole net while ERC saw a fraction of it and reported dozens of
+	// phantom `floating_pin` warnings on the pins that had been dropped.
+	// Use `clear-net NAME` to genuinely start a net over.
+	if prev := sch.Nets[name]; prev != nil {
+		seen := make(map[core.NetConnection]bool, len(prev.Connections)+len(conns))
+		merged := make([]core.NetConnection, 0, len(prev.Connections)+len(conns))
+		for _, c := range append(append([]core.NetConnection{}, prev.Connections...), conns...) {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			merged = append(merged, c)
+		}
+		conns = merged
+	}
+	if className == "" && sch.NetToClass != nil {
+		className = sch.NetToClass[name]
+	}
+	if className == "" && sch.Nets[name] != nil {
+		className = sch.Nets[name].Class
+	}
+	sch.Nets[name] = &core.Net{Name: name, Connections: conns, Class: className}
+	if className != "" {
+		if sch.NetToClass == nil {
+			sch.NetToClass = map[string]string{}
+		}
+		sch.NetToClass[name] = className
+	}
 	p.Events().Publish(core.Event{Kind: core.EventSchematicChanged})
+	if className != "" {
+		return fmt.Sprintf("net %s (%d pins, class=%s)", name, len(conns), className), nil
+	}
 	return fmt.Sprintf("net %s (%d pins)", name, len(conns)), nil
 }
 

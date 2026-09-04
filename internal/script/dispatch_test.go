@@ -607,3 +607,62 @@ func TestSICheckRejectsBadTolerance(t *testing.T) {
 		t.Fatalf("tol=0 must error: %+v", rs)
 	}
 }
+
+// A ground net does not fit on one line. Splitting it used to silently keep
+// only the last line in the schematic, so ERC reported the dropped pins as
+// floating while the router - which reads the pad tags, not the schematic -
+// happily wired them.
+func TestNetVerbAccumulatesAcrossLines(t *testing.T) {
+	p := core.NewProject("nets")
+	script := `
+lib demo_ic
+  pad 1 -1 0 0.5 0.5 name=A
+  pad 2  0 0 0.5 0.5 name=B
+  pad 3  1 0 0.5 0.5 name=C
+sym U1 ic key=demo_ic
+  pin 1 L A role=power_in
+  pin 2 L B role=power_in
+  pin 3 L C role=power_in
+net GND U1.1
+net GND U1.2
+net GND U1.2 U1.3
+`
+	allOK(t, RunScript(p, script))
+	n := p.Schematic().Nets["GND"]
+	if n == nil {
+		t.Fatal("GND net missing")
+	}
+	if len(n.Connections) != 3 {
+		t.Fatalf("want 3 deduped connections, got %d: %+v", len(n.Connections), n.Connections)
+	}
+}
+
+// `net NAME ... class=X` has to actually apply the class: it used to skip the
+// token, so every `class signal width=0.20` in every script was inert and the
+// router used its own default width on every net.
+func TestNetVerbAppliesTheClass(t *testing.T) {
+	p := core.NewProject("cls")
+	script := `
+class signal width=0.20 clearance=0.20
+lib demo_ic
+  pad 1 -1 0 0.5 0.5 name=A
+  pad 2  1 0 0.5 0.5 name=B
+sym U1 ic key=demo_ic
+  pin 1 L A role=output
+  pin 2 L B role=input
+net SDA U1.1 U1.2 class=signal
+`
+	allOK(t, RunScript(p, script))
+	n := p.Schematic().Nets["SDA"]
+	if n == nil || n.Class != "signal" {
+		t.Fatalf("net class not applied: %+v", n)
+	}
+	if p.Schematic().NetToClass["SDA"] != "signal" {
+		t.Fatalf("NetToClass not set: %+v", p.Schematic().NetToClass)
+	}
+	// And a later line that adds pins must not wipe it.
+	allOK(t, RunScript(p, "net SDA U1.1\n"))
+	if p.Schematic().Nets["SDA"].Class != "signal" {
+		t.Fatal("class lost when the net was extended")
+	}
+}
