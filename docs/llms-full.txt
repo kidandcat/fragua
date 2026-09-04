@@ -1,0 +1,1128 @@
+# fragua 1.2.0 — full agent reference
+
+> AI-native PCB design tool. Generated from the fragua binary; do not edit by hand.
+> Regenerate with scripts/gen-llms.sh.
+
+---
+
+# Agent guide
+
+## Fragua
+
+[Fragua](https://fragua.cloud) is an AI-native PCB design tool. You design the board; the
+human watches it happen in a browser and steers. One static Go binary — no KiCad, no
+FreeRouting, no external CAD.
+
+### Launch
+
+```sh
+fragua mcp board.fragua     # MCP server on stdio + HTTP API + UI on 127.0.0.1:7878
+fragua run board.fragua     # HTTP API + UI only, no MCP
+```
+
+Both host the *same* live project, so the human always sees what you are doing at
+<http://127.0.0.1:7878/ui/>. Omit the file to start in memory — then `fragua_save` with an
+absolute path early, or the work is lost on exit.
+
+Env: `FRAGUA_API_ADDR` (default `127.0.0.1:7878`), `FRAGUA_NO_BROWSER=1`.
+
+### Two ways to drive it
+
+**MCP tools** (preferred — configured in `.mcp.json`):
+
+| Tool | Use it for |
+|------|-----------|
+| `fragua_script` | Everything. Runs script lines; this is the real API. |
+| `fragua_help` | The verb reference. Pass `verb` for one verb's usage + examples. |
+| `fragua_status` | Cheap one-line summary. Call it after every step. |
+| `fragua_state` | JSON state; pass `section` (`board`/`schematic`/`palette`) to keep it small. |
+| `fragua_drc` | Runs `erc` then `drc`. |
+| `fragua_route` | `route` with typed options. |
+| `fragua_screenshot` | Board as SVG source. |
+| `fragua_save` | Write the `.fragua` file. |
+
+**Plain HTTP** (any tool that can curl):
+
+```sh
+curl -s http://127.0.0.1:7878/help                      # full reference
+curl -s 'http://127.0.0.1:7878/help?verb=route'         # one verb
+curl -s http://127.0.0.1:7878/script \
+  -H 'content-type: application/json' \
+  -d '{"script":"outline 30 20\nstatus"}'
+curl -s http://127.0.0.1:7878/screenshot -o board.svg
+```
+
+### The script language
+
+Line-oriented, one verb per line. Indented lines continue an open `sym`/`lib` block.
+`#` comments. **Execution stops at the first failing line** — everything after it did not
+run, so read every result line.
+
+```text
+ok <verb>: <result>                  succeeded
+error line <n> <verb>: <reason>      failed; the script stopped here
+```
+
+Run `fragua_help` (or `fragua help`, or `GET /help`) for the full verb list. Do not guess
+argument names — ask for the verb's help.
+
+### End-to-end recipe
+
+```text
+# 1. Board and design rules first.
+outline 30 20 radius=2
+fab-rules jlcpcb                 # fab minimums become the DRC floor
+class ground pour=both
+class power width=0.4
+
+# 2. Schematic. Kinds: ic, resistor, capacitor, inductor, led, diode.
+sym U1 ic key=esp32_s3_zero
+  pin 1 L 5V  role=power_in
+  pin 2 L GND role=power_in
+  pin 3 L 3V3 role=power_out
+  pin 4 R IO1 role=bidir
+sym R1 resistor key=r_0603
+sym C1 capacitor key=c_0603
+
+net GND  U1.GND C1.2 R1.2 class=ground
+net +3V3 U1.3V3 C1.1     class=power
+net SIG  U1.IO1 R1.1
+
+nc U1.IO9 U1.IO10                # silence "floating pin" on unused GPIOs
+erc                              # must reach 0 errors
+
+# 3. Footprints: bind, then place. Both steps are required.
+list-lib                         # 70+ footprints already exist — look before you author
+palette U1 esp32_s3_zero
+palette R1 r_0603 value=10k
+palette C1 c_0603 value=100nF
+
+place U1 15 10                   # anchor what matters (ICs, connectors)
+edge-place J1 bottom             # connectors: let the verb do the edge maths
+place R1 22 6                    # everything else still needs an initial position
+place C1 22 14
+
+# 4. Refine, route, pour.
+auto-place R1 C1 seed=42         # only moves already-placed parts; anchors stay put
+route max_seconds=120
+auto-pour                        # GND on both layers
+stitch                           # vias tying the pour islands together
+
+# 5. Verify, then ship.
+drc
+pack fab=jlcpcb out=/tmp         # writes /tmp/<project>-jlcpcb.zip
+save /abs/path/board.fragua
+```
+
+### Reading results
+
+```text
+ok erc: erc: 0 errors, 4 warnings (4 findings)
+ok auto-place: place: HPWL 49.94 → 17.38 mm, moved 2 parts, 8000 iters
+ok route: route: 3/3 nets ok, 3 traces, 0 vias, 14.1 mm copper, 0 ms
+ok stitch: stitched 78 vias
+ok drc: drc: 1 errors, 2 warnings (3 findings)
+ok pack: packed /tmp/untitled-jlcpcb.zip (erc_err=0 drc_err=1)
+ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palette=0 outline=30.00x20.00mm
+```
+
+- **`route: N/M nets ok`** — `N < M` means nets are still open. Re-run `route`; it only
+  attacks what is unrouted, so repeated bounded calls are cheap. If `N` stops improving,
+  the geometry is the problem: give the board more room, move the blocking part, or add a
+  layer (`layer add`) — not more seconds.
+- **`erc`/`drc` report counts, not locations.** Errors must be zero; warnings are usually
+  fine (unused pins, conservative power checks). To see *where* a violation is, look at the
+  UI canvas or `fragua_screenshot` — it highlights them.
+- **`pack` only refuses on ERC errors.** It will happily pack a board with DRC errors and
+  tell you so in `drc_err=N`. Never ship a board with `drc_err>0`: check it yourself.
+- **`status`** is the cheapest sanity check. `palette=0` is normal — that counts palette
+  entries, not placed parts; placed parts are `footprints=N`.
+
+### Budgets
+
+| Knob | Use |
+|------|-----|
+| `route max_seconds=N` | Default 600, max 3600. Start at 90–180. Always set one on a dense board. |
+| `auto-place seed=N` | Fixes the RNG. Always pass it so a run is reproducible. |
+| `compact route_seconds=N` | 20–90. Optional, slow; only on an already-clean board. |
+
+### Common mistakes
+
+- **`fragua` with no subcommand just prints help and exits.** Use `fragua run` / `fragua mcp`.
+- **`palette` does not place.** `palette REF KEY` binds a footprint; the part still needs
+  `place`, `place-legal` or `edge-place`. `auto-place` on an unplaced part fails with
+  `no movable footprints`.
+- **`auto-place` only refines what is already placed.** Anchor the ICs and connectors first,
+  then let it move the passives — otherwise decoupling scatters away from its IC.
+- **Authoring a footprint you already have.** Run `list-lib` first; 70+ parts ship with the
+  tool. Only reach for `lib` when nothing matches.
+- **Only six symbol kinds exist** — `ic`, `resistor`, `capacitor`, `inductor`, `led`, `diode`.
+  Model a crystal, switch or connector as an `ic` with explicit pin roles.
+- **Pin roles matter to ERC.** `power_in`, `power_out`, `input`, `output`, `bidir`, `passive`,
+  `nc`. A rail with no `power_out` anywhere warns.
+- **Unused pins warn until you say so.** `nc U1.IO9 U1.IO10 …`.
+- **Set `fab-rules` before routing**, not after — they are the floor the router respects.
+- **Pours go after routing.** `auto-pour` then `stitch`. Re-routing means `clear-pour`,
+  `route`, `auto-pour`, `stitch` again.
+- **A memory-only session loses everything.** `save /abs/path.fragua` early.
+
+### When you are stuck
+
+Ask the human. Fragua is built for a human watching the UI: if the router plateaus or a part
+will not fit, say what you tried and what the board looks like, and let them drag something
+or change a constraint. The UI is at <http://127.0.0.1:7878/ui/>.
+
+---
+
+# Script reference
+
+Output of `fragua help`:
+
+```text
+fragua — AI-native PCB design tool
+
+Usage:
+  fragua                 print this help and exit
+  fragua help [verb]     full reference, or help for one script verb
+  fragua run [file]      start local HTTP API (default 127.0.0.1:7878)
+  fragua mcp [file]      same host, plus an MCP server on stdio (for AI agents)
+  fragua init [dir]      write agent onboarding files into a project directory
+
+Environment:
+  FRAGUA_API_ADDR        listen address (default 127.0.0.1:7878)
+  FRAGUA_NO_BROWSER      if set, do not open a browser window
+
+HTTP API:
+  GET  /  /help          this reference (?verb=route for one verb)
+  GET  /health           ok
+  GET  /screenshot       PNG/SVG of current board
+  GET  /events           SSE project change stream
+  GET  /state            JSON project snapshot (UI)
+  POST /script           run multi-line script (text/plain body or JSON {"script":"..."})
+  POST /save             save project {"path":"..."} optional
+
+First 10 minutes:
+  1. fragua run              (or fragua mcp — the UI stays at 127.0.0.1:7878/ui/)
+  2. list-lib                see which footprints already exist
+  3. sym / net               describe the circuit, then run erc until it is clean
+  4. outline W H             give the board a size
+  5. palette + place         bind footprints, anchor the parts whose position matters
+  6. auto-place seed=42      arrange the rest (hand-placed parts stay put)
+  7. route max_seconds=120   auto-route; re-run to keep attacking what failed
+  8. auto-pour then stitch   ground pours plus the vias that tie their islands
+  9. drc                     fix violations, re-route, repeat until clean
+ 10. pack fab=jlcpcb out=/tmp    writes the upload-ready zip
+
+Script verbs (line-oriented, agent-first):
+  outline W H [radius=R]
+  outline-poly x1 y1 x2 y2 ...
+  cutout x1 y1 ... [label=NAME] | clear-cutouts
+  hole X Y D [label=NAME] | clear-holes
+  keepout X1 Y1 X2 Y2 [no_copper=true] [no_place=true]
+  lib KEY … + indented pad NUMBER X Y W H
+  sym REF KIND … + indented pin for generic_ic
+  net NAME REF.PIN …
+  class NAME [clearance=N] [width=N] [impedance=Z]
+  net-class NET CLASS
+  palette REF KEY | palette list
+  list-lib
+  place REF x y [rot=DEG]
+  place-legal REF [tries=N] [rot=DEG]
+  edge-place REF left|right|top|bottom [along=N]
+  edge-plan REF [REF...]
+  move REF X Y | rotate REF DEG
+  unplace REF | delete REF | clear-board
+  auto-place [REF...] [seed=N] [iters=N]
+  route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true]
+        (max_seconds: default 600, max 3600; clearance: extra air, fab min is the floor)
+  clear-route | clear-net NET | delete-trace ID | delete-via ID
+  trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
+  via NET x y [drill=0.3] [dia=0.6]
+  pour NET [layer=Top] [relief=spokes4|solid] [stitch=true] [pitch=N]
+  auto-pour [NET...]          (default GND, both layers)
+  clear-pour [NET]
+  stitch                      (grid + pad vias that tie pour islands)
+  nc REF.PIN [REF.PIN...]     (mark unused MCU pins; no floating_pin)
+  fiducial X Y [ref=FID1]
+  diff NETA NETB              (diff-pair data; single-ended Z only)
+  impedance [NET]             (closed-form microstrip/stripline; not FEM)
+  si-check [NET...] [tol=0.10] [max_vias=N]
+                              (impedance, return path, diff skew, via budget)
+  teardrop on|off             (copper fillets at pad/via junctions)
+  silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
+  rule-area NAME x1 y1 x2 y2 [clearance=N] …
+  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
+  escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
+  layer list|add|remove|rename|dielectric
+  drc / erc
+  compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [max_seconds=600] [aspect=keep|free]
+  pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)
+  screenshot PATH
+  save [PATH] | view | status | reset | help
+
+An agent can take a board from 0 to a JLCPCB pack with the verbs above.
+Commercial floor: the same agent loop used on shipped boards:
+auto-place (SA + decouple + edge snap) → route (Theta* + fanout + stitch)
+→ pour/stitch → drc/erc → pack.
+```
+
+---
+
+# Per-verb reference
+
+Output of `fragua help <verb>` for every verb.
+
+## outline
+
+```text
+outline — fragua script verb
+
+Usage:
+  outline W H [radius=R]
+
+Set a rectangular board outline W x H mm, optionally with rounded corners of
+radius R mm. Do this first: placement, routing and pours all need an
+outline.
+
+Examples:
+  outline 30 20
+  outline 80 30 radius=2
+
+Full reference: `fragua help` or GET /help
+```
+
+## outline-poly
+
+```text
+outline-poly — fragua script verb
+
+Usage:
+  outline-poly x1 y1 x2 y2 ...
+
+Aliases:
+  outline_poly
+
+Set an arbitrary polygonal outline from a list of mm vertices. The polygon
+closes automatically; give at least three points.
+
+Examples:
+  outline-poly 0 0 40 0 40 25 20 32 0 25
+
+Full reference: `fragua help` or GET /help
+```
+
+## cutout
+
+```text
+cutout — fragua script verb
+
+Usage:
+  cutout x1 y1 ... [label=NAME] | clear-cutouts
+
+Aliases:
+  clear-cutouts, clear_cutouts
+
+Add a milled interior cutout as a polygon of mm vertices. `clear-cutouts`
+removes them all.
+
+Examples:
+  cutout 10 10 20 10 20 18 10 18 label=window
+  clear-cutouts
+
+Full reference: `fragua help` or GET /help
+```
+
+## hole
+
+```text
+hole — fragua script verb
+
+Usage:
+  hole X Y D [label=NAME] | clear-holes
+
+Aliases:
+  clear-holes, clear_holes
+
+Add a non-plated mounting hole of diameter D mm at X,Y. `clear-holes`
+removes them all.
+
+Examples:
+  hole 3 3 3.2 label=M3
+  clear-holes
+
+Full reference: `fragua help` or GET /help
+```
+
+## keepout
+
+```text
+keepout — fragua script verb
+
+Usage:
+  keepout X1 Y1 X2 Y2 [no_copper=true] [no_place=true]
+
+Mark a rectangle the router and/or placer must avoid. `no_copper` blocks
+traces, vias and pours; `no_place` blocks footprints.
+
+Examples:
+  keepout 0 0 6 6 no_place=true
+  keepout 20 0 30 5 no_copper=true no_place=true
+
+Full reference: `fragua help` or GET /help
+```
+
+## lib
+
+```text
+lib — fragua script verb
+
+Usage:
+  lib KEY … + indented pad NUMBER X Y W H
+
+Define a custom footprint under KEY. Follow it with indented `pad NUMBER X Y
+W H` lines (mm, relative to the footprint origin). Use the built-in palette
+first — see `list-lib` — and only define a footprint the library lacks.
+
+Examples:
+  lib my_conn
+    pad 1 -1.27 0 1.0 1.8
+    pad 2 1.27 0 1.0 1.8
+
+Full reference: `fragua help` or GET /help
+```
+
+## sym
+
+```text
+sym — fragua script verb
+
+Usage:
+  sym REF KIND … + indented pin for generic_ic
+
+Add a schematic symbol. KIND is one of
+ic/resistor/capacitor/inductor/led/diode. For a generic ic, follow with
+indented `pin NUMBER SIDE NAME [role=...]` lines. Roles: passive, input,
+output, bidir, power_in, power_out, nc.
+
+Examples:
+  sym R1 resistor key=r_0603 lcsc=C25804
+  sym U1 ic key=esp32_s3_zero
+    pin 1 L 3V3 role=power_in
+    pin 2 L GND role=power_in
+    pin 3 R IO1 role=bidir
+
+Full reference: `fragua help` or GET /help
+```
+
+## net
+
+```text
+net — fragua script verb
+
+Usage:
+  net NAME REF.PIN …
+
+Create or extend a net by listing the pins on it. Repeat the verb to add
+more pins later. `class=NAME` assigns a net class inline.
+
+Examples:
+  net GND U1.GND C1.2 R1.2 class=ground
+  net +3V3 U1.3V3 C1.1 class=power
+
+Full reference: `fragua help` or GET /help
+```
+
+## class
+
+```text
+class — fragua script verb
+
+Usage:
+  class NAME [clearance=N] [width=N] [impedance=Z]
+  net-class NET CLASS
+
+Aliases:
+  net-class, net_class
+
+Define a net class (trace width, clearance, target impedance in ohms,
+`pour=both|top|bottom`). `net-class NET CLASS` assigns an existing class to
+a net.
+
+Examples:
+  class ground pour=both
+  class power width=0.4
+  class rf impedance=50
+  net-class USB_DP rf
+
+Full reference: `fragua help` or GET /help
+```
+
+## palette
+
+```text
+palette — fragua script verb
+
+Usage:
+  palette REF KEY | palette list
+
+Bind a placed reference to a built-in footprint key (this is how a symbol
+gets a footprint). `palette list` prints the available keys.
+
+Examples:
+  palette list
+  palette C1 c_0603 value=100nF
+  palette U1 esp32_s3_zero
+
+Full reference: `fragua help` or GET /help
+```
+
+## list-lib
+
+```text
+list-lib — fragua script verb
+
+Usage:
+  list-lib
+
+Aliases:
+  lib-list, list_lib, lib_list
+
+List every footprint currently known: built-in palette entries plus any
+defined with `lib`.
+
+Examples:
+  list-lib
+
+Full reference: `fragua help` or GET /help
+```
+
+## place
+
+```text
+place — fragua script verb
+
+Usage:
+  place REF x y [rot=DEG]
+
+Place a footprint at x,y mm (its origin), optionally rotated. Use this to
+anchor the parts whose position matters, then let `auto-place` arrange the
+rest.
+
+Examples:
+  place U1 25 15
+  place J1 0 10 rot=90
+
+Full reference: `fragua help` or GET /help
+```
+
+## place-legal
+
+```text
+place-legal — fragua script verb
+
+Usage:
+  place-legal REF [tries=N] [rot=DEG]
+
+Aliases:
+  place_legal
+
+Place a footprint at the first legal spot found by search, instead of at
+coordinates you pick. Useful when you do not care where a part lands.
+
+Examples:
+  place-legal C3
+  place-legal C3 tries=200
+
+Full reference: `fragua help` or GET /help
+```
+
+## edge-place
+
+```text
+edge-place — fragua script verb
+
+Usage:
+  edge-place REF left|right|top|bottom [along=N]
+
+Aliases:
+  edge_place
+
+Snap a connector to a board edge, oriented outward. `along` is the distance
+in mm along that edge.
+
+Examples:
+  edge-place J1 left
+  edge-place J2 bottom along=12
+
+Full reference: `fragua help` or GET /help
+```
+
+## edge-plan
+
+```text
+edge-plan — fragua script verb
+
+Usage:
+  edge-plan REF [REF...]
+
+Aliases:
+  edge_plan
+
+Distribute several connectors around the board edges in one pass, choosing
+edges and offsets for you.
+
+Examples:
+  edge-plan J1 J2 SW1
+
+Full reference: `fragua help` or GET /help
+```
+
+## move
+
+```text
+move — fragua script verb
+
+Usage:
+  move REF X Y | rotate REF DEG
+
+Aliases:
+  rotate
+
+Move an already-placed footprint to X,Y mm, or rotate it to an absolute
+angle in degrees.
+
+Examples:
+  move C1 35 15
+  rotate U1 90
+
+Full reference: `fragua help` or GET /help
+```
+
+## unplace
+
+```text
+unplace — fragua script verb
+
+Usage:
+  unplace REF | delete REF | clear-board
+
+Aliases:
+  delete, clear-board, clear_board
+
+`unplace` lifts a footprint off the board but keeps the symbol. `delete`
+removes the part entirely. `clear-board` empties the board layout.
+
+Examples:
+  unplace C1
+  delete R9
+  clear-board
+
+Full reference: `fragua help` or GET /help
+```
+
+## auto-place
+
+```text
+auto-place — fragua script verb
+
+Usage:
+  auto-place [REF...] [seed=N] [iters=N]
+
+Aliases:
+  auto_place
+
+Global placement plus simulated-annealing legalisation over the listed parts
+(all movable parts if none listed). Anything you placed by hand stays put
+and is routed around. Pass a `seed` to make the result reproducible.
+
+Examples:
+  auto-place
+  auto-place R1 C1 C2 seed=42
+  auto-place seed=7 iters=4000
+
+Full reference: `fragua help` or GET /help
+```
+
+## route
+
+```text
+route — fragua script verb
+
+Usage:
+  route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true]
+  (max_seconds: default 600, max 3600; clearance: extra air, fab min is the floor)
+
+Auto-route every unrouted net: Theta* any-angle search with
+rip-up-and-reroute, fanout escapes and pour stitching. Report lines say how
+many nets routed and which failed. Re-running is cheap and only attacks what
+is still open.
+
+Examples:
+  route
+  route max_seconds=120
+  route max_seconds=300 organic=true teardrop=true
+
+Full reference: `fragua help` or GET /help
+```
+
+## clear-route
+
+```text
+clear-route — fragua script verb
+
+Usage:
+  clear-route | clear-net NET | delete-trace ID | delete-via ID
+
+Aliases:
+  clear_route, clear-net, clear_net, delete-trace, delete_trace, delete-via, delete_via
+
+Undo routing: everything, one net, or a single trace/via by id. Use
+`clear-net` when one net routed badly and you want to retry just that one.
+
+Examples:
+  clear-route
+  clear-net +3V3
+  delete-trace t17
+
+Full reference: `fragua help` or GET /help
+```
+
+## trace
+
+```text
+trace — fragua script verb
+
+Usage:
+  trace NET x1 y1 x2 y2 [layer=Top] [width=0.15]
+
+Draw one trace segment by hand on a net. Rarely needed — prefer `route`
+— but useful to force a specific path.
+
+Examples:
+  trace GND 10 10 20 10
+  trace +3V3 5 5 5 20 layer=Bottom width=0.4
+
+Full reference: `fragua help` or GET /help
+```
+
+## via
+
+```text
+via — fragua script verb
+
+Usage:
+  via NET x y [drill=0.3] [dia=0.6]
+
+Place a via on a net at x,y mm. Defaults match the JLCPCB minimum; widen for
+high-current nets.
+
+Examples:
+  via GND 12 8
+  via +3V3 12 8 drill=0.4 dia=0.8
+
+Full reference: `fragua help` or GET /help
+```
+
+## pour
+
+```text
+pour — fragua script verb
+
+Usage:
+  pour NET [layer=Top] [relief=spokes4|solid] [stitch=true] [pitch=N]
+
+Flood a copper pour for a net on one layer. `relief=spokes4` gives thermal
+reliefs on pads (solderable); `solid` connects directly.
+
+Examples:
+  pour GND layer=Bottom
+  pour GND layer=Top relief=spokes4 stitch=true
+
+Full reference: `fragua help` or GET /help
+```
+
+## auto-pour
+
+```text
+auto-pour — fragua script verb
+
+Usage:
+  auto-pour [NET...]          (default GND, both layers)
+
+Aliases:
+  auto_pour
+
+Pour the listed nets on every copper layer at once. With no arguments it
+pours GND on both sides — the usual move after routing.
+
+Examples:
+  auto-pour
+  auto-pour GND +3V3
+
+Full reference: `fragua help` or GET /help
+```
+
+## clear-pour
+
+```text
+clear-pour — fragua script verb
+
+Usage:
+  clear-pour [NET]
+
+Aliases:
+  clear_pour
+
+Delete pours, all of them or just one net's. Do this before re-routing, then
+pour again afterwards.
+
+Examples:
+  clear-pour
+  clear-pour GND
+
+Full reference: `fragua help` or GET /help
+```
+
+## stitch
+
+```text
+stitch — fragua script verb
+
+Usage:
+  stitch                      (grid + pad vias that tie pour islands)
+
+Aliases:
+  stitch-isolated-pads, stitch_isolated_pads
+
+Add stitching vias so isolated pour islands and stranded pads reconnect to
+their net. Run after `auto-pour`.
+
+Examples:
+  stitch
+
+Full reference: `fragua help` or GET /help
+```
+
+## nc
+
+```text
+nc — fragua script verb
+
+Usage:
+  nc REF.PIN [REF.PIN...]     (mark unused MCU pins; no floating_pin)
+
+Mark pins as intentionally unconnected so ERC stops reporting them as
+floating. The usual fix for unused MCU GPIOs.
+
+Examples:
+  nc U1.IO9 U1.IO10 U1.IO11
+
+Full reference: `fragua help` or GET /help
+```
+
+## fiducial
+
+```text
+fiducial — fragua script verb
+
+Usage:
+  fiducial X Y [ref=FID1]
+
+Add a fiducial marker for pick-and-place alignment. Assemblers usually want
+three, spread asymmetrically.
+
+Examples:
+  fiducial 2 2
+  fiducial 2 18 ref=FID2
+
+Full reference: `fragua help` or GET /help
+```
+
+## diff
+
+```text
+diff — fragua script verb
+
+Usage:
+  diff NETA NETB              (diff-pair data; single-ended Z only)
+
+Aliases:
+  diff-pair, diff_pair
+
+Declare two nets a differential pair so `si-check` can report their skew.
+Impedance is still computed single-ended.
+
+Examples:
+  diff USB_DP USB_DM
+
+Full reference: `fragua help` or GET /help
+```
+
+## impedance
+
+```text
+impedance — fragua script verb
+
+Usage:
+  impedance [NET]             (closed-form microstrip/stripline; not FEM)
+
+Report the computed characteristic impedance per net from the stackup and
+trace geometry. Closed-form approximation, not a field solver.
+
+Examples:
+  impedance
+  impedance USB_DP
+
+Full reference: `fragua help` or GET /help
+```
+
+## si-check
+
+```text
+si-check — fragua script verb
+
+Usage:
+  si-check [NET...] [tol=0.10] [max_vias=N]
+  (impedance, return path, diff skew, via budget)
+
+Aliases:
+  si_check, sicheck
+
+Signal-integrity audit: impedance deviation beyond `tol`, plane gaps under a
+trace's return path, diff-pair skew, and vias per net over `max_vias`.
+
+Examples:
+  si-check
+  si-check USB_DP USB_DM tol=0.05 max_vias=2
+
+Full reference: `fragua help` or GET /help
+```
+
+## teardrop
+
+```text
+teardrop — fragua script verb
+
+Usage:
+  teardrop on|off             (copper fillets at pad/via junctions)
+
+Aliases:
+  teardrops
+
+Toggle teardrop fillets where traces meet pads and vias. Improves
+manufacturing yield; turn on once the board routes clean.
+
+Examples:
+  teardrop on
+
+Full reference: `fragua help` or GET /help
+```
+
+## silk-line
+
+```text
+silk-line — fragua script verb
+
+Usage:
+  silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
+
+Aliases:
+  silk_line, silk-text, silk_text
+
+Draw silkscreen lines and text (mm; `size` is cap height in mm). Reference
+designators are drawn for you — use these for labels, logos and polarity
+marks.
+
+Examples:
+  silk-text 4 18 FRAGUA size=1.5
+  silk-line 0 12 30 12
+
+Full reference: `fragua help` or GET /help
+```
+
+## rule-area
+
+```text
+rule-area — fragua script verb
+
+Usage:
+  rule-area NAME x1 y1 x2 y2 [clearance=N] …
+
+Aliases:
+  rule_area
+
+Apply local design rules inside a rectangle — a wider clearance under a
+high-voltage part, for instance — without changing the global rules.
+
+Examples:
+  rule-area hv 20 0 30 20 clearance=0.5
+
+Full reference: `fragua help` or GET /help
+```
+
+## fab-rules
+
+```text
+fab-rules — fragua script verb
+
+Usage:
+  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
+
+Aliases:
+  fab_rules
+
+Load a fabricator's minimum rule set. These become the floor DRC and the
+router will not go below them. Set this before routing so you never route
+something the fab rejects.
+
+Examples:
+  fab-rules list
+  fab-rules jlcpcb
+  fab-rules jlcpcb-4l
+
+Full reference: `fragua help` or GET /help
+```
+
+## escape
+
+```text
+escape — fragua script verb
+
+Usage:
+  escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
+
+Fine-pitch escape strategy: drop a via directly in a pad (QFN/BGA thermal
+and inner pads), or let the router do it automatically for pads it cannot
+otherwise reach.
+
+Examples:
+  escape list
+  escape via-in-pad U1.EP
+  escape via-in-pad-stranded on
+
+Full reference: `fragua help` or GET /help
+```
+
+## layer
+
+```text
+layer — fragua script verb
+
+Usage:
+  layer list|add|remove|rename|dielectric
+
+Inspect and edit the stackup. Default is 2-layer (Top/Bottom); `layer add`
+grows it, `layer dielectric` sets thickness and Er, which feed the impedance
+model.
+
+Examples:
+  layer list
+  layer add GND plane
+  layer dielectric 1 0.2 4.3
+
+Full reference: `fragua help` or GET /help
+```
+
+## drc
+
+```text
+drc — fragua script verb
+
+Usage:
+  drc / erc
+
+Aliases:
+  erc
+
+`erc` checks the schematic (floating pins, unconnected nets, power
+conflicts); `drc` checks the geometry (clearance, shorts, annular ring,
+board edge). Both print violations; both must be clean before `pack`.
+
+Examples:
+  erc
+  drc
+
+Full reference: `fragua help` or GET /help
+```
+
+## compact
+
+```text
+compact — fragua script verb
+
+Usage:
+  compact [step=1] [seed=N] [allow_failed=0] [route_seconds=20] [max_seconds=600] [aspect=keep|free]
+
+Iteratively shrink an already-clean, already-routed board, re-placing and
+re-routing at each step and rolling back any step that breaks DRC or
+connectivity. Optional and slow — run it only once the board is clean.
+
+Examples:
+  compact allow_failed=0 route_seconds=90
+  compact step=0.5 aspect=free max_seconds=300
+
+Full reference: `fragua help` or GET /help
+```
+
+## pack
+
+```text
+pack — fragua script verb
+
+Usage:
+  pack [fab=jlcpcb] [out=DIR] [teardrop=true] | export DIR   (fails on ERC errors)
+
+Aliases:
+  export
+
+Write the manufacturing bundle — Gerbers, Excellon drill, BOM, CPL and a
+README — as <project>-<fab>.zip in DIR. Fabs: jlcpcb, pcbway, generic.
+Refuses to run while ERC reports errors.
+
+Examples:
+  pack fab=jlcpcb out=/tmp
+  pack fab=pcbway out=./out teardrop=true
+
+Full reference: `fragua help` or GET /help
+```
+
+## screenshot
+
+```text
+screenshot — fragua script verb
+
+Usage:
+  screenshot PATH
+
+Write the current board rendering to PATH as SVG. The same image is served
+live at GET /screenshot.
+
+Examples:
+  screenshot /tmp/board.svg
+
+Full reference: `fragua help` or GET /help
+```
+
+## save
+
+```text
+save — fragua script verb
+
+Usage:
+  save [PATH] | view | status | reset | help
+
+Aliases:
+  view, status, reset, help
+
+`status` (alias `view`) prints a one-shot summary: outline, part and net
+counts, routed/unrouted, DRC state. `save` writes the .fragua project.
+`reset` empties the project. `help` points at the full reference.
+
+Examples:
+  status
+  save /tmp/board.fragua
+  reset
+
+Full reference: `fragua help` or GET /help
+```
+
