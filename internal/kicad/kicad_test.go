@@ -1,6 +1,7 @@
 package kicad
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -466,6 +467,48 @@ func TestZoneFillClearsForeignPads(t *testing.T) {
 			if maxX > px-halfPad-pourClearanceMM && minX < px+halfPad+pourClearanceMM &&
 				maxY > py-halfPad-pourClearanceMM && minY < py+halfPad+pourClearanceMM {
 				t.Fatalf("GND fill rect [%g..%g]x[%g..%g] intrudes on the SIG pad clearance", minX, maxX, minY, maxY)
+			}
+		}
+	}
+}
+
+// The fill must also clear foreign traces and vias, not just pads: a plane
+// that swallowed a signal trace would be a short, and the export would be
+// worse than useless.
+func TestZoneFillClearsForeignTraceAndVia(t *testing.T) {
+	b := smallBoard()
+	_, root := export(t, b, DefaultOptions())
+	var tr *core.Trace
+	for i := range b.Traces {
+		if b.Traces[i].Layer.IsTop() {
+			tr = &b.Traces[i]
+		}
+	}
+	if tr == nil {
+		t.Fatal("no top-layer trace in the fixture")
+	}
+	flip := (&exporter{board: b, stack: b.StackupOrDefault()}).originY().ToMM()
+	ax := [2]float64{tr.Start.X.ToMM(), flip - tr.Start.Y.ToMM()}
+	bx := [2]float64{tr.End.X.ToMM(), flip - tr.End.Y.ToMM()}
+	need := tr.Width.ToMM()/2 + pourClearanceMM
+	via := b.Vias[0]
+	vc := [2]float64{via.Position.X.ToMM(), flip - via.Position.Y.ToMM()}
+	viaNeed := via.Diameter.ToMM()/2 + pourClearanceMM
+
+	for _, z := range root.find("zone") {
+		if z.first("net_name").arg(0) != "GND" || z.first("layer").arg(0) != "F.Cu" {
+			continue
+		}
+		for _, fp := range z.find("filled_polygon") {
+			for _, xy := range fp.first("pts").find("xy") {
+				x, _ := strconv.ParseFloat(xy.arg(0), 64)
+				y, _ := strconv.ParseFloat(xy.arg(1), 64)
+				if d := segDist(x, y, ax, bx); d < need-1e-9 {
+					t.Fatalf("fill corner (%g, %g) is %.4f mm from the SIG trace, need %.4f", x, y, d, need)
+				}
+				if d := math.Hypot(x-vc[0], y-vc[1]); d < viaNeed-1e-9 {
+					t.Fatalf("fill corner (%g, %g) is %.4f mm from the SIG via, need %.4f", x, y, d, viaNeed)
+				}
 			}
 		}
 	}
