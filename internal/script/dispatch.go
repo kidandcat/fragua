@@ -3,6 +3,7 @@ package script
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -244,16 +245,22 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return rep.Summary(), nil
 	case "auto-place", "auto_place":
 		refs, kv := splitRefsKV(args)
+		// `palette` / `part` / `lib-gen` bind a footprint without placing it,
+		// so a first auto-place used to find nothing to move.
+		seated, err := seatPending(p, "auto-place", refs)
+		if err != nil {
+			return "", err
+		}
 		opts := placer.DefaultOptions()
 		opts = placer.ParseOptions(opts, kv)
 		var rep placer.Report
-		var err error
 		p.MutateBoard(func(b *core.Board) {
 			rep, err = placer.Place(b, refs, opts)
 		})
 		if err != nil {
 			return "", err
 		}
+		rep.Seated = seated
 		return rep.Summary(), nil
 	case "outline":
 		return setOutline(p, args)
@@ -512,6 +519,130 @@ func placeOne(p *core.Project, args string) (string, error) {
 		b.AddFootprint(fp)
 	})
 	return fmt.Sprintf("placed %s at %.2f,%.2f rot=%.0f", ref, x, y, fp.Rotation), nil
+}
+
+// ─── seating bound-but-unplaced parts ────────────────────────────────
+
+// pendingRefs lists the references that are bound to a footprint but absent
+// from the board, in a stable order: palette items first (insertion order),
+// then symbols whose key= names a library entry and that were never bound.
+// refs, when non-empty, narrows the list to what the caller asked for.
+func pendingRefs(p *core.Project, refs []string) []string {
+	want := map[string]bool{}
+	for _, r := range refs {
+		want[strings.ToUpper(r)] = true
+	}
+	keep := func(ref string) bool { return len(want) == 0 || want[strings.ToUpper(ref)] }
+
+	p.RLock()
+	b := p.Board()
+	var out []string
+	keys := map[string]string{}
+	seen := map[string]bool{}
+	for _, fp := range p.Palette() {
+		if seen[fp.Reference] || !keep(fp.Reference) || b.FootprintByRef(fp.Reference) != nil {
+			continue
+		}
+		seen[fp.Reference] = true
+		out = append(out, fp.Reference)
+	}
+	sch := p.Schematic()
+	var maybe []string
+	for _, id := range sch.SymbolOrder {
+		s := sch.Symbols[id]
+		if s == nil || s.Key == "" || seen[s.Reference] || !keep(s.Reference) {
+			continue
+		}
+		if b.FootprintByRef(s.Reference) != nil {
+			continue
+		}
+		seen[s.Reference] = true
+		keys[s.Reference] = s.Key
+		maybe = append(maybe, s.Reference)
+	}
+	p.RUnlock()
+
+	// The library has its own lock; keep it out of the project one.
+	for _, ref := range maybe {
+		if _, ok := p.FindLibrary(keys[ref]); ok {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+// bindPalette makes sure ref has a palette footprint, binding the symbol's
+// key= on the fly. False means nothing names a footprint for ref.
+func bindPalette(p *core.Project, ref string) bool {
+	p.RLock()
+	key := ""
+	for _, fp := range p.Palette() {
+		if fp.Reference == ref {
+			p.RUnlock()
+			return true
+		}
+	}
+	for _, s := range p.Schematic().Symbols {
+		if s != nil && s.Reference == ref {
+			key = s.Key
+			break
+		}
+	}
+	p.RUnlock()
+	if key == "" {
+		return false
+	}
+	_, err := paletteCmd(p, ref+" "+quoteArg(key))
+	return err == nil
+}
+
+// seatPending drops every bound-but-unplaced part onto a deterministic grid
+// inside the outline, so the annealer has something to move. It only has to
+// start each part somewhere reproducible; auto-place does the real work.
+// Rotation and side stay as the binding left them (0 / top by default).
+func seatPending(p *core.Project, verb string, refs []string) (int, error) {
+	pending := pendingRefs(p, refs)
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	var o core.Rect
+	p.RLock()
+	has := p.Board().Outline != nil
+	if has {
+		o = *p.Board().Outline
+	}
+	p.RUnlock()
+	if !has {
+		return 0, fmt.Errorf("%s: board has no outline — run `outline W H` first", verb)
+	}
+
+	cols := int(math.Ceil(math.Sqrt(float64(len(pending)))))
+	rows := (len(pending) + cols - 1) / cols
+	w, h := o.Width().ToMM(), o.Height().ToMM()
+	mx, my := math.Min(2.0, w/10), math.Min(2.0, h/10)
+	cw := math.Max(0, w-2*mx) / float64(cols)
+	ch := math.Max(0, h-2*my) / float64(rows)
+
+	n := 0
+	for i, ref := range pending {
+		if !bindPalette(p, ref) {
+			continue
+		}
+		fp, ok := p.PaletteTake(ref)
+		if !ok {
+			continue
+		}
+		p.RLock()
+		stampNets(p.Schematic(), fp)
+		p.RUnlock()
+		fp.Position = core.NewPoint(
+			core.FromMM(o.Min.X.ToMM()+mx+(float64(i%cols)+0.5)*cw),
+			core.FromMM(o.Min.Y.ToMM()+my+(float64(i/cols)+0.5)*ch),
+		)
+		p.MutateBoard(func(b *core.Board) { b.AddFootprint(fp) })
+		n++
+	}
+	return n, nil
 }
 
 func packBoard(p *core.Project, args string) (string, error) {
@@ -917,24 +1048,6 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 	if sym != nil && sym.Description != "" {
 		desc = sym.Description
 	}
-	// net map for pins
-	netForPin := func(pin string) *string {
-		if sym == nil {
-			return nil
-		}
-		for _, net := range sch.Nets {
-			if net == nil {
-				continue
-			}
-			for _, c := range net.Connections {
-				if c.SymbolID == sym.ID && c.PinNumber == pin {
-					n := net.Name
-					return &n
-				}
-			}
-		}
-		return nil
-	}
 	p.Unlock()
 
 	fp := entry.ToFootprint(ref, value, layer, rot)
@@ -953,6 +1066,40 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 			fp.Value = sym.Value
 		}
 	}
+	stampNets(sch, fp)
+	p.PaletteAdd(*fp)
+	return fmt.Sprintf("Spawned %s from %s", ref, key), nil
+}
+
+// stampNets tags fp's pads with the nets its schematic symbol sits on, by pad
+// number and then by pad name. palette does this when it binds, but a `net`
+// line only reaches footprints already on the *board* — so a part bound first
+// and seated later has to pick its nets up here or it routes to nothing.
+func stampNets(sch *core.Schematic, fp *core.Footprint) {
+	var sym *core.Symbol
+	for _, s := range sch.Symbols {
+		if s != nil && s.Reference == fp.Reference {
+			sym = s
+			break
+		}
+	}
+	if sym == nil {
+		return
+	}
+	netForPin := func(pin string) *string {
+		for _, net := range sch.Nets {
+			if net == nil {
+				continue
+			}
+			for _, c := range net.Connections {
+				if c.SymbolID == sym.ID && c.PinNumber == pin {
+					n := net.Name
+					return &n
+				}
+			}
+		}
+		return nil
+	}
 	for i := range fp.Pads {
 		if n := netForPin(fp.Pads[i].Number); n != nil {
 			fp.Pads[i].Net = n
@@ -962,8 +1109,6 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 			}
 		}
 	}
-	p.PaletteAdd(*fp)
-	return fmt.Sprintf("Spawned %s from %s", ref, key), nil
 }
 
 // ─── trace / via ─────────────────────────────────────────────────────

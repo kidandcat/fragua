@@ -56,6 +56,11 @@ func cmdCompact(p *core.Project, args string) (string, error) {
 		}
 	}
 
+	// The re-place inside each probe needs the parts on the board first.
+	if _, err := seatPending(p, "compact", nil); err != nil {
+		return "", err
+	}
+
 	p.RLock()
 	src := p.Board()
 	// The probe must route at the same per-net widths the final route

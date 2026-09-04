@@ -86,12 +86,20 @@ type Report struct {
 	FinalHPWLMM   float64  `json:"final_hpwl_mm"`
 	Moved         []string `json:"moved"`
 	Iterations    int      `json:"iterations"`
+	// Seated counts parts the caller materialised on the board for this run.
+	// Place only moves footprints that already exist; the palette lives on the
+	// project, so the script layer seats them and reports the count here.
+	Seated int `json:"seated"`
 }
 
 // Summary is agent-friendly.
 func (r Report) Summary() string {
-	return fmt.Sprintf("place: HPWL %.2f → %.2f mm, moved %d parts, %d iters",
-		r.InitialHPWLMM, r.FinalHPWLMM, len(r.Moved), r.Iterations)
+	seated := ""
+	if r.Seated > 0 {
+		seated = fmt.Sprintf("seated %d new, ", r.Seated)
+	}
+	return fmt.Sprintf("place: %sHPWL %.2f → %.2f mm, moved %d parts, %d iters",
+		seated, r.InitialHPWLMM, r.FinalHPWLMM, len(r.Moved), r.Iterations)
 }
 
 type pos struct {

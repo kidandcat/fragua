@@ -666,3 +666,100 @@ net SDA U1.1 U1.2 class=signal
 		t.Fatal("class lost when the net was extended")
 	}
 }
+
+// `palette`, `part` and `lib-gen` bind a footprint without placing it, so the
+// first auto-place of a board used to die with "no movable footprints" — every
+// agent hit it on its first board. auto-place now seats the bound-but-unplaced
+// parts itself, with the nets declared after the binding, so route can wire them.
+func TestAutoPlaceSeatsBoundButUnplacedParts(t *testing.T) {
+	p, _ := partsProject(t, "seat")
+	rs := run(t, p, `
+outline 30 25
+part C2040 as=U1
+lib-gen R0603 family=chip size=0603 as=R1 kind=r
+net GND U1.GND R1.2
+auto-place seed=1
+route max_seconds=10
+`)
+	if !strings.Contains(rs[4].Result, "seated 2 new") {
+		t.Fatalf("auto-place = %q", rs[4].Result)
+	}
+	if !strings.Contains(rs[5].Result, "1/1 nets ok") {
+		t.Fatalf("route = %q", rs[5].Result)
+	}
+	p.RLock()
+	defer p.RUnlock()
+	b := p.Board()
+	if len(p.Palette()) != 0 {
+		t.Fatalf("palette still holds %d item(s)", len(p.Palette()))
+	}
+	for _, ref := range []string{"U1", "R1"} {
+		fp := b.FootprintByRef(ref)
+		if fp == nil {
+			t.Fatalf("%s was never seated", ref)
+		}
+		if fp.Layer != core.LayerTop {
+			t.Fatalf("%s seated on %v", ref, fp.Layer)
+		}
+		x, y := fp.Position.X.ToMM(), fp.Position.Y.ToMM()
+		if x < 0 || x > 30 || y < 0 || y > 25 {
+			t.Fatalf("%s seated outside the outline at %.2f,%.2f", ref, x, y)
+		}
+	}
+}
+
+// Seating must not disturb what the script already placed by hand: a part is
+// only moved when auto-place is allowed to move it.
+func TestAutoPlaceKeepsHandPlacedPositions(t *testing.T) {
+	p, _ := partsProject(t, "seat-anchor")
+	rs := run(t, p, `
+outline 40 30
+lib-gen R0603 family=chip size=0603 as=R1 kind=r
+lib-gen R0805 family=chip size=0805 as=R2 kind=r
+net SIG R1.1 R2.1
+place R1 12 9
+auto-place R2 seed=3
+`)
+	if !strings.Contains(rs[5].Result, "seated 1 new") {
+		t.Fatalf("auto-place = %q", rs[5].Result)
+	}
+	p.RLock()
+	defer p.RUnlock()
+	r1 := p.Board().FootprintByRef("R1")
+	if r1 == nil || r1.Position.X.ToMM() != 12 || r1.Position.Y.ToMM() != 9 {
+		t.Fatalf("hand-placed R1 moved: %+v", r1)
+	}
+}
+
+// Seating needs somewhere to seat into; say so instead of failing later with
+// the placer's own "no movable footprints".
+func TestAutoPlaceWithoutOutlineExplainsItself(t *testing.T) {
+	p, _ := partsProject(t, "seat-no-outline")
+	rs := RunScript(p, "lib-gen R0603 family=chip size=0603 as=R1 kind=r\nauto-place seed=1\n")
+	last := rs[len(rs)-1]
+	if last.OK || !strings.Contains(last.Result, "run `outline W H` first") {
+		t.Fatalf("auto-place = %+v", last)
+	}
+}
+
+// place-legal reaches the same parts: a symbol bound with key= but never sent
+// through `palette` used to be "unknown".
+func TestPlaceLegalSeatsASymbolBoundByKey(t *testing.T) {
+	p, _ := partsProject(t, "legal-bound")
+	rs := run(t, p, `
+outline 20 20
+lib demo_r
+  pad 1 -0.8 0 0.9 0.9
+  pad 2 0.8 0 0.9 0.9
+sym R7 resistor key=demo_r
+place-legal R7
+`)
+	if !strings.Contains(rs[len(rs)-1].Result, "place-legal R7") {
+		t.Fatalf("place-legal = %q", rs[len(rs)-1].Result)
+	}
+	p.RLock()
+	defer p.RUnlock()
+	if p.Board().FootprintByRef("R7") == nil {
+		t.Fatal("R7 is not on the board")
+	}
+}

@@ -53,8 +53,7 @@ list-lib                         # 70+ footprints exist; look before authoring w
 palette U1 esp32_s3_zero         # binds the footprint — does NOT place it
 place U1 15 10                   # anchor what matters
 edge-place J1 bottom             # connectors
-place C1 22 14
-auto-place C1 seed=42            # only moves already-placed parts
+auto-place seed=42               # seats the unplaced (C1) and arranges them
 
 route max_seconds=120            # re-run: it only attacks open nets
 auto-pour
@@ -66,8 +65,8 @@ save /abs/path/board.fragua
 
 ## Rules
 
-- `palette` binds a footprint; the part still needs `place` / `place-legal` / `edge-place`.
-  `auto-place` on an unplaced part fails with `no movable footprints`.
+- `palette` binds a footprint; `place` / `place-legal` / `edge-place` the parts whose
+  position matters. `auto-place` seats every bound-but-unplaced part itself.
 - Anchor ICs and connectors before `auto-place`, or passives scatter from their IC.
 - `route: N/M nets ok` — re-run while `N` improves. When it plateaus, the geometry is
   blocking; more seconds will not help. Add area, move a part, or `layer add`.

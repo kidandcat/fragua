@@ -130,7 +130,7 @@ net SIG  U1.IO1 R1.1
 nc U1.IO9 U1.IO10                # silence "floating pin" on unused GPIOs
 erc                              # must reach 0 errors
 
-# 3. Footprints: bind, then place. Both steps are required.
+# 3. Footprints: bind, then anchor the ones whose position matters.
 list-lib                         # 70+ footprints already exist — look before you author
 palette U1 esp32_s3_zero
 palette R1 r_0603 value=10k
@@ -138,11 +138,10 @@ palette C1 c_0603 value=100nF
 
 place U1 15 10                   # anchor what matters (ICs, connectors)
 edge-place J1 bottom             # connectors: let the verb do the edge maths
-place R1 22 6                    # everything else still needs an initial position
-place C1 22 14
+                                 # R1 and C1 need no `place`: auto-place seats them
 
 # 4. Refine, route, pour.
-auto-place R1 C1 seed=42         # only moves already-placed parts; anchors stay put
+auto-place seed=42               # seats the unplaced, arranges them; anchors stay put
 route max_seconds=120
 auto-pour                        # GND on both layers
 stitch                           # vias tying the pour islands together
@@ -188,11 +187,11 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
 ### Common mistakes
 
 - **`fragua` with no subcommand just prints help and exits.** Use `fragua run` / `fragua mcp`.
-- **`palette` does not place.** `palette REF KEY` binds a footprint; the part still needs
-  `place`, `place-legal` or `edge-place`. `auto-place` on an unplaced part fails with
-  `no movable footprints`.
-- **`auto-place` only refines what is already placed.** Anchor the ICs and connectors first,
-  then let it move the passives — otherwise decoupling scatters away from its IC.
+- **`palette` does not place.** `palette REF KEY` binds a footprint; use `place`,
+  `place-legal` or `edge-place` on the parts whose position matters. The rest need no
+  `place` line: `auto-place` seats every bound-but-unplaced part itself (`seated N new`).
+- **Anchor before you refine.** `auto-place` seats and arranges everything else, but place
+  the ICs and connectors yourself first — otherwise decoupling scatters away from its IC.
 - **Authoring a footprint you already have.** Run `list-lib` first; 70+ parts ship with the
   tool. Only reach for `lib` when nothing matches.
 - **Only six symbol kinds exist** — `ic`, `resistor`, `capacitor`, `inductor`, `led`, `diode`.

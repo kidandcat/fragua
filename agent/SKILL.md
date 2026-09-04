@@ -81,18 +81,17 @@ net SIG  U1.IO1 R1.1
 nc U1.IO9 U1.IO10                # unused pins, or ERC calls them floating
 erc                              # iterate until 0 errors
 
-# --- footprints: bind, THEN place (both are required) ---
+# --- footprints: bind, THEN anchor the ones whose position matters ---
 palette U1 esp32_s3_zero
 palette R1 r_0603 value=10k
 palette C1 c_0603 value=100nF
 
 place U1 15 10                   # anchor the parts whose position matters
 edge-place J1 bottom             # connectors: never hand-compute the edge maths
-place R1 22 6
-place C1 22 14
+                                 # R1 and C1 need no `place`: auto-place seats them
 
 # --- refine, route, pour ---
-auto-place R1 C1 seed=42         # refines placed parts; anchors stay put
+auto-place seed=42               # seats the unplaced, arranges them; anchors stay put
 route max_seconds=120
 auto-pour
 stitch
@@ -133,8 +132,8 @@ ok pack: packed /tmp/untitled-jlcpcb.zip (erc_err=0 drc_err=1)
 ## 7. Common mistakes
 
 - Running bare `fragua` and wondering why nothing listens. Use `run` / `mcp`.
-- Thinking `palette` places the part. It only binds the footprint — `place` it too.
-  `auto-place` on an unplaced part fails: `no movable footprints`.
+- Thinking `palette` places the part. It only binds the footprint — `place` the ones whose
+  position matters; `auto-place` seats the rest itself (`seated N new`).
 - Letting `auto-place` run before the ICs are anchored, so decoupling scatters.
 - Authoring a footprint with `lib` that `list-lib` already has.
 - Inventing a symbol kind. Only `ic`, `resistor`, `capacitor`, `inductor`, `led`, `diode`

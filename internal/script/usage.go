@@ -175,10 +175,12 @@ var Verbs = []VerbHelp{
 		Examples: []string{"unplace C1", "delete R9", "clear-board"},
 	},
 	{
-		Name:     "auto-place",
-		Aliases:  []string{"auto_place"},
-		Usage:    "auto-place [REF...] [seed=N] [iters=N]",
-		Describe: "Global placement plus simulated-annealing legalisation over the listed parts (all movable parts if none listed). Anything you placed by hand stays put and is routed around. Pass a `seed` to make the result reproducible.",
+		Name:    "auto-place",
+		Aliases: []string{"auto_place"},
+		Usage:   "auto-place [REF...] [seed=N] [iters=N]",
+		Describe: "Global placement plus simulated-annealing legalisation over the listed parts (all movable parts if none listed). " +
+			"Parts bound by `palette` / `part` / `lib-gen` but never placed are seated on the board first (reported as `seated N new`), so you do not have to `place` them by hand. " +
+			"Anything you placed by hand stays put and is routed around. Pass a `seed` to make the result reproducible. Needs an outline.",
 		Examples: []string{"auto-place", "auto-place R1 C1 C2 seed=42", "auto-place seed=7 iters=4000"},
 	},
 	{
@@ -507,7 +509,7 @@ First 10 minutes:
   3. sym / net               describe the circuit, then run erc until it is clean
   4. outline W H             give the board a size
   5. palette + place         bind footprints, anchor the parts whose position matters
-  6. auto-place seed=42      arrange the rest (hand-placed parts stay put)
+  6. auto-place seed=42      seat and arrange the rest (hand-placed parts stay put)
   7. route max_seconds=120   auto-route; re-run to keep attacking what failed
   8. auto-pour then stitch   ground pours plus the vias that tie their islands
   9. drc                     fix violations, re-route, repeat until clean

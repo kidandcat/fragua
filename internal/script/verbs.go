@@ -684,6 +684,8 @@ func cmdPlaceLegal(p *core.Project, args string) (string, error) {
 	if v, ok := kvFloat(kv, "rot"); ok {
 		rot, rotSet = v, true
 	}
+	// A symbol carrying key= is bound but has no palette entry yet.
+	bindPalette(p, ref)
 	fp, fromPal := p.PaletteTake(ref)
 	var msg string
 	err := error(nil)
