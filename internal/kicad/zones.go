@@ -20,7 +20,7 @@ func (e *exporter) emitZones() {
 			}
 			poly = rectPoly(*k.Rect)
 		}
-		e.emitKeepout(uuidFor("keepout/"+k.ID.String()), fmt.Sprintf("keepout%d", i+1), poly,
+		e.emitKeepout(e.uuid("keepout/"+k.ID.String()), fmt.Sprintf("keepout%d", i+1), poly,
 			k.NoCopper || (!k.NoCopper && !k.NoPlace), k.NoPlace)
 	}
 	// A rule area is a local override, not a keepout; KiCad has no matching
@@ -32,7 +32,7 @@ func (e *exporter) emitZones() {
 		if name == "" {
 			name = fmt.Sprintf("rule-area%d", i+1)
 		}
-		e.emitKeepout(uuidFor("rulearea/"+ra.ID.String()), "fragua:"+name, rectPoly(ra.Rect), false, true)
+		e.emitKeepout(e.uuid("rulearea/"+ra.ID.String()), "fragua:"+name, rectPoly(ra.Rect), false, true)
 	}
 }
 
@@ -81,7 +81,7 @@ func (e *exporter) emitPour(i int, p *core.Pour) {
 	e.line(2, "(net %d)", e.nets.idx(p.Net))
 	e.line(2, "(net_name %q)", p.Net)
 	e.line(2, "(layer %q)", layer)
-	e.line(2, "(uuid %q)", uuidFor("zone/"+key))
+	e.line(2, "(uuid %q)", e.uuid("zone/"+key))
 	e.line(2, "(name %q)", p.Net)
 	e.line(2, "(hatch edge 0.5)")
 	e.line(2, "(connect_pads")

@@ -26,18 +26,18 @@ func (e *exporter) emitHoles() {
 		}
 		e.line(1, "(footprint %q", "fragua:MountingHole")
 		e.line(2, "(layer %q)", "F.Cu")
-		e.line(2, "(uuid %q)", uuidFor("hole/"+h.ID.String()))
+		e.line(2, "(uuid %q)", e.uuid("hole/"+h.ID.String()))
 		e.line(2, "(at %s %s)", e.x(h.Center.X), e.y(h.Center.Y))
 		e.line(2, "(descr %q)", "NPTH mounting hole")
 		e.line(2, "(attr exclude_from_pos_files exclude_from_bom)")
-		e.field2(uuidFor("holeref/"+h.ID.String()), "Reference", label, "F.SilkS")
-		e.field2(uuidFor("holeval/"+h.ID.String()), "Value", "NPTH "+d+"mm", "F.Fab")
+		e.field2(e.uuid("holeref/"+h.ID.String()), "Reference", label, "F.SilkS")
+		e.field2(e.uuid("holeval/"+h.ID.String()), "Value", "NPTH "+d+"mm", "F.Fab")
 		e.line(2, "(pad %q np_thru_hole circle", "")
 		e.line(3, "(at 0 0)")
 		e.line(3, "(size %s %s)", d, d)
 		e.line(3, "(drill %s)", d)
 		e.line(3, "(layers %q %q)", "*.Cu", "*.Mask")
-		e.line(3, "(uuid %q)", uuidFor("holepad/"+h.ID.String()))
+		e.line(3, "(uuid %q)", e.uuid("holepad/"+h.ID.String()))
 		e.line(2, ")")
 		e.line(2, "(embedded_fonts no)")
 		e.line(1, ")")
@@ -124,7 +124,7 @@ func (e *exporter) grLine(key string, a, b core.Point, widthMM float64, layer st
 	e.line(2, "(end %s %s)", e.x(b.X), e.y(b.Y))
 	e.line(2, "(stroke (width %s) (type solid))", num(widthMM))
 	e.line(2, "(layer %q)", layer)
-	e.line(2, "(uuid %q)", uuidFor(key))
+	e.line(2, "(uuid %q)", e.uuid(key))
 	e.line(1, ")")
 }
 
@@ -150,7 +150,7 @@ func (e *exporter) grArc(key string, start, end, centre core.Point, widthMM floa
 	e.line(2, "(end %s %s)", e.x(end.X), e.y(end.Y))
 	e.line(2, "(stroke (width %s) (type solid))", num(widthMM))
 	e.line(2, "(layer %q)", layer)
-	e.line(2, "(uuid %q)", uuidFor(key))
+	e.line(2, "(uuid %q)", e.uuid(key))
 	e.line(1, ")")
 }
 
@@ -176,7 +176,7 @@ func (e *exporter) emitBoardSilk() {
 		e.line(1, "(gr_text %q", t.Text)
 		e.line(2, "(at %s %s%s)", e.x(t.Position.X), e.y(t.Position.Y), angleSuffix(t.Rotation))
 		e.line(2, "(layer %q)", silkLayerName(t.Layer))
-		e.line(2, "(uuid %q)", uuidFor(fmt.Sprintf("silktext/%d", i)))
+		e.line(2, "(uuid %q)", e.uuid(fmt.Sprintf("silktext/%d", i)))
 		e.line(2, "(effects")
 		e.line(3, "(font (size %s %s) (thickness %s))", num(size.ToMM()), num(size.ToMM()), num(th.ToMM()))
 		if j := justify(t.Anchor); j != "" {
@@ -198,7 +198,7 @@ func (e *exporter) emitTracks() {
 		e.line(2, "(width %s)", num(t.Width.ToMM()))
 		e.line(2, "(layer %q)", e.layerName(t.Layer))
 		e.line(2, "(net %d)", e.nets.idx(t.Net))
-		e.line(2, "(uuid %q)", uuidFor("seg/"+t.ID.String()))
+		e.line(2, "(uuid %q)", e.uuid("seg/"+t.ID.String()))
 		e.line(1, ")")
 	}
 	n := e.stack.CopperCount()
@@ -224,7 +224,7 @@ func (e *exporter) emitTracks() {
 		e.line(2, "(drill %s)", num(v.Drill.ToMM()))
 		e.line(2, "(layers %q %q)", e.cuName(from), e.cuName(to))
 		e.line(2, "(net %d)", e.nets.idx(v.Net))
-		e.line(2, "(uuid %q)", uuidFor("via/"+v.ID.String()))
+		e.line(2, "(uuid %q)", e.uuid("via/"+v.ID.String()))
 		e.line(1, ")")
 	}
 }

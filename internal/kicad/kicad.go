@@ -29,8 +29,9 @@ const Generator = "fragua"
 
 // Options tunes the export.
 type Options struct {
-	// Name is the board name; it seeds the deterministic UUIDs so the same
-	// board always exports byte-identically.
+	// Name is the board name. It namespaces the derived UUIDs, so two boards
+	// exported from the same item IDs still get distinct KiCad identities and
+	// the same board always exports byte-identically.
 	Name string
 	// FillZones emits (filled_polygon …) for every pour so KiCad shows the
 	// copper without a refill. Off means zone outlines only.
@@ -342,7 +343,7 @@ func (e *exporter) emitFootprint(fp *core.Footprint) {
 	key := libID(fp)
 	e.line(1, "(footprint %q", key)
 	e.line(2, "(layer %q)", e.layerName(fp.Layer))
-	e.line(2, "(uuid %q)", uuidFor("fp/"+fp.Reference+"/"+fp.ID.String()))
+	e.line(2, "(uuid %q)", e.uuid("fp/"+fp.Reference+"/"+fp.ID.String()))
 	e.line(2, "(at %s %s%s)", e.x(fp.Position.X), e.y(fp.Position.Y), angleSuffix(fp.Rotation))
 	if fp.Description != "" {
 		e.line(2, "(descr %q)", fp.Description)
@@ -382,7 +383,7 @@ func (e *exporter) field(fp *core.Footprint, name, value string, dx, dy float64,
 	e.line(2, "(property %q %q", name, value)
 	e.line(3, "(at %s %s 0)", num(dx), num(dy))
 	e.line(3, "(layer %q)", layer)
-	e.line(3, "(uuid %q)", uuidFor("field/"+fp.ID.String()+"/"+name))
+	e.line(3, "(uuid %q)", e.uuid("field/"+fp.ID.String()+"/"+name))
 	e.line(3, "(effects")
 	e.line(4, "(font (size 1 1) (thickness 0.15))")
 	e.line(3, ")")
@@ -404,7 +405,7 @@ func (e *exporter) emitCourtyard(fp *core.Footprint) {
 	e.line(3, "(stroke (width 0.05) (type solid))")
 	e.line(3, "(fill no)")
 	e.line(3, "(layer %q)", layer)
-	e.line(3, "(uuid %q)", uuidFor("crtyd/"+fp.ID.String()))
+	e.line(3, "(uuid %q)", e.uuid("crtyd/"+fp.ID.String()))
 	e.line(2, ")")
 }
 
@@ -436,7 +437,7 @@ func (e *exporter) emitFootprintSilk(fp *core.Footprint, s *core.FootprintSilkIt
 	if !fp.Layer.IsTop() && s.Layer != core.SilkBottom {
 		layer = "B.SilkS"
 	}
-	uid := uuidFor(fmt.Sprintf("fpsilk/%s/%d", fp.ID.String(), i))
+	uid := e.uuid(fmt.Sprintf("fpsilk/%s/%d", fp.ID.String(), i))
 	switch s.Kind {
 	case "line":
 		sx, sy := local(s.Start)
@@ -500,7 +501,7 @@ func (e *exporter) emitPad(fp *core.Footprint, pad *core.Pad) {
 	if pad.Net != nil && *pad.Net != "" {
 		e.line(3, "(net %d %q)", e.nets.idx(*pad.Net), *pad.Net)
 	}
-	e.line(3, "(uuid %q)", uuidFor("pad/"+fp.ID.String()+"/"+pad.Number))
+	e.line(3, "(uuid %q)", e.uuid("pad/"+fp.ID.String()+"/"+pad.Number))
 	e.line(2, ")")
 }
 
@@ -601,8 +602,13 @@ func num(v float64) string {
 	return s
 }
 
-// uuidFor is a deterministic v4-shaped UUID: the same board exports the same
-// file every time, so diffs are meaningful and tests are stable.
+// uuid is a deterministic v4-shaped UUID derived from the board name and an
+// item key: the same board exports the same file every time, so diffs are
+// meaningful and tests are stable.
+func (e *exporter) uuid(key string) string {
+	return uuidFor(e.opts.Name + "/" + key)
+}
+
 func uuidFor(key string) string {
 	h := sha256.Sum256([]byte("fragua-kicad:" + key))
 	b := h[:16]
