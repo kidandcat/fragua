@@ -763,3 +763,36 @@ place-legal R7
 		t.Fatal("R7 is not on the board")
 	}
 }
+
+// A footprint entry's LCSC id is one part. A passive symbol with a different
+// value must not inherit it into the BOM (a 10k id on the 2.2k pull-ups).
+func TestPassiveDoesNotInheritValueSpecificLCSC(t *testing.T) {
+	p := core.NewProject("bom-lcsc")
+	rs := RunScript(p, `
+lib r_0603 lcsc=C25804
+  pad 1 -0.8 0 0.9 0.95
+  pad 2 0.8 0 0.9 0.95
+lib r10k_0603 lcsc=C25804 value=10k
+  pad 1 -0.8 0 0.9 0.95
+  pad 2 0.8 0 0.9 0.95
+sym RSDA resistor key=r_0603 value=2.2k
+sym RPU resistor key=r10k_0603 value=10K
+sym RX resistor key=r10k_0603 value=4.7k
+sym RE resistor key=r10k_0603 lcsc=C1234 value=1k
+palette RSDA r_0603
+palette RPU r10k_0603
+palette RX r10k_0603
+palette RE r10k_0603
+`)
+	for _, r := range rs {
+		if !r.OK {
+			t.Fatalf("line %d %s: %s", r.Line, r.Tool, r.Result)
+		}
+	}
+	want := map[string]string{"RSDA": "", "RPU": "C25804", "RX": "", "RE": "C1234"}
+	for _, fp := range p.Palette() {
+		if got := fp.LcscID; got != want[fp.Reference] {
+			t.Errorf("%s: lcsc=%q, want %q", fp.Reference, got, want[fp.Reference])
+		}
+	}
+}

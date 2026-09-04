@@ -1057,6 +1057,14 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 
 	fp := entry.ToFootprint(ref, value, layer, rot)
 	fp.Description = desc
+	if sym != nil && sym.LcscID == "" && isValuePart(sym.Kind.Kind) && (entry.DefaultValue == "" || !sameValue(fp.Value, entry.DefaultValue)) {
+		// A library entry's LCSC id names ONE part. For a passive that is one
+		// value, so unless the entry pins that value (value=) and the symbol
+		// agrees, the symbol must not inherit it: a shared r_0603 with
+		// lcsc=C25804 (10k) used to stamp C25804 on the 2.2k pull-ups too, and
+		// the BOM would have sent 10k to assembly. Empty cell over invention.
+		fp.LcscID, fp.MPN, fp.Manufacturer = "", "", ""
+	}
 	if sym != nil {
 		if sym.LcscID != "" {
 			fp.LcscID = sym.LcscID
@@ -1809,4 +1817,25 @@ func parseLayerTokenOn(s string, stack core.LayerStackup) core.Layer {
 		return l
 	}
 	return core.LayerTop
+}
+
+// isValuePart reports whether a symbol kind's identity is its value (a 10k
+// resistor and a 2.2k resistor are different parts on the same footprint).
+func isValuePart(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "resistor", "capacitor", "inductor":
+		return true
+	}
+	return false
+}
+
+// sameValue compares part values loosely: case, spaces and the ohm sign do
+// not make a different part; an empty symbol value takes the entry default.
+func sameValue(symValue, entryDefault string) bool {
+	norm := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		return strings.NewReplacer("Ω", "", "ohm", "", " ", "").Replace(s)
+	}
+	na, nb := norm(symValue), norm(entryDefault)
+	return na == "" || na == nb
 }
