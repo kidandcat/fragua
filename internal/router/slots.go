@@ -76,7 +76,7 @@ func assignEscapeSlots(board *core.Board, fp *core.Footprint, opts Options, viaD
 	var targets []slotTarget
 	for i := range fp.Pads {
 		pad := &fp.Pads[i]
-		if pad.Net == nil || *pad.Net == "" || netOrderKey(*pad.Net) == 2 {
+		if pad.Net == nil || *pad.Net == "" {
 			continue
 		}
 		if layers, ok := samePour[*pad.Net]; ok && layers[pad.Layer.Index] {
@@ -91,6 +91,30 @@ func assignEscapeSlots(board *core.Board, fp *core.Footprint, opts Options, viaD
 			continue
 		}
 		w, h := core.PadWorldSize(fp, pad)
+		padMin := math.Min(w.ToMM(), h.ToMM())
+		// GND on a fat pad waits for the pour. A 0.24 mm WLP GND land
+		// cannot leave the pin field unaided, so it still gets a dogbone.
+		if netOrderKey(*pad.Net) == 2 && padMin >= 0.35 {
+			continue
+		}
+		// Two-pin signals (SEL/EN pull) stay on one layer. A dogbone
+		// aimed at the resistor lands in the inductor corridor and
+		// splits the net: the via sits nearer the discrete than the
+		// IC pad, so A* marks both ends reached without joining them.
+		if netOrderKey(*pad.Net) >= 3 && netPadCount(board, *pad.Net) == 2 &&
+			closeSameLayerPartner(board, fp, *pad.Net, pad.Layer.Index, px, py, shortNetSpanMM) {
+			continue
+		}
+		// A pad that already has a same-layer partner within a hop (LX→L)
+		// does not need a via. Tiny lands only skip a true pad-to-pad hop;
+		// 2.8 mm would swallow SEL/GND on a WLP and leave them stranded.
+		hop := 2.8
+		if padMin < 0.30 {
+			hop = 1.6
+		}
+		if closeSameLayerPartner(board, fp, *pad.Net, pad.Layer.Index, px, py, hop) {
+			continue
+		}
 		side, ux, uy := sideNormal(px, py, minX, minY, maxX, maxY)
 		tx, ty := px+ux, py+uy
 		if p, ok := partner[*pad.Net]; ok {
@@ -191,7 +215,13 @@ func placeViaInPadEscapes(board *core.Board, fp *core.Footprint, targets []slotT
 				continue
 			}
 		}
+		if !viaFitsPad(t, viaDia, viaDrill) {
+			continue
+		}
 		if !holeSiteOK(board, t.cx, t.cy, viaDrill) {
+			continue
+		}
+		if fanoutHitsInductor(board, t.cx, t.cy, viaDia/2) {
 			continue
 		}
 		board.Vias = append(board.Vias, core.Via{
@@ -226,28 +256,24 @@ func placeEscapes(board *core.Board, fp *core.Footprint, targets []slotTarget, p
 		}
 		ok := false
 		var vx, vy float64
-		px, py := -t.uy, t.ux
-		for _, r := range reaches {
-			for _, lat := range laterals {
-				x := t.cx + t.ux*r + px*lat
-				y := t.cy + t.uy*r + py*lat
-				if !outlineContains(board.Outline, x, y, 0.55) {
-					continue
+		dirs := [][2]float64{{t.ux, t.uy}}
+		if pdx, pdy := t.tx-t.cx, t.ty-t.cy; math.Hypot(pdx, pdy) > 1e-6 {
+			n := math.Hypot(pdx, pdy)
+			dirs = [][2]float64{{pdx / n, pdy / n}, {t.ux, t.uy}}
+		}
+	dirLoop:
+		for _, dir := range dirs {
+			px, py := -dir[1], dir[0]
+			for _, r := range reaches {
+				for _, lat := range laterals {
+					x := t.cx + dir[0]*r + px*lat
+					y := t.cy + dir[1]*r + py*lat
+					if !escapeSiteOK(board, fp, t, x, y, viaDrill, stubW, keepR, minViaPitch, placed) {
+						continue
+					}
+					vx, vy, ok = x, y, true
+					break dirLoop
 				}
-				if fanoutHitsPad(board, x, y, keepR, fp, t.idx) || fanoutHitsSite(*placed, x, y, minViaPitch) {
-					continue
-				}
-				if !holeSiteOK(board, x, y, viaDrill) {
-					continue
-				}
-				if stubHitsForeignPad(board, t.cx, t.cy, x, y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
-					continue
-				}
-				vx, vy, ok = x, y, true
-				break
-			}
-			if ok {
-				break
 			}
 		}
 		if !ok {
@@ -282,6 +308,7 @@ func assignSide(board *core.Board, fp *core.Footprint, targets []slotTarget, gro
 		for i, s := range slots {
 			if fanoutHitsSite(*placed, s.x, s.y, minViaPitch) ||
 				fanoutHitsPad(board, s.x, s.y, keepR, fp, -1) ||
+				fanoutHitsInductor(board, s.x, s.y, keepR) ||
 				!outlineContains(board.Outline, s.x, s.y, 0.55) {
 				taken[i] = true
 			}
@@ -326,7 +353,8 @@ func generateSlots(targets []slotTarget, group []int, viaR float64, board *core.
 				reach := ext + base + float64(k)*step
 				x := t.cx + t.ux*reach + px*lat
 				y := t.cy + t.uy*reach + py*lat
-				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) {
+				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
+					fanoutHitsInductor(board, x, y, keepR) {
 					continue
 				}
 				key := [2]int64{int64(math.Round(x * 1e6)), int64(math.Round(y * 1e6))}
@@ -336,7 +364,8 @@ func generateSlots(targets []slotTarget, group []int, viaR float64, board *core.
 				reach := ext + base + float64(k)*step
 				x := t.cx - t.ux*reach + px*lat
 				y := t.cy - t.uy*reach + py*lat
-				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) {
+				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
+					fanoutHitsInductor(board, x, y, keepR) {
 					continue
 				}
 				key := [2]int64{int64(math.Round(x * 1e6)), int64(math.Round(y * 1e6))}
@@ -401,7 +430,7 @@ func buildSlotEdges(targets []slotTarget, pending []int, slots []escSlot, taken 
 			if !outlineContains(board.Outline, s.x, s.y, 0.55) {
 				continue
 			}
-			if fanoutHitsPad(board, s.x, s.y, keepR, fp, t.idx) {
+			if fanoutHitsPad(board, s.x, s.y, keepR, fp, t.idx) || fanoutHitsInductor(board, s.x, s.y, keepR) {
 				continue
 			}
 			if stubHitsForeignPad(board, t.cx, t.cy, s.x, s.y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
@@ -565,6 +594,7 @@ func commitSlots(board *core.Board, fp *core.Footprint, targets []slotTarget, pe
 		if fanoutHitsSite(*placed, s.x, s.y, minViaPitch) ||
 			!holeSiteOK(board, s.x, s.y, viaDrill) ||
 			fanoutHitsPad(board, s.x, s.y, keepR, fp, t.idx) ||
+			fanoutHitsInductor(board, s.x, s.y, keepR) ||
 			stubHitsForeignPad(board, t.cx, t.cy, s.x, s.y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
 			left = append(left, h.gi)
 			continue
@@ -731,6 +761,88 @@ func netPartnerCentroid(board *core.Board, skip *core.Footprint) map[string][2]f
 		out[k] = [2]float64{s[0] / float64(n[k]), s[1] / float64(n[k])}
 	}
 	return out
+}
+
+func viaFitsPad(t slotTarget, viaDia, viaDrill float64) bool {
+	minDim := 2 * math.Min(t.hw, t.hh)
+	if minDim <= 0 {
+		return false
+	}
+	return viaDia <= minDim+1e-9 && viaDrill <= minDim+1e-9
+}
+
+func netPadCount(board *core.Board, net string) int {
+	if board == nil || net == "" {
+		return 0
+	}
+	n := 0
+	for _, fp := range footprintsStable(board) {
+		for i := range fp.Pads {
+			if fp.Pads[i].Net != nil && *fp.Pads[i].Net == net {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func closeSameLayerPartner(board *core.Board, skip *core.Footprint, net string, layer uint8, x, y, maxMM float64) bool {
+	for _, fp := range footprintsStable(board) {
+		if fp == skip {
+			continue
+		}
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net != net {
+				continue
+			}
+			if pad.Layer.Index != layer && (pad.Drill == nil || *pad.Drill == 0) {
+				continue
+			}
+			c := core.PadWorldCenter(fp, pad)
+			if math.Hypot(c.X.ToMM()-x, c.Y.ToMM()-y) <= maxMM {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fanoutHitsInductor(board *core.Board, x, y, r float64) bool {
+	if board == nil {
+		return false
+	}
+	pt := core.NewPoint(core.FromMM(x), core.FromMM(y))
+	disk := core.RectFromCenter(pt, core.FromMM(r*2), core.FromMM(r*2))
+	for _, fp := range footprintsStable(board) {
+		if !inductorFootprint(fp) {
+			continue
+		}
+		body, ok := core.CourtyardWorld(fp)
+		if ok && disk.Intersects(body) {
+			return true
+		}
+	}
+	return false
+}
+
+func escapeSiteOK(board *core.Board, fp *core.Footprint, t slotTarget, x, y, viaDrill, stubW, keepR, minViaPitch float64, placed *[]fanoutXY) bool {
+	if !outlineContains(board.Outline, x, y, 0.55) {
+		return false
+	}
+	if fanoutHitsPad(board, x, y, keepR, fp, t.idx) || fanoutHitsSite(*placed, x, y, minViaPitch) {
+		return false
+	}
+	if fanoutHitsInductor(board, x, y, keepR) {
+		return false
+	}
+	if !holeSiteOK(board, x, y, viaDrill) {
+		return false
+	}
+	if stubHitsForeignPad(board, t.cx, t.cy, x, y, t.net, stubW/2+core.ActiveFabRules(board).ClampClearance(0), fp, t.idx) {
+		return false
+	}
+	return true
 }
 
 func stubHitsForeignPad(board *core.Board, x0, y0, x1, y1 float64, net string, need float64, skip *core.Footprint, skipPad int) bool {

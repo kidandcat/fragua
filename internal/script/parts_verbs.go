@@ -237,7 +237,9 @@ func cmdLibGen(p *core.Project, args string) (string, error) {
 		EPX:     parseFloatArg(firstSet(opt, "ep", "ep_x", "epx")),
 		EPY:     parseFloatArg(firstSet(opt, "ep_y", "epy")),
 		Rows:    int(parseFloatArg(opt["rows"])),
+		Cols:    int(parseFloatArg(firstSet(opt, "cols", "columns"))),
 		Spacing: parseFloatArg(firstSet(opt, "spacing", "row", "row_spacing")),
+		Pad:     parseFloatArg(firstSet(opt, "pad", "pad_size", "bump")),
 	}
 	if spec.Family == "" {
 		return "", fmt.Errorf("lib-gen: family= required (%s)", strings.Join(parts.Families(), " "))

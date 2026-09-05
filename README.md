@@ -199,7 +199,7 @@ After any of those the reference is ready to use: `place U1 15 15`,
 `key=` the library entry. `FRAGUA_OFFLINE=1` makes `part LCSC:…` cache-only;
 `FRAGUA_KICAD_LIBS` adds KiCad library roots beyond the stock install paths.
 `lib-gen` covers chip (0201…2512), sot23/-5/-6, sot223, sot89, soic, tssop,
-ssop, msop, qfn, dfn, qfp, lqfp, dip and pin headers, at `density=N|L|M`.
+ssop, msop, qfn, dfn, wlp, qfp, lqfp, dip and pin headers, at `density=N|L|M`.
 
 ## End-to-end recipe
 

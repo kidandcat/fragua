@@ -234,6 +234,7 @@ Script verbs (line-oriented, agent-first):
         sot23 | sot23-5 | sot23-6 | sot223 | sot89
         soic|tssop|ssop|msop pins=N [pitch=P] [body=W]
         qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]
+        wlp pins=N [pitch=0.4] [body=W] [body_len=L] [pad=0.24] [cols=2]
         qfp|lqfp pins=N pitch=P body=W
         dip pins=N [pitch=2.54] [spacing=7.62]
         header rows=1|2 pins=N [pitch=2.54|2.0|1.27]
@@ -476,6 +477,7 @@ Usage:
   sot23 | sot23-5 | sot23-6 | sot223 | sot89
   soic|tssop|ssop|msop pins=N [pitch=P] [body=W]
   qfn|dfn pins=N pitch=P body=W [body_len=L] [ep=S]
+  wlp pins=N [pitch=0.4] [body=W] [body_len=L] [pad=0.24] [cols=2]
   qfp|lqfp pins=N pitch=P body=W
   dip pins=N [pitch=2.54] [spacing=7.62]
   header rows=1|2 pins=N [pitch=2.54|2.0|1.27]
@@ -488,6 +490,7 @@ footprint; `kind` sets the symbol kind (default from the family).
 Examples:
   lib-gen R0603 family=chip size=0603 as=R1 kind=r
   lib-gen U2 family=qfn pins=32 pitch=0.5 body=5 ep=3.2
+  lib-gen max17220_wlp6 family=wlp pins=6 pitch=0.4 body=0.89 body_len=1.42 pad=0.24
   lib-gen J1x04 family=header rows=1 pins=4 as=J1
 
 Full reference: `fragua help` or GET /help

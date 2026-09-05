@@ -249,6 +249,12 @@ func passiveNetKind(fp *core.Footprint, net string) int {
 		}
 		return 2
 	}
+	// Pull-ups and select resistors sit on their signal pin (EN, SEL), not
+	// on the power rail they tap — otherwise they steal the IN/VSTOR face
+	// from Cin and sneak under the inductor that just claimed LX/IN.
+	if isResistor(fp) && !isGround(net) && !isPowerInNet(net) && !isPowerOutNet(net) {
+		return 0
+	}
 	if isPowerOutNet(net) {
 		return 0
 	}
@@ -276,6 +282,18 @@ func isInductor(fp *core.Footprint) bool {
 	return false
 }
 
+func isResistor(fp *core.Footprint) bool {
+	if fp == nil {
+		return false
+	}
+	ref := strings.ToUpper(strings.TrimSpace(fp.Reference))
+	if len(ref) > 0 && ref[0] == 'R' && (len(ref) == 1 || !isAlphaByte(ref[1])) {
+		return true
+	}
+	blob := strings.ToLower(fp.Key + " " + fp.Library + " " + fp.Description + " " + fp.Value)
+	return strings.Contains(blob, "resistor")
+}
+
 func isAlphaByte(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
@@ -292,10 +310,11 @@ func isSwitchNet(net string) bool {
 func isPowerInNet(net string) bool {
 	u := strings.ToUpper(strings.TrimPrefix(net, "+"))
 	switch u {
-	case "IN", "VIN", "VBAT", "VSYS", "PVIN", "PVCC":
+	case "IN", "VIN", "VBAT", "VBATT", "BATT", "VSTOR", "VSYS", "PVIN", "PVCC":
 		return true
 	}
-	return u == "VIN" || strings.HasSuffix(u, "_IN") || strings.HasPrefix(u, "IN")
+	return strings.HasSuffix(u, "_IN") || strings.HasPrefix(u, "IN") ||
+		strings.HasPrefix(u, "VSTOR") || strings.HasPrefix(u, "VBAT")
 }
 
 func isPowerOutNet(net string) bool {
@@ -371,58 +390,69 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 	} else {
 		ux, uy = 0, math.Copysign(1, dy)
 	}
-	vx, vy := -uy, ux
+	// Signal resistors (SEL, EN) also try the other cardinals so they can
+	// leave on the free face when the inductor already owns LX/IN.
+	axes := [][2]float64{{ux, uy}}
+	if isResistor(fp) && !isPowerInNet(net) && !isPowerOutNet(net) {
+		axes = [][2]float64{{ux, uy}, {-uy, ux}, {uy, -ux}, {-ux, -uy}}
+	}
 
 	oldPos, oldRot := fp.Position, fp.Rotation
-	bestRot := fp.Rotation
-	bestDot := math.Inf(1)
-	for q := 0; q < 4; q++ {
-		fp.Rotation = math.Mod(oldRot+90*float64(q), 360)
-		fp.Position = core.Origin
-		c := core.PadWorldCenter(fp, &fp.Pads[ownPad])
-		dot := c.X.ToMM()*ux + c.Y.ToMM()*uy
-		if dot < bestDot-1e-9 {
-			bestDot = dot
-			bestRot = fp.Rotation
+	for _, ax := range axes {
+		ux, uy := ax[0], ax[1]
+		vx, vy := -uy, ux
+		bestRot := fp.Rotation
+		bestDot := math.Inf(1)
+		for q := 0; q < 4; q++ {
+			fp.Rotation = math.Mod(oldRot+90*float64(q), 360)
+			fp.Position = core.Origin
+			c := core.PadWorldCenter(fp, &fp.Pads[ownPad])
+			dot := c.X.ToMM()*ux + c.Y.ToMM()*uy
+			if dot < bestDot-1e-9 {
+				bestDot = dot
+				bestRot = fp.Rotation
+			}
 		}
-	}
-	fp.Rotation = bestRot
-	fp.Position = oldPos
-	ob, ok := footprintBounds(fp)
-	if !ok {
-		fp.Position, fp.Rotation = oldPos, oldRot
-		return false
-	}
-	px, py := fp.Position.X.ToMM(), fp.Position.Y.ToMM()
-	half := [2]float64{ob.Width().ToMM() / 2, ob.Height().ToMM() / 2}
-	bbOff := [2]float64{
-		(ob.Min.X.ToMM()+ob.Max.X.ToMM())/2 - px,
-		(ob.Min.Y.ToMM()+ob.Max.Y.ToMM())/2 - py,
-	}
-	reachU := half[0]*math.Abs(ux) + half[1]*math.Abs(uy)
-	reachV := half[0]*math.Abs(vx) + half[1]*math.Abs(vy)
-	anchorReach := (abb.Width().ToMM()/2)*math.Abs(ux) + (abb.Height().ToMM()/2)*math.Abs(uy)
-	padAlong := (pin.centre[0]-anchorC[0])*ux + (pin.centre[1]-anchorC[1])*uy
-	base := math.Max(0, anchorReach-padAlong) + reachU + hard + ringSlackMM
-	latStep := 2*reachV + hard
+		fp.Rotation = bestRot
+		fp.Position = oldPos
+		ob, ok := footprintBounds(fp)
+		if !ok {
+			continue
+		}
+		px, py := fp.Position.X.ToMM(), fp.Position.Y.ToMM()
+		half := [2]float64{ob.Width().ToMM() / 2, ob.Height().ToMM() / 2}
+		bbOff := [2]float64{
+			(ob.Min.X.ToMM()+ob.Max.X.ToMM())/2 - px,
+			(ob.Min.Y.ToMM()+ob.Max.Y.ToMM())/2 - py,
+		}
+		reachU := half[0]*math.Abs(ux) + half[1]*math.Abs(uy)
+		reachV := half[0]*math.Abs(vx) + half[1]*math.Abs(vy)
+		anchorReach := (abb.Width().ToMM()/2)*math.Abs(ux) + (abb.Height().ToMM()/2)*math.Abs(uy)
+		padAlong := (pin.centre[0]-anchorC[0])*ux + (pin.centre[1]-anchorC[1])*uy
+		base := math.Max(0, anchorReach-padAlong) + reachU + hard + ringSlackMM
+		latStep := 2*reachV + hard
 
-	for rank := 0; rank < ringRanks; rank++ {
-		d := base + ringStepMM*float64(rank)
-		for _, l := range ringLateral {
-			cx := pin.centre[0] + ux*d + vx*l*latStep
-			cy := pin.centre[1] + uy*d + vy*l*latStep
-			fp.Position = core.NewPoint(core.FromMM(cx-bbOff[0]), core.FromMM(cy-bbOff[1]))
-			fp.Rotation = bestRot
-			if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
-				continue
+		for rank := 0; rank < ringRanks; rank++ {
+			d := base + ringStepMM*float64(rank)
+			for _, l := range ringLateral {
+				cx := pin.centre[0] + ux*d + vx*l*latStep
+				cy := pin.centre[1] + uy*d + vy*l*latStep
+				fp.Position = core.NewPoint(core.FromMM(cx-bbOff[0]), core.FromMM(cy-bbOff[1]))
+				fp.Rotation = bestRot
+				if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
+					continue
+				}
+				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
+					continue
+				}
+				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
+					continue
+				}
+				if overlapsInductorBody(board, fp, 0.15) {
+					continue
+				}
+				return true
 			}
-			if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
-				continue
-			}
-			if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
-				continue
-			}
-			return true
 		}
 	}
 	fp.Position, fp.Rotation = oldPos, oldRot
@@ -474,7 +504,8 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 			continue
 		}
 		if minGapAgainstOthers(board, fp) < hard+seatSlackMM ||
-			firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
+			firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) ||
+			overlapsInductorBody(board, fp, 0.15) {
 			continue
 		}
 		return
@@ -482,7 +513,6 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 	fp.Position = core.NewPoint(old.x, old.y)
 	fp.Rotation = old.rot
 }
-
 
 func parkPassives(board *core.Board, cands []cand) {
 	if board == nil || board.Outline == nil {
@@ -562,8 +592,8 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 	bestPos := oldPos
 	bestRot := oldRot
 	found := false
-	clearances := []float64{1.2, 1.4, 1.6, 1.8, 2.0, 2.4, 2.8, 3.2}
-	laterals := []float64{0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2}
+	clearances := []float64{0.9, 1.1, 1.2, 1.4, 1.6, 1.8, 2.0, 2.4, 2.8, 3.2}
+	laterals := []float64{0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.6, -1.6}
 	for q := 0; q < 4; q++ {
 		rot := math.Mod(90*float64(q), 360)
 		fp.Rotation = rot
@@ -595,6 +625,9 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
 					continue
 				}
+				if coversForeignPad(fp, swPin.fp) {
+					continue
+				}
 				ws := core.PadWorldCenter(fp, &fp.Pads[swOwn])
 				wi := core.PadWorldCenter(fp, &fp.Pads[inOwn])
 				dSW := math.Hypot(ws.X.ToMM()-sx, ws.Y.ToMM()-sy)
@@ -616,6 +649,56 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 	}
 	fp.Position, fp.Rotation = bestPos, bestRot
 	return true
+}
+
+// overlapsInductorBody reports whether probe sits on an inductor courtyard
+// (including the pad-union fallback). Signal resistors used to sneak between
+// an 0805's two lands — pad-AABB collision never saw the ferrite.
+func overlapsInductorBody(board *core.Board, probe *core.Footprint, extraMM float64) bool {
+	if board == nil || probe == nil || isInductor(probe) {
+		return false
+	}
+	pb, ok := core.CourtyardWorld(probe)
+	if !ok {
+		return false
+	}
+	if extraMM > 0 {
+		pb = pb.Expand(core.FromMM(extraMM))
+	}
+	for _, fp := range footprintsAll(board) {
+		if fp == nil || fp == probe || !isInductor(fp) {
+			continue
+		}
+		ob, ok := core.CourtyardWorld(fp)
+		if !ok {
+			continue
+		}
+		if extraMM > 0 {
+			ob = ob.Expand(core.FromMM(extraMM))
+		}
+		if pb.Intersects(ob) {
+			return true
+		}
+	}
+	return false
+}
+
+// coversForeignPad refuses an inductor seat that lands on another pad of the
+// switcher (SEL next to LX on a WLP-6).
+func coversForeignPad(probe, ic *core.Footprint) bool {
+	if probe == nil || ic == nil {
+		return false
+	}
+	body, ok := core.CourtyardWorld(probe)
+	if !ok {
+		return false
+	}
+	for i := range ic.Pads {
+		if body.Intersects(core.PadWorldAABB(ic, &ic.Pads[i])) {
+			return true
+		}
+	}
+	return false
 }
 
 func footprintsAll(board *core.Board) []*core.Footprint {

@@ -814,7 +814,9 @@ func applyFabCeiling(board *core.Board, opts Options) Options {
 	}
 	fine := false
 	for _, fp := range footprintsStable(board) {
-		if len(fp.Pads) >= 8 && minPadPitchMM(fp) < 0.50 {
+		// WLP-6 is 6 pads at 0.4 mm; the old ≥8 gate left default 0.25 mm
+		// traces on 0.25 mm lands and SEL could not leave the pin field.
+		if len(fp.Pads) >= 6 && minPadPitchMM(fp) < 0.50 {
 			fine = true
 			break
 		}
@@ -956,9 +958,10 @@ func padSpanMM(pads []padLoc) float64 {
 func netOrderKey(name string) int {
 	u := strings.ToUpper(name)
 	switch {
-	case u == "V5" || u == "+5V" || u == "5V" || u == "VIN" || u == "VBUS":
+	case u == "V5" || u == "+5V" || u == "5V" || u == "VIN" || u == "VBUS" || u == "VSTOR" || u == "BATT" || u == "VBAT":
 		return 0
-	case u == "+3V3" || u == "3V3" || u == "VCC" || u == "VDD" || u == "VSW" || u == "+1V1" || u == "1V1":
+	case u == "+3V3" || u == "3V3" || u == "VCC" || u == "VDD" || u == "VSW" || u == "+1V1" || u == "1V1" ||
+		u == "+3V0" || u == "3V0" || u == "OUT" || u == "VOUT" || u == "LX" || u == "SW":
 		return 1
 	case u == "GND" || strings.HasPrefix(u, "GND") || u == "VSS" || u == "AGND":
 		return 2
@@ -1167,8 +1170,13 @@ func nearestConnectedPad(pads []padLoc, connected map[int]bool, g gpos) int {
 // to the other layer instead of fighting the QFN top-side corridor.
 func closestNetVia(board *core.Board, net string, pad core.Point, pads []padLoc, padIdx int) (core.Point, bool) {
 	px, py := pad.X.ToMM(), pad.Y.ToMM()
+	// A dogbone stub owns its via even when the barrel sat farther
+	// than the old 1.2 mm window (outer ring is 1.35–2.40 mm).
+	if v, ok := stubOwnedVia(board, net, pad); ok {
+		return v, true
+	}
 	var best core.Point
-	bestD := 1.2
+	bestD := 2.6
 	found := false
 	for _, v := range board.Vias {
 		if v.Net != net {
@@ -1196,6 +1204,38 @@ func closestNetVia(board *core.Board, net string, pad core.Point, pads []padLoc,
 		best, bestD, found = v.Position, d, true
 	}
 	return best, found
+}
+
+func stubOwnedVia(board *core.Board, net string, pad core.Point) (core.Point, bool) {
+	if board == nil {
+		return core.Point{}, false
+	}
+	px, py := pad.X.ToMM(), pad.Y.ToMM()
+	for _, t := range board.Traces {
+		if t.Net != net {
+			continue
+		}
+		sx, sy := t.Start.X.ToMM(), t.Start.Y.ToMM()
+		ex, ey := t.End.X.ToMM(), t.End.Y.ToMM()
+		padAtStart := math.Hypot(sx-px, sy-py) < 0.35
+		padAtEnd := math.Hypot(ex-px, ey-py) < 0.35
+		if !padAtStart && !padAtEnd {
+			continue
+		}
+		ox, oy := ex, ey
+		if padAtEnd {
+			ox, oy = sx, sy
+		}
+		for _, v := range board.Vias {
+			if v.Net != net {
+				continue
+			}
+			if math.Hypot(v.Position.X.ToMM()-ox, v.Position.Y.ToMM()-oy) < 0.35 {
+				return v.Position, true
+			}
+		}
+	}
+	return core.Point{}, false
 }
 
 func pickSeed(board *core.Board, net string, pads []padLoc) int {
@@ -1262,11 +1302,15 @@ func existingNetSources(board *core.Board, g *grid, net string, pads []padLoc, c
 		if t.Net != net {
 			continue
 		}
-		if !nearConnected(t.Start.X, t.Start.Y) && !nearConnected(t.End.X, t.End.Y) {
-			continue
+		// Only the end that sits on the connected tree. Adding both
+		// ends of a long dogbone lets A* "reach" the far pad without
+		// copper between the islands (SEL split on WLP-6).
+		if nearConnected(t.Start.X, t.Start.Y) {
+			add(t.Start.X, t.Start.Y, t.Layer.Index)
 		}
-		add(t.Start.X, t.Start.Y, t.Layer.Index)
-		add(t.End.X, t.End.Y, t.Layer.Index)
+		if nearConnected(t.End.X, t.End.Y) {
+			add(t.End.X, t.End.Y, t.Layer.Index)
+		}
 	}
 	return out
 }

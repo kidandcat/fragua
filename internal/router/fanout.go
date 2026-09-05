@@ -35,9 +35,17 @@ func planFanout(board *core.Board, opts Options) int {
 	added := 0
 	for _, fp := range footprintsStable(board) {
 		pitch := minPadPitchMM(fp)
-		// QFN/BGA only. A 0.7 mm USB-C row is not a fine-pitch grid —
-		// radial vias walk along the pin row and short the connector.
-		if len(fp.Pads) < 16 || pitch >= 0.55 {
+		// Fine-pitch only. A 0.7 mm USB-C row is not a grid — radial vias
+		// walk along the pin row and short the connector. WLP-6 (6 pads,
+		// 0.4 mm) needs the same dogbone treatment as a 0.4 mm QFN: via
+		// drill 0.3 does not fit a 0.25 mm land, so escape is outward.
+		if pitch >= 0.55 {
+			continue
+		}
+		if len(fp.Pads) < 6 {
+			continue
+		}
+		if len(fp.Pads) < 16 && pitch >= 0.45 {
 			continue
 		}
 		added += assignEscapeSlots(board, fp, opts, viaDia, viaDrill, stubW, &placed)

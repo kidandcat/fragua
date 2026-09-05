@@ -75,6 +75,100 @@ func TestEscapeSlotsSpreadQFNVias(t *testing.T) {
 	}
 }
 
+func TestPlanFanoutIncludesWLP6(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(18), core.FromMM(14)))
+	b.Outline = &o
+	var pads []core.Pad
+	// 2×3 WLP at 0.4 mm. SEL has a far partner so it is not a close hop.
+	coords := [][3]float64{
+		{-0.2, 0.4, 0}, {0.2, 0.4, 1},
+		{-0.2, 0, 2}, {0.2, 0, 3},
+		{-0.2, -0.4, 4}, {0.2, -0.4, 5},
+	}
+	names := []string{"OUT", "VSTOR", "GND", "LX", "EN", "SEL"}
+	for i, c := range coords {
+		p := pad(names[i], c[0], c[1], names[i])
+		p.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+		pads = append(pads, p)
+		if names[i] == "GND" {
+			continue
+		}
+		b.AddFootprint(footprint("P"+names[i], 2, 2+float64(i), []core.Pad{
+			pad("1", 0, 0, names[i]),
+		}))
+	}
+	u3 := footprint("U3", 9, 7, pads)
+	b.AddFootprint(u3)
+
+	opts := DefaultOptions()
+	opts.CellMM = 0.127
+	opts.TraceWidthMM = 0.127
+	opts.ViaDiameterMM = 0.60
+	opts.ViaDrillMM = 0.30
+	n := planFanout(b, opts)
+	if n < 1 {
+		t.Fatalf("WLP-6 must get dogbone escapes (pad 0.24 < via 0.30); vias=%d added=%d", len(b.Vias), n)
+	}
+	for _, v := range b.Vias {
+		// Via-in-pad is illegal: drill 0.30 > land 0.24.
+		d := math.Hypot(v.Position.X.ToMM()-9, v.Position.Y.ToMM()-7)
+		if d < 0.3 {
+			t.Fatalf("via-in-pad on WLP (via at %.3f,%.3f, d=%.3f from package)",
+				v.Position.X.ToMM(), v.Position.Y.ToMM(), d)
+		}
+	}
+}
+
+func TestPlanFanoutSkipsCloseTwoPinSignal(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(18), core.FromMM(14)))
+	b.Outline = &o
+	sel := pad("C2", 0.2, -0.4, "SEL")
+	sel.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	gnd := pad("B1", -0.2, 0, "GND")
+	gnd.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	out := pad("A1", -0.2, 0.4, "OUT")
+	out.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	batt := pad("A2", 0.2, 0.4, "VSTOR")
+	batt.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	lx := pad("B2", 0.2, 0, "LX")
+	lx.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	en := pad("C1", -0.2, -0.4, "EN")
+	en.Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	b.AddFootprint(footprint("U3", 9, 7, []core.Pad{out, batt, gnd, lx, en, sel}))
+	// R16 sits ~2.6 mm south-east — same-layer hop, no dogbone.
+	b.AddFootprint(footprint("R16", 10.8, 4.5, []core.Pad{pad("1", 0, 0, "SEL")}))
+	// Far partners so the other pins still qualify for escape.
+	b.AddFootprint(footprint("C9", 2, 12, []core.Pad{pad("1", 0, 0, "OUT")}))
+	b.AddFootprint(footprint("L2", 16, 7, []core.Pad{pad("1", 0, 0, "LX"), pad("2", 1.6, 0, "VSTOR")}))
+	b.AddFootprint(footprint("R15", 2, 2, []core.Pad{pad("1", 0, 0, "EN")}))
+
+	opts := DefaultOptions()
+	opts.CellMM = 0.127
+	opts.TraceWidthMM = 0.127
+	opts.ViaDiameterMM = 0.60
+	opts.ViaDrillMM = 0.30
+	planFanout(b, opts)
+	for _, v := range b.Vias {
+		if v.Net == "SEL" {
+			t.Fatalf("2-pin SEL %.2f mm from R16 must not dogbone (via at %.2f,%.2f)",
+				2.6, v.Position.X.ToMM(), v.Position.Y.ToMM())
+		}
+	}
+}
+
+func TestViaFitsPadRejectsOversizeBarrel(t *testing.T) {
+	t0 := slotTarget{hw: 0.12, hh: 0.12}
+	if viaFitsPad(t0, 0.60, 0.30) {
+		t.Fatal("0.30 drill must not fit a 0.24 pad")
+	}
+	t1 := slotTarget{hw: 0.40, hh: 0.40}
+	if !viaFitsPad(t1, 0.60, 0.30) {
+		t.Fatal("0.80 pad should accept a 0.60/0.30 via")
+	}
+}
+
 func TestLeftoverEscapeUsesOuterRing(t *testing.T) {
 	// Neighbours already occupy the 0.70 ring; the leftover pad must
 	// take 1.35+ (not via-in-pad on the pin).
