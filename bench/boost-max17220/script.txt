@@ -19,9 +19,9 @@ lib-gen r_0603 family=chip size=0603 kind=r
 sym U3 ic key=max17220
   pin 1 L OUT role=power_out
   pin 2 L GND role=power_in
-  pin 3 L EN role=input
+  pin 3 L EN role=passive
   pin 4 R BATT role=power_in
-  pin 5 R SEL role=input
+  pin 5 R SEL role=passive
   pin 6 R LX role=output
 sym L2 inductor key=l_2016
 sym Cin capacitor key=c_0603
@@ -47,7 +47,7 @@ palette Cen c_0603 value=100nF
 
 place U3 11 8
 auto-place seed=42
-route max_seconds=90
+route max_seconds=180
 auto-pour
 stitch
 drc

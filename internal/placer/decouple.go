@@ -67,6 +67,11 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if len(cands) == 0 {
 		return
 	}
+	// SA leaves passives scattered on the island. Park them on the outline
+	// edge so a high-priority inductor can claim LX/IN without colliding
+	// with a Cin that still sits where the annealer dumped it.
+	parkPassives(board, cands)
+
 	// Inductors and output caps claim their IC pads first so Cin does not
 	// steal LX / OUT. HF (smaller) output caps sit closer than bulk.
 	sort.Slice(cands, func(i, j int) bool {
@@ -165,6 +170,13 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 
 	for pass := 0; pass < 2; pass++ {
 		for i := range as {
+			if as[i].ok {
+				continue
+			}
+			if seatInductorBridge(board, as[i].fp, pins, hard, opts) {
+				as[i].ok = true
+				continue
+			}
 			if as[i].pin == nil {
 				continue
 			}
@@ -462,6 +474,141 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 	}
 	fp.Position = core.NewPoint(old.x, old.y)
 	fp.Rotation = old.rot
+}
+
+
+func parkPassives(board *core.Board, cands []cand) {
+	if board == nil || board.Outline == nil {
+		return
+	}
+	o := board.Outline
+	x := o.Max.X.ToMM() - 2.0
+	y0 := o.Min.Y.ToMM() + 2.0
+	for i, c := range cands {
+		if c.fp == nil || c.fp.Pinned || c.fp.EdgeMounted {
+			continue
+		}
+		y := y0 + float64(i)*3.5
+		if y > o.Max.Y.ToMM()-2.0 {
+			y = o.Max.Y.ToMM() - 2.0 - float64(i%3)*0.2
+			x = o.Min.X.ToMM() + 2.0
+		}
+		c.fp.Position = core.NewPoint(core.FromMM(x), core.FromMM(y))
+	}
+}
+
+// seatInductorBridge places an LX/IN (or SW/VIN) inductor so its pads sit
+// next to the matching IC pads on the power island — pad-to-pad, not on a
+// ring around the whole IC body. That is what makes a boost LX hop short
+// enough for a same-layer route with no via.
+func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][]anchorPin, hard float64, opts Options) bool {
+	if fp == nil || fp.Pinned || board == nil || board.Outline == nil || !isInductor(fp) {
+		return false
+	}
+	var swNet, inNet string
+	swOwn, inOwn := -1, -1
+	for i := range fp.Pads {
+		if fp.Pads[i].Net == nil || *fp.Pads[i].Net == "" {
+			continue
+		}
+		n := *fp.Pads[i].Net
+		if isSwitchNet(n) && swOwn < 0 {
+			swNet, swOwn = n, i
+		}
+		if isPowerInNet(n) && inOwn < 0 {
+			inNet, inOwn = n, i
+		}
+	}
+	if swNet == "" || inNet == "" || swOwn < 0 || inOwn < 0 {
+		return false
+	}
+	swList, inList := pins[swNet], pins[inNet]
+	if len(swList) == 0 || len(inList) == 0 {
+		return false
+	}
+	swPin, inPin := &swList[0], &inList[0]
+	for i := range swList {
+		for j := range inList {
+			if swList[i].fp.ID == inList[j].fp.ID {
+				swPin, inPin = &swList[i], &inList[j]
+			}
+		}
+	}
+	sx, sy := swPin.centre[0], swPin.centre[1]
+	ix, iy := inPin.centre[0], inPin.centre[1]
+	mx, my := (sx+ix)/2, (sy+iy)/2
+	ax := (swPin.fp.Position.X.ToMM() + inPin.fp.Position.X.ToMM()) / 2
+	ay := (swPin.fp.Position.Y.ToMM() + inPin.fp.Position.Y.ToMM()) / 2
+	alongX, alongY := ix-sx, iy-sy
+	alongLen := math.Hypot(alongX, alongY)
+	if alongLen < 1e-6 {
+		return false
+	}
+	alongX, alongY = alongX/alongLen, alongY/alongLen
+	outX, outY := -alongY, alongX
+	if (mx-ax)*outX+(my-ay)*outY < 0 {
+		outX, outY = -outX, -outY
+	}
+
+	oldPos, oldRot := fp.Position, fp.Rotation
+	bestScore := math.Inf(1)
+	bestPos := oldPos
+	bestRot := oldRot
+	found := false
+	clearances := []float64{1.2, 1.4, 1.6, 1.8, 2.0, 2.4, 2.8, 3.2}
+	laterals := []float64{0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2}
+	for q := 0; q < 4; q++ {
+		rot := math.Mod(90*float64(q), 360)
+		fp.Rotation = rot
+		fp.Position = core.Origin
+		os := core.PadWorldCenter(fp, &fp.Pads[swOwn])
+		oi := core.PadWorldCenter(fp, &fp.Pads[inOwn])
+		ownAlongX := oi.X.ToMM() - os.X.ToMM()
+		ownAlongY := oi.Y.ToMM() - os.Y.ToMM()
+		// Prefer rotations whose pad axis matches the IC LX→IN axis.
+		align := math.Abs(ownAlongX*alongX + ownAlongY*alongY)
+		ownLen := math.Hypot(ownAlongX, ownAlongY)
+		if ownLen < 1e-6 {
+			continue
+		}
+		align /= ownLen
+		offSX, offSY := os.X.ToMM(), os.Y.ToMM()
+		for _, d := range clearances {
+			for _, lat := range laterals {
+				tx := sx + outX*d + alongX*lat
+				ty := sy + outY*d + alongY*lat
+				fp.Position = core.NewPoint(core.FromMM(tx-offSX), core.FromMM(ty-offSY))
+				fp.Rotation = rot
+				if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
+					continue
+				}
+				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
+					continue
+				}
+				if firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
+					continue
+				}
+				ws := core.PadWorldCenter(fp, &fp.Pads[swOwn])
+				wi := core.PadWorldCenter(fp, &fp.Pads[inOwn])
+				dSW := math.Hypot(ws.X.ToMM()-sx, ws.Y.ToMM()-sy)
+				dIN := math.Hypot(wi.X.ToMM()-ix, wi.Y.ToMM()-iy)
+				// Reward pad-pair closeness and axis alignment.
+				score := dSW*dSW + dIN*dIN - 0.5*align
+				if score < bestScore {
+					bestScore = score
+					bestPos = fp.Position
+					bestRot = rot
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		fp.Position, fp.Rotation = oldPos, oldRot
+		return false
+	}
+	fp.Position, fp.Rotation = bestPos, bestRot
+	return true
 }
 
 func footprintsAll(board *core.Board) []*core.Footprint {
