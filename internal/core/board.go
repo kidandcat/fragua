@@ -56,19 +56,23 @@ type FootprintSilk = FootprintSilkItem
 
 // Footprint is a placed (or palette) component instance.
 type Footprint struct {
-	ID          ID                  `json:"id"`
-	Reference   string              `json:"reference"`
-	Value       string              `json:"value"`
-	Library     string              `json:"library"`
-	Position    Point               `json:"position"`
-	Rotation    float64             `json:"rotation"`
-	Layer       Layer               `json:"layer"`
-	Pads        []Pad               `json:"pads"`
-	Key         string              `json:"key"`
-	Description string              `json:"description"`
-	EdgeMounted bool                `json:"edge_mounted"`
-	EdgeSide    *EdgeSide           `json:"edge_side"`
-	Silk        []FootprintSilkItem `json:"silk"`
+	ID          ID        `json:"id"`
+	Reference   string    `json:"reference"`
+	Value       string    `json:"value"`
+	Library     string    `json:"library"`
+	Position    Point     `json:"position"`
+	Rotation    float64   `json:"rotation"`
+	Layer       Layer     `json:"layer"`
+	Pads        []Pad     `json:"pads"`
+	Key         string    `json:"key"`
+	Description string    `json:"description"`
+	EdgeMounted bool      `json:"edge_mounted"`
+	EdgeSide    *EdgeSide `json:"edge_side"`
+	// Pinned marks a footprint the agent positioned itself with `place`.
+	// A bare `auto-place` leaves it where it is (same as EdgeMounted);
+	// naming it explicitly — `auto-place U2` — still moves it.
+	Pinned bool                `json:"pinned,omitempty"`
+	Silk   []FootprintSilkItem `json:"silk"`
 	// BOM / assembly fields. Copied from the library entry or `sym`/`lib`
 	// script tokens. Never invented — empty means the part has no number.
 	LcscID       string `json:"lcsc_id,omitempty"`

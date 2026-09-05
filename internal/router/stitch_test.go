@@ -167,3 +167,48 @@ func TestStitchTiesSliverPourWithoutCarpeting(t *testing.T) {
 		}
 	}
 }
+
+// pourNeedsViaTie decided "is this pour already tied through?" from whichever
+// pad it met first while ranging over the footprint MAP. A board with both a
+// through-hole GND pad standing in the pour and an SMD GND pad on the other
+// layer therefore answered true or false depending on Go's map order, and the
+// same script stitched 0 or 1 vias run to run. The barrel wins: it ties the
+// pour whatever else is on the board.
+func TestPourTieIsDecidedByTheBarrelNotMapOrder(t *testing.T) {
+	build := func() (*core.Board, *core.Pour) {
+		b := core.NewBoard()
+		o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(20)))
+		b.Outline = &o
+		gnd := "GND"
+		// A through-hole GND pad in the middle of the pour: already tied.
+		b.AddFootprint(&core.Footprint{
+			ID: core.NewID(), Reference: "J1",
+			Position: core.NewPoint(core.FromMM(15), core.FromMM(10)),
+			Layer:    core.LayerTop,
+			Pads: []core.Pad{{
+				Number: "1", Size: [2]core.Length{core.FromMM(1.7), core.FromMM(1.7)},
+				Layer: core.LayerTop, Net: &gnd, Drill: ptrLen(core.FromMM(1.0)),
+			}},
+		})
+		// An SMD GND pad on the far layer, which on its own would ask for a tie.
+		b.AddFootprint(&core.Footprint{
+			ID: core.NewID(), Reference: "C1",
+			Position: core.NewPoint(core.FromMM(6), core.FromMM(6)),
+			Layer:    core.LayerBottom,
+			Pads: []core.Pad{{
+				Number: "1", Size: [2]core.Length{core.FromMM(1), core.FromMM(1)},
+				Layer: core.LayerBottom, Net: &gnd,
+			}},
+		})
+		b.Pours = []core.Pour{{Net: "GND", Layer: core.LayerTop}}
+		return b, &b.Pours[0]
+	}
+	for i := 0; i < 50; i++ {
+		b, pr := build()
+		if pourNeedsViaTie(b, pr) {
+			t.Fatalf("run %d: pour reported untied although a GND barrel stands in it", i)
+		}
+	}
+}
+
+func ptrLen(l core.Length) *core.Length { return &l }

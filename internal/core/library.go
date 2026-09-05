@@ -305,14 +305,24 @@ func (e *LibraryEntry) RefreshPlacementMargin() {
 	e.PlacementMargin = PlacementMargin{Elevated: e.Elevated}
 }
 
-// BodyKeepout is the keep-out for placement/DRC: live geometry + elevated flag.
-// Always re-derives from pads/silk/body_rect so stale disk margins cannot under-report.
+// BodyKeepout is the keep-out for placement/DRC: the wider of the live
+// geometry hull and the margin stored on the entry, side by side, plus the
+// elevated flag. Re-deriving from pads/silk/body_rect stops a stale disk
+// margin under-reporting; keeping the stored one stops the derivation
+// under-reporting the parts of a body nothing draws. A KF301 screw terminal
+// is the case that matters: its 4 mm wire mouth appears in no pad, no silk
+// line and no body_rect, only in the authored margin, and dropping it let
+// edge-place hang the block off the board edge.
 func (e *LibraryEntry) BodyKeepout() PlacementMargin {
-	if minX, minY, maxX, maxY, ok := e.GeometryHullMM(); ok {
-		return e.MarginFromHull(minX, minY, maxX, maxY)
-	}
 	m := e.PlacementMargin
 	m.Elevated = e.Elevated
+	if minX, minY, maxX, maxY, ok := e.GeometryHullMM(); ok {
+		d := e.MarginFromHull(minX, minY, maxX, maxY)
+		m.TopMM = math.Max(m.TopMM, d.TopMM)
+		m.RightMM = math.Max(m.RightMM, d.RightMM)
+		m.BottomMM = math.Max(m.BottomMM, d.BottomMM)
+		m.LeftMM = math.Max(m.LeftMM, d.LeftMM)
+	}
 	return m
 }
 

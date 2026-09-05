@@ -511,6 +511,7 @@ func placeOne(p *core.Project, args string) (string, error) {
 		if rotSet {
 			fp.Rotation = rot
 		}
+		fp.Pinned = true
 		found = true
 	})
 	if found {
@@ -525,6 +526,7 @@ func placeOne(p *core.Project, args string) (string, error) {
 	if rotSet {
 		fp.Rotation = rot
 	}
+	fp.Pinned = true
 	p.MutateBoard(func(b *core.Board) {
 		b.AddFootprint(fp)
 	})

@@ -128,13 +128,13 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 	if len(refs) == 0 {
 		for _, id := range board.FootprintOrder {
 			fp := board.Footprints[id]
-			if fp != nil && !fp.EdgeMounted {
+			if fp != nil && !fp.EdgeMounted && !fp.Pinned {
 				fps = append(fps, fp)
 			}
 		}
 		if len(fps) == 0 {
 			for _, fp := range board.Footprints {
-				if fp != nil && !fp.EdgeMounted {
+				if fp != nil && !fp.EdgeMounted && !fp.Pinned {
 					fps = append(fps, fp)
 				}
 			}
@@ -146,17 +146,25 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 			}
 		}
 	}
-	if len(fps) == 0 {
-		return Report{}, fmt.Errorf("place: no movable footprints")
-	}
-
 	initHPWL := rawHPWL(board)
 	if board.Outline != nil {
 		for _, fp := range footprintsAll(board) {
-			if fp.EdgeMounted {
-				SnapToNearestEdge(fp, *board.Outline)
+			// A pinned part keeps the coordinates the agent gave it, even
+			// when the library calls the footprint edge-mounted: a THT
+			// connector often has to sit inboard of the outline.
+			if fp.EdgeMounted && !fp.Pinned {
+				SnapToNearestEdge(fp, *board.Outline, EdgeClearancesFor(board))
 			}
 		}
+	}
+	if len(fps) == 0 {
+		// A bare auto-place over a board whose every part is already
+		// anchored (pinned or edge-mounted) is a no-op, not an error:
+		// the agent has said where everything goes.
+		if len(refs) == 0 && len(board.Footprints) > 0 {
+			return Report{InitialHPWLMM: initHPWL, FinalHPWLMM: rawHPWL(board)}, nil
+		}
+		return Report{}, fmt.Errorf("place: no movable footprints")
 	}
 	if opts.GlobalStage {
 		globalForce(board, fps, opts)
@@ -548,15 +556,14 @@ func firstOverlapper(board *core.Board, probe *core.Footprint) bool {
 // afterGap test read it - the hard rejection here used the constant, so the
 // option could not actually buy any room.
 func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64) bool {
-	pb, ok := footprintBounds(probe)
-	if !ok {
-		return false
-	}
 	if gapMM < 0 {
 		gapMM = 0
 	}
 	half := core.FromMM(gapMM / 2)
-	pb = pb.Expand(half)
+	pb, ok := collisionBounds(probe, half)
+	if !ok {
+		return false
+	}
 	for _, id := range board.FootprintOrder {
 		fp := board.Footprints[id]
 		if fp == nil || fp == probe || fp.ID == probe.ID {
@@ -565,11 +572,11 @@ func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64)
 		if !canCollide(probe, fp) {
 			continue
 		}
-		ob, ok := footprintBounds(fp)
+		ob, ok := collisionBounds(fp, half)
 		if !ok {
 			continue
 		}
-		if pb.Intersects(ob.Expand(half)) {
+		if pb.Intersects(ob) {
 			return true
 		}
 	}
@@ -582,16 +589,41 @@ func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64)
 			if !canCollide(probe, fp) {
 				continue
 			}
-			ob, ok := footprintBounds(fp)
+			ob, ok := collisionBounds(fp, half)
 			if !ok {
 				continue
 			}
-			if pb.Intersects(ob.Expand(half)) {
+			if pb.Intersects(ob) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// collisionBounds is the rectangle the placer must keep clear of its
+// neighbours: the pad AABB grown by half the assembly gap, unioned with the
+// courtyard when the library declares one. Testing pads alone let auto-place
+// seat a part inside a neighbour's declared body — a module wider than its
+// pad rows, or a screw terminal's wire mouth — which DRC then reported as a
+// courtyard_overlap the agent had to repair by hand.
+//
+// Only a DECLARED courtyard counts (body_rect or a placement_margin). The
+// pads+CourtyardMarginMM fallback is left out on purpose: it is a DRC
+// convention, not a package outline, and folding it in here would override
+// the assembly gap the caller asked for on plain chip parts.
+func collisionBounds(fp *core.Footprint, halfGap core.Length) (core.Rect, bool) {
+	b, ok := footprintBounds(fp)
+	if !ok {
+		return core.Rect{}, false
+	}
+	b = b.Expand(halfGap)
+	if fp.BodyRect != nil || !fp.PlacementMargin.IsZero() {
+		if c, ok := core.CourtyardWorld(fp); ok {
+			b = b.Union(c)
+		}
+	}
+	return b, true
 }
 
 func aabbGapMM(a, b core.Rect) float64 {
@@ -724,7 +756,11 @@ func rawHPWL(board *core.Board) float64 {
 		minX, minY, maxX, maxY float64
 		n                      int
 	}
+	// Ordered alongside the index: summing over a Go map iterates in a
+	// random order, and the float rounding that follows was enough to flip
+	// SA accept/reject decisions, so the same seed gave different boards.
 	nets := map[string]*bb{}
+	var order []*bb
 	walk := func(fp *core.Footprint) {
 		if fp == nil {
 			return
@@ -740,6 +776,7 @@ func rawHPWL(board *core.Board) float64 {
 			if e == nil {
 				e = &bb{minX: x, minY: y, maxX: x, maxY: y, n: 1}
 				nets[*pad.Net] = e
+				order = append(order, e)
 				continue
 			}
 			if x < e.minX {
@@ -767,7 +804,7 @@ func rawHPWL(board *core.Board) float64 {
 		}
 	}
 	total := 0.0
-	for _, e := range nets {
+	for _, e := range order {
 		if e.n >= 2 && e.maxX >= e.minX && e.maxY >= e.minY {
 			total += (e.maxX - e.minX) + (e.maxY - e.minY)
 		}
@@ -781,7 +818,11 @@ func weightedHPWL(board *core.Board) float64 {
 		minX, minY, maxX, maxY float64
 		n                      int
 	}
+	// Ordered alongside the index: summing over a Go map iterates in a
+	// random order, and the float rounding that follows was enough to flip
+	// SA accept/reject decisions, so the same seed gave different boards.
 	nets := map[string]*bb{}
+	var order []*bb
 	walk := func(fp *core.Footprint) {
 		if fp == nil {
 			return
@@ -797,6 +838,7 @@ func weightedHPWL(board *core.Board) float64 {
 			if e == nil {
 				e = &bb{minX: x, minY: y, maxX: x, maxY: y, n: 1}
 				nets[*pad.Net] = e
+				order = append(order, e)
 				continue
 			}
 			if x < e.minX {
@@ -824,7 +866,7 @@ func weightedHPWL(board *core.Board) float64 {
 		}
 	}
 	total := 0.0
-	for _, e := range nets {
+	for _, e := range order {
 		if e.n >= 2 {
 			total += ((e.maxX - e.minX) + (e.maxY - e.minY)) * netWeight(e.n)
 		}
@@ -858,11 +900,10 @@ func overlapAreaMM2(board *core.Board, fps []*core.Footprint, gapMM float64) flo
 	}
 	total := 0.0
 	for _, fp := range fps {
-		b, ok := footprintBounds(fp)
+		b, ok := collisionBounds(fp, half)
 		if !ok {
 			continue
 		}
-		b = b.Expand(half)
 		for _, other := range footprintsAll(board) {
 			if other == fp || other.ID == fp.ID {
 				continue
@@ -874,11 +915,10 @@ func overlapAreaMM2(board *core.Board, fps []*core.Footprint, gapMM float64) flo
 			if !canCollide(fp, other) {
 				continue
 			}
-			ob, ok := footprintBounds(other)
+			ob, ok := collisionBounds(other, half)
 			if !ok {
 				continue
 			}
-			ob = ob.Expand(half)
 			w := math.Min(b.Max.X.ToMM(), ob.Max.X.ToMM()) - math.Max(b.Min.X.ToMM(), ob.Min.X.ToMM())
 			h := math.Min(b.Max.Y.ToMM(), ob.Max.Y.ToMM()) - math.Max(b.Min.Y.ToMM(), ob.Min.Y.ToMM())
 			if w > 0 && h > 0 {

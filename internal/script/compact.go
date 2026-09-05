@@ -187,7 +187,10 @@ func compactFeasible(b *core.Board, sch *core.Schematic, w, h float64, seed uint
 	opts := placer.DefaultOptions()
 	opts.Seed = seed
 	opts.Iterations = iters
-	if _, err := placer.Place(b, nil, opts); err != nil {
+	// Compact has already rescaled every position, so an anchor's coordinates
+	// are gone either way: name the parts explicitly so pinned ones are
+	// re-placed too instead of being skipped by the bare-refs path.
+	if _, err := placer.Place(b, movableRefs(b), opts); err != nil {
 		return false
 	}
 	b.ClearRoute()
@@ -200,4 +203,17 @@ func compactFeasible(b *core.Board, sch *core.Schematic, w, h float64, seed uint
 	}
 	d := drc.Check(b, nil, drc.DefaultOptions())
 	return d.Errors == 0
+}
+
+// movableRefs lists every non-edge-mounted footprint, pinned or not, in
+// board order. `compact` re-places all of them; only `auto-place` honours
+// the pin.
+func movableRefs(b *core.Board) []string {
+	refs := make([]string, 0, len(b.Footprints))
+	for _, id := range b.FootprintOrder {
+		if fp := b.Footprints[id]; fp != nil && !fp.EdgeMounted {
+			refs = append(refs, fp.Reference)
+		}
+	}
+	return refs
 }

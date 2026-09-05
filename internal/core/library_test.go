@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -191,5 +192,36 @@ func TestProjectOpensLibrary(t *testing.T) {
 	keys := p.Library().List()
 	if len(keys) != 1 || keys[0] != "x" {
 		t.Fatalf("keys: %v", keys)
+	}
+}
+
+// A KF301 screw terminal's 4 mm wire mouth exists in the authored
+// placement_margin and nowhere else — no pad, no silk line, no body_rect.
+// BodyKeepout used to re-derive the margin from geometry alone and throw it
+// away, which let edge-place seat the block with its mouth off the board.
+func TestBodyKeepoutKeepsAnAuthoredMargin(t *testing.T) {
+	drill := 1.2
+	e := LibraryEntry{
+		Key: "screw_term_2p",
+		Pads: []LibraryPad{
+			{Number: "1", XMM: -2.5, YMM: 0, WMM: 2, HMM: 2, DrillMM: &drill},
+			{Number: "2", XMM: 2.5, YMM: 0, WMM: 2, HMM: 2, DrillMM: &drill},
+		},
+		Silk: []LibrarySilk{
+			{Kind: "text", XMM: 0, YMM: -4, SizeMM: 0.7, Text: "{REF}"},
+		},
+		PlacementMargin: PlacementMargin{TopMM: 4, RightMM: 1.5, BottomMM: 2.5, LeftMM: 1.5},
+	}
+	got := e.BodyKeepout()
+	if got.TopMM != 4 {
+		t.Errorf("top margin = %.2f, want the authored 4.00 (the wire mouth)", got.TopMM)
+	}
+	if got.LeftMM != 1.5 || got.RightMM != 1.5 {
+		t.Errorf("side margins = %.2f/%.2f, want the authored 1.50", got.LeftMM, got.RightMM)
+	}
+	// The silk reference sits 3.35 mm below the pads, further than the
+	// authored 2.5: the derivation still wins where it is the wider one.
+	if math.Abs(got.BottomMM-3.35) > 1e-9 {
+		t.Errorf("bottom margin = %.2f, want the derived silk hull 3.35", got.BottomMM)
 	}
 }

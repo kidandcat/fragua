@@ -2,6 +2,7 @@ package placer
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -263,5 +264,249 @@ func TestOppositeFacesDoNotCollide(t *testing.T) {
 	probe.Pads[0].Drill = &d
 	if !firstOverlapperGap(b, probe, 0.5) {
 		t.Fatal("a through-hole pad collides with the other face")
+	}
+}
+
+// A part the agent positioned with `place` is pinned: a bare auto-place
+// (no refs) must leave it exactly where it was put, the same way it leaves
+// edge-mounted connectors alone. Naming it explicitly still moves it.
+func TestPinnedFootprintSurvivesBareAutoPlace(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(50), core.FromMM(30)))
+	b.Outline = &o
+	anchor := footprint("U1", 40, 25, []core.Pad{
+		pad("1", -1, 0, "S"),
+		pad("2", 1, 0, "OUT"),
+	})
+	anchor.Pinned = true
+	b.AddFootprint(anchor)
+	b.AddFootprint(footprint("R1", 5, 5, []core.Pad{
+		pad("1", -1, 0, "S"),
+		pad("2", 1, 0, "OUT"),
+	}))
+
+	want := anchor.Position
+	opts := DefaultOptions()
+	opts.Seed = 42
+	if _, err := Place(b, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	got := b.FootprintByRef("U1").Position
+	if got != want {
+		t.Fatalf("pinned U1 moved: %v → %v", want, got)
+	}
+	if b.FootprintByRef("R1").Position == core.NewPoint(core.FromMM(5), core.FromMM(5)) {
+		t.Fatal("expected the unpinned R1 to be arranged")
+	}
+
+	// Explicit ref is the escape hatch: a board of nothing but pinned parts
+	// still has something to anneal when they are named.
+	b2 := core.NewBoard()
+	b2.Outline = &o
+	only := footprint("U1", 40, 25, []core.Pad{pad("1", -1, 0, "S")})
+	only.Pinned = true
+	b2.AddFootprint(only)
+	if _, err := Place(b2, []string{"U1"}, opts); err != nil {
+		t.Fatalf("naming a pinned ref should still place it: %v", err)
+	}
+}
+
+// edge-place must turn the footprint's mating face toward the outside of the
+// board. Before, only `left` consulted EdgeSide, so an ESP32-S3-Zero
+// (EdgeSide=bottom, USB-C on its -Y face) edge-placed `right` came out 180°
+// off with the connector buried in the board.
+func TestEdgePlaceTurnsTheMatingFaceOutward(t *testing.T) {
+	bottom, top := core.EdgeBottom, core.EdgeTop
+	cases := []struct {
+		side string
+		face *core.EdgeSide
+		want float64
+	}{
+		{"right", &bottom, 90},
+		{"left", &bottom, 270},
+		{"top", &bottom, 180},
+		{"bottom", &bottom, 0},
+		{"right", nil, 90}, // no declared face = -Y, same as bottom
+		{"top", &top, 0},   // screw terminal: wire entry already at +Y
+		{"bottom", &top, 180},
+		{"left", &top, 90}, // the one case the old code special-cased
+	}
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	for _, c := range cases {
+		fp := footprint("J1", 20, 15, []core.Pad{pad("1", -1.27, 0, "A"), pad("2", 1.27, 0, "B")})
+		fp.EdgeMounted = true
+		fp.EdgeSide = c.face
+		EdgePlace(fp, o, c.side, nil, EdgeClearancesFor(nil))
+		if fp.Rotation != c.want {
+			face := "nil"
+			if c.face != nil {
+				face = string(*c.face)
+			}
+			t.Errorf("edge-place %s (face %s) rot = %.0f, want %.0f", c.side, face, fp.Rotation, c.want)
+		}
+	}
+}
+
+// A part with a declared body is bigger than its pads: a screw terminal's wire
+// mouth, a module wider than its castellated rows. auto-place used to seat a
+// neighbour inside that body because the hard overlap test looked at pads
+// only, and DRC then reported a courtyard_overlap the agent had to fix by hand.
+func TestPlacerRespectsADeclaredCourtyard(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	// J1's pads are 5 mm wide but its body reaches 6 mm past them in +Y.
+	j1 := footprint("J1", 8, 8, []core.Pad{pad("1", -2.5, 0, "A"), pad("2", 2.5, 0, "B")})
+	j1.PlacementMargin = core.PlacementMargin{TopMM: 6, RightMM: 1.5, BottomMM: 1.5, LeftMM: 1.5}
+	j1.Pinned = true
+	b.AddFootprint(j1)
+	// U1 starts inside that mouth. Pads alone read this as clear.
+	u1 := footprint("U1", 8, 12, []core.Pad{pad("1", -1, 0, "A"), pad("2", 1, 0, "N")})
+	b.AddFootprint(u1)
+
+	if !firstOverlapperGap(b, u1, 0.2) {
+		t.Fatal("U1 sits inside J1's declared courtyard; the placer must see it")
+	}
+	opts := DefaultOptions()
+	opts.Seed = 5
+	opts.SolderGapMM = 0.2
+	if _, err := Place(b, []string{"U1"}, opts); err != nil {
+		t.Fatal(err)
+	}
+	if firstOverlapperGap(b, b.FootprintByRef("U1"), 0.2) {
+		t.Fatalf("U1 stayed in the courtyard at (%.2f, %.2f)",
+			u1.Position.X.ToMM(), u1.Position.Y.ToMM())
+	}
+}
+
+// thtPad is a plated barrel: a square pad with a drill through it.
+func thtPad(num string, ox, oy, sizeMM, drillMM float64, net string) core.Pad {
+	p := pad(num, ox, oy, net)
+	p.Size = [2]core.Length{core.FromMM(sizeMM), core.FromMM(sizeMM)}
+	d := core.FromMM(drillMM)
+	p.Drill = &d
+	return p
+}
+
+// edge-place used to slide the PAD BBOX until it kissed the outline, whatever
+// the part was. That is right for a castellated module and wrong for anything
+// with a hole in it: a 2.54 mm header came out with its 1.0 mm barrels 0.35 mm
+// from the routed edge, and a screw terminal hung its wire mouth off the board.
+// The rule is now: no drills → pad bbox, flush; drills → declared courtyard
+// (else pad bbox) plus the fab copper/drill-to-edge floor.
+func TestEdgePlaceKeepsThroughHoleBarrelsOffTheEdge(t *testing.T) {
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	cl := EdgeClearancesFor(nil)
+
+	j1 := footprint("J1", 20, 15, []core.Pad{
+		thtPad("1", -3.81, 0, 1.7, 1.0, "A"),
+		thtPad("2", -1.27, 0, 1.7, 1.0, "B"),
+		thtPad("3", 1.27, 0, 1.7, 1.0, "C"),
+		thtPad("4", 3.81, 0, 1.7, 1.0, "D"),
+	})
+	j1.EdgeMounted = true
+	EdgePlace(j1, o, "bottom", nil, cl)
+
+	for i := range j1.Pads {
+		pad := &j1.Pads[i]
+		copperGap := (core.PadWorldAABB(j1, pad).Min.Y - o.Min.Y).ToMM()
+		if copperGap+1e-9 < cl.CopperMM {
+			t.Errorf("pad %s copper %.3f mm from the edge, want >= %.3f",
+				pad.Number, copperGap, cl.CopperMM)
+		}
+		hole := core.RectFromCenter(core.PadWorldCenter(j1, pad), *pad.Drill, *pad.Drill)
+		drillGap := (hole.Min.Y - o.Min.Y).ToMM()
+		if drillGap+1e-9 < cl.DrillMM {
+			t.Errorf("pad %s barrel %.3f mm from the edge, want >= %.3f",
+				pad.Number, drillGap, cl.DrillMM)
+		}
+	}
+	// Near the edge, not parked in the middle of the board: the tightest
+	// constraint is what decides, nothing more.
+	if got := j1.Position.Y.ToMM(); got > 1.5 {
+		t.Errorf("J1 pulled %.3f mm inboard; the clearance alone should decide", got)
+	}
+	// auto-place re-snaps every edge-mounted part; that must not undo this.
+	before := j1.Position
+	SnapToNearestEdge(j1, o, cl)
+	if j1.Position != before {
+		t.Errorf("re-snap moved J1 from %v to %v; snapping must be a fixed point",
+			before, j1.Position)
+	}
+}
+
+// A screw terminal's body is much bigger than its two barrels: the wire mouth
+// sticks 4 mm past the pads. Snapping by pads hung that mouth off the board.
+// The declared courtyard is the extent, so the block sits fully on the board
+// with its mouth ending exactly at the edge the wires leave by.
+func TestEdgePlaceSeatsAScrewTerminalBodyOnTheBoard(t *testing.T) {
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	cl := EdgeClearancesFor(nil)
+	top := core.EdgeTop
+
+	j2 := footprint("J2", 20, 15, []core.Pad{
+		thtPad("1", -2.5, 0, 2.0, 1.2, "A"),
+		thtPad("2", 2.5, 0, 2.0, 1.2, "B"),
+	})
+	j2.EdgeMounted = true
+	j2.EdgeSide = &top
+	j2.PlacementMargin = core.PlacementMargin{TopMM: 4, RightMM: 1.5, BottomMM: 2.5, LeftMM: 1.5}
+	EdgePlace(j2, o, "top", nil, cl)
+
+	body, ok := core.CourtyardWorld(j2)
+	if !ok {
+		t.Fatal("screw terminal has no courtyard")
+	}
+	if d := (o.Max.Y - body.Max.Y).ToMM(); math.Abs(d) > 1e-6 {
+		t.Errorf("wire mouth %.3f mm from the top edge, want flush", d)
+	}
+	if body.Min.X < o.Min.X || body.Max.X > o.Max.X || body.Min.Y < o.Min.Y {
+		t.Errorf("body %v hangs off the outline %v", body, o)
+	}
+	for i := range j2.Pads {
+		pad := &j2.Pads[i]
+		if gap := (o.Max.Y - core.PadWorldAABB(j2, pad).Max.Y).ToMM(); gap+1e-9 < cl.CopperMM {
+			t.Errorf("pad %s copper %.3f mm from the edge", pad.Number, gap)
+		}
+	}
+}
+
+// The castellated case must not regress: an ESP32-S3-Zero has SMD half-hole
+// rows and a body that reaches past them, and the module's USB-C end is only
+// reachable by a cable if that body is allowed to overhang the short edge.
+func TestEdgePlaceKeepsACastellatedModuleFlush(t *testing.T) {
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(88), core.FromMM(20)))
+	cl := EdgeClearancesFor(nil)
+	bottom := core.EdgeBottom
+
+	u1 := footprint("U1", 40, 10, []core.Pad{
+		pad("V5", 7.62, -10.16, "V5"),
+		pad("GND", 7.62, 0, "GND"),
+		pad("GPIO6", 7.62, 10.16, "S1"),
+		pad("GPIO7", -7.62, 10.16, "S2"),
+		pad("TX", -7.62, -10.16, "S3"),
+	})
+	u1.EdgeMounted = true
+	u1.EdgeSide = &bottom
+	u1.BodyRect = &core.BodyRect{MinXMM: -9, MinYMM: -12.75, MaxXMM: 9, MaxYMM: 12.75}
+	EdgePlace(u1, o, "right", nil, cl)
+
+	if u1.Rotation != 90 {
+		t.Fatalf("rot = %.0f, want 90 (USB-C face pointing +X)", u1.Rotation)
+	}
+	pads, ok := footprintBounds(u1)
+	if !ok {
+		t.Fatal("no pad bounds")
+	}
+	if d := (o.Max.X - pads.Max.X).ToMM(); math.Abs(d) > 1e-6 {
+		t.Errorf("castellated row %.3f mm from the edge, want flush", d)
+	}
+	body, ok := core.CourtyardWorld(u1)
+	if !ok {
+		t.Fatal("no courtyard")
+	}
+	if body.Max.X <= o.Max.X {
+		t.Errorf("module body ends at %.2f, inside the edge %.2f: the USB-C shell has to overhang",
+			body.Max.X.ToMM(), o.Max.X.ToMM())
 	}
 }

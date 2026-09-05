@@ -249,20 +249,28 @@ func pourNeedsViaTie(board *core.Board, pr *core.Pour) bool {
 	if viaInPour(board, pr) {
 		return false
 	}
-	for _, fp := range board.Footprints {
-		if fp == nil {
-			continue
-		}
+	// Two passes, not one, and over the stable order. A barrel standing in
+	// the pour ties it whatever else is on the board, so that fact has to
+	// win over "an SMD pad of this net sits on another layer" — deciding it
+	// by whichever pad the loop met first meant ranging over the footprint
+	// MAP settled it, and the same script stitched 0 or 1 vias run to run.
+	fps := footprintsStable(board)
+	for _, fp := range fps {
 		for i := range fp.Pads {
 			pad := &fp.Pads[i]
-			if pad.Net == nil || *pad.Net != pr.Net {
+			if pad.Net == nil || *pad.Net != pr.Net || pad.Drill == nil {
 				continue
 			}
-			if pad.Drill != nil {
-				c := core.PadWorldCenter(fp, pad)
-				if pointInPourRegion(board, pr, c.X.ToMM(), c.Y.ToMM()) {
-					return false
-				}
+			c := core.PadWorldCenter(fp, pad)
+			if pointInPourRegion(board, pr, c.X.ToMM(), c.Y.ToMM()) {
+				return false
+			}
+		}
+	}
+	for _, fp := range fps {
+		for i := range fp.Pads {
+			pad := &fp.Pads[i]
+			if pad.Net == nil || *pad.Net != pr.Net || pad.Drill != nil {
 				continue
 			}
 			if pad.Layer.Index != pr.Layer.Index {

@@ -545,6 +545,9 @@ func cmdUnplace(p *core.Project, args string) (string, error) {
 		for _, r := range refs {
 			if fp := b.RemoveFootprintByRef(r); fp != nil {
 				cp := *fp
+				// Back on the palette it has no position, so it is no
+				// longer pinned: auto-place may seat it anywhere.
+				cp.Pinned = false
 				taken = append(taken, &cp)
 			}
 		}
@@ -646,7 +649,7 @@ func cmdEdgePlace(p *core.Project, args string) (string, error) {
 			fromPal = nil
 		}
 		fp.EdgeMounted = true
-		placer.EdgePlace(fp, *b.Outline, side, along)
+		placer.EdgePlace(fp, *b.Outline, side, along, placer.EdgeClearancesFor(b))
 		msg = fmt.Sprintf("edge-placed %s on %s at (%.2f, %.2f) rot=%.0f",
 			ref, side, fp.Position.X.ToMM(), fp.Position.Y.ToMM(), fp.Rotation)
 	})

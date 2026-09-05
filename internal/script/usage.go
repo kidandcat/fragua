@@ -134,9 +134,10 @@ var Verbs = []VerbHelp{
 		Examples: []string{"list-lib"},
 	},
 	{
-		Name:     "place",
-		Usage:    "place REF x y [rot=DEG]",
-		Describe: "Place a footprint at x,y mm (its origin), optionally rotated. Use this to anchor the parts whose position matters, then let `auto-place` arrange the rest.",
+		Name:  "place",
+		Usage: "place REF x y [rot=DEG]",
+		Describe: "Place a footprint at x,y mm (its origin), optionally rotated. Use this to anchor the parts whose position matters, then let `auto-place` arrange the rest. " +
+			"A placed part is pinned: a bare `auto-place` leaves it alone, and only `auto-place REF` moves it again.",
 		Examples: []string{"place U1 25 15", "place J1 0 10 rot=90"},
 	},
 	{
@@ -147,10 +148,13 @@ var Verbs = []VerbHelp{
 		Examples: []string{"place-legal C3", "place-legal C3 tries=200"},
 	},
 	{
-		Name:     "edge-place",
-		Aliases:  []string{"edge_place"},
-		Usage:    "edge-place REF left|right|top|bottom [along=N]",
-		Describe: "Snap a connector to a board edge, oriented outward. `along` is the distance in mm along that edge.",
+		Name:    "edge-place",
+		Aliases: []string{"edge_place"},
+		Usage:   "edge-place REF left|right|top|bottom [along=N]",
+		Describe: "Snap a connector to a board edge, oriented outward. `along` is the distance in mm along that edge. " +
+			"What gets snapped depends on the part: a surface-mount one (castellated module, edge-launch SMA) puts its PADS flush with the edge and is allowed to overhang, " +
+			"which is what leaves a module's USB-C reachable by a cable. A through-hole one puts its BODY on the board instead — the library courtyard when it declares one, so a screw terminal's wire mouth ends at the edge with the block inboard — " +
+			"and is then pulled back until copper and drill barrels clear the routed edge by the fab minimum.",
 		Examples: []string{"edge-place J1 left", "edge-place J2 bottom along=12"},
 	},
 	{
@@ -180,7 +184,7 @@ var Verbs = []VerbHelp{
 		Usage:   "auto-place [REF...] [seed=N] [iters=N]",
 		Describe: "Global placement plus simulated-annealing legalisation over the listed parts (all movable parts if none listed). " +
 			"Parts bound by `palette` / `part` / `lib-gen` but never placed are seated on the board first (reported as `seated N new`), so you do not have to `place` them by hand. " +
-			"Anything you placed by hand stays put and is routed around. Pass a `seed` to make the result reproducible. Needs an outline.",
+			"Anything you `place`d or `edge-place`d stays put and is routed around; name it as a REF to move it anyway. Pass a `seed` to make the result reproducible. Needs an outline.",
 		Examples: []string{"auto-place", "auto-place R1 C1 C2 seed=42", "auto-place seed=7 iters=4000"},
 	},
 	{
