@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blog — Fragua</title>
+  <meta name="description" content="Engineering notes, hardware benchmarks, and architecture deep dives from the Fragua team.">
+
+  <!-- Open Graph / Twitter -->
+  <meta property="og:title" content="Fragua Engineering Blog">
+  <meta property="og:description" content="Engineering notes, hardware benchmarks, and architecture deep dives from the Fragua team.">
+  <meta property="og:url" content="https://mentasystems.github.io/fragua/blog/">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230e1116'/%3E%3Crect x='2' y='2' width='12' height='12' rx='2' fill='none' stroke='%23d6905b' stroke-width='1.5'/%3E%3Ccircle cx='5' cy='8' r='1' fill='%23d6905b'/%3E%3Ccircle cx='11' cy='8' r='1' fill='%23d6905b'/%3E%3Cline x1='5' y1='8' x2='11' y2='8' stroke='%23d6905b' stroke-width='0.7'/%3E%3C/svg%3E">
+
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .blog-container {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 56px 24px 96px;
+    }
+    .blog-header {
+      margin-bottom: 48px;
+    }
+    .blog-header h1 {
+      font-size: 40px;
+      letter-spacing: -0.02em;
+      margin: 0 0 12px 0;
+      color: #fff;
+    }
+    .blog-header p {
+      font-size: 17px;
+      color: var(--muted);
+      margin: 0;
+    }
+    .post-list {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+    .post-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px;
+      transition: border-color 150ms ease, transform 150ms ease;
+      display: flex;
+      flex-direction: column;
+      text-decoration: none;
+      color: inherit;
+    }
+    .post-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+    .post-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .post-card-tag {
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+    }
+    .post-card h2 {
+      font-size: 22px;
+      line-height: 1.35;
+      margin: 0 0 12px 0;
+      color: #fff;
+      font-weight: 600;
+    }
+    .post-card p {
+      font-size: 15px;
+      color: var(--text);
+      line-height: 1.6;
+      margin: 0 0 16px 0;
+    }
+    .post-card-read {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 600;
+      margin-top: auto;
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <a href="../" style="display:flex;align-items:center;gap:10px;color:inherit;border:none;">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="3" y="3" width="26" height="26" rx="3" fill="none" stroke="#d6905b" stroke-width="2"/>
+        <circle cx="9" cy="16" r="2" fill="#d6905b"/>
+        <circle cx="23" cy="16" r="2" fill="#d6905b"/>
+        <line x1="9" y1="16" x2="23" y2="16" stroke="#d6905b" stroke-width="1.4"/>
+        <line x1="16" y1="9" x2="16" y2="23" stroke="#d6905b" stroke-width="1.4"/>
+      </svg>
+      <span>fragua</span>
+    </a>
+  </div>
+  <nav class="topbar-links">
+    <a href="../#how">how it works</a>
+    <a href="../#install">install</a>
+    <a href="./" style="color:var(--accent)">blog</a>
+    <a class="github-link" href="https://github.com/mentasystems/fragua" target="_blank" rel="noopener">GitHub →</a>
+  </nav>
+</header>
+
+<main class="blog-container">
+  <header class="blog-header">
+    <h1>Engineering Blog</h1>
+    <p>Hardware benchmarks, routing algorithms, and architecture notes from the Fragua team.</p>
+  </header>
+
+  <div class="post-list">
+    <a class="post-card" href="vibe-routing-vs-fragua-max17220.html">
+      <div class="post-card-meta">
+        <span class="post-card-tag">Benchmark</span>
+        <span>September 5, 2026</span>
+        <span>·</span>
+        <span>7 min read</span>
+      </div>
+      <h2>Why "Vibe Routing" Fails on Switchers: Benchmarking Astra vs. Fragua vs. Hand Layout</h2>
+      <p>
+        A deep dive into Alperen Akkuncu's MAX17220 solar boost converter challenge: why generic AI placers ruin switching loops with parasitic inductance, and how Fragua keeps the loop at 1.5 mm and reroutes in 86 milliseconds.
+      </p>
+      <span class="post-card-read">Read article →</span>
+    </a>
+  </div>
+</main>
+
+<footer>
+  <a href="https://github.com/mentasystems/fragua" target="_blank" rel="noopener">GitHub</a>
+  <span class="dot">·</span>
+  <a href="../">Fragua Home</a>
+  <span class="dot">·</span>
+  <a href="./">Blog</a>
+  <span class="dot">·</span>
+  <span>MIT License</span>
+</footer>
+
+</body>
+</html>

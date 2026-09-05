@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why "Vibe Routing" Fails on Switchers: Benchmarking Astra vs. Fragua — Fragua Blog</title>
+  <meta name="description" content="A deep dive into Alperen Akkuncu's MAX17220 solar boost converter challenge: why generic AI placers ruin switching loops, and how Fragua pure-auto (place U3 + auto-place/route/pour/stitch) finishes the island in ~0.2 s with 0 LX vias and courtyard-clean packing.">
+
+  <!-- Open Graph / Twitter -->
+  <meta property="og:title" content="Why 'Vibe Routing' Fails on Switchers: Benchmarking Astra vs. Fragua">
+  <meta property="og:description" content="Astra placed Cout on the far side of the IC and took 4 minutes for a single edit. Pure auto: LX pad hop 2.4 mm / 0 vias, Cout 2.1 mm, GND stitch ≤0.7 mm, DRC 0 — route ~195 ms.">
+  <meta property="og:url" content="https://mentasystems.github.io/fragua/blog/vibe-routing-vs-fragua-max17220.html">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta property="og:image" content="https://mentasystems.github.io/fragua/blog/img/fragua_perfect.png">
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230e1116'/%3E%3Crect x='2' y='2' width='12' height='12' rx='2' fill='none' stroke='%23d6905b' stroke-width='1.5'/%3E%3Ccircle cx='5' cy='8' r='1' fill='%23d6905b'/%3E%3Ccircle cx='11' cy='8' r='1' fill='%23d6905b'/%3E%3Cline x1='5' y1='8' x2='11' y2='8' stroke='%23d6905b' stroke-width='0.7'/%3E%3C/svg%3E">
+
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .article-container {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+    }
+    .article-header {
+      margin-bottom: 40px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 24px;
+    }
+    .article-tag {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
+    .article-header h1 {
+      font-size: 36px;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+      margin: 0 0 16px 0;
+      color: #fff;
+    }
+    .article-meta {
+      display: flex;
+      gap: 16px;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .article-content h2 {
+      font-size: 24px;
+      margin-top: 48px;
+      margin-bottom: 16px;
+      color: #fff;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    .article-content h3 {
+      font-size: 18px;
+      margin-top: 32px;
+      margin-bottom: 12px;
+      color: var(--accent);
+      font-family: var(--mono);
+    }
+    .article-content p, .article-content li {
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--text);
+    }
+    .article-content ul, .article-content ol {
+      padding-left: 24px;
+      margin-bottom: 24px;
+    }
+    .article-content li {
+      margin-bottom: 8px;
+    }
+    .article-content blockquote {
+      margin: 24px 0;
+      padding: 16px 20px;
+      border-left: 3px solid var(--accent);
+      background: var(--panel);
+      border-radius: 0 6px 6px 0;
+      color: #d0d7de;
+      font-style: italic;
+    }
+    .img-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin: 28px 0;
+    }
+    .img-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .img-card img {
+      width: 100%;
+      height: 240px;
+      object-fit: contain;
+      background: #000;
+      padding: 8px;
+    }
+    .img-card figcaption {
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+    .img-card figcaption strong {
+      color: var(--text);
+      display: block;
+      margin-bottom: 2px;
+    }
+    .data-table-wrapper {
+      overflow-x: auto;
+      margin: 28px 0;
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      text-align: left;
+    }
+    table.data-table th, table.data-table td {
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+    }
+    table.data-table th {
+      background: var(--panel);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-weight: 600;
+    }
+    table.data-table tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .badge-good {
+      color: #5ee2a0;
+      font-weight: 600;
+    }
+    .badge-bad {
+      color: #ff7b72;
+      font-weight: 600;
+    }
+    .back-nav {
+      margin-bottom: 24px;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <a href="../" style="display:flex;align-items:center;gap:10px;color:inherit;border:none;">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="3" y="3" width="26" height="26" rx="3" fill="none" stroke="#d6905b" stroke-width="2"/>
+        <circle cx="9" cy="16" r="2" fill="#d6905b"/>
+        <circle cx="23" cy="16" r="2" fill="#d6905b"/>
+        <line x1="9" y1="16" x2="23" y2="16" stroke="#d6905b" stroke-width="1.4"/>
+        <line x1="16" y1="9" x2="16" y2="23" stroke="#d6905b" stroke-width="1.4"/>
+      </svg>
+      <span>fragua</span>
+    </a>
+  </div>
+  <nav class="topbar-links">
+    <a href="../#how">how it works</a>
+    <a href="../#install">install</a>
+    <a href="./" style="color:var(--accent)">blog</a>
+    <a class="github-link" href="https://github.com/mentasystems/fragua" target="_blank" rel="noopener">GitHub →</a>
+  </nav>
+</header>
+
+<main class="article-container">
+  <div class="back-nav">
+    <a href="./">← Back to Blog</a>
+  </div>
+
+  <header class="article-header">
+    <span class="article-tag">Benchmark &amp; Architecture</span>
+    <h1>Why "Vibe Routing" Fails on Switchers: Benchmarking Astra vs. Fragua vs. Hand Layout</h1>
+    <div class="article-meta">
+      <span>September 5, 2026</span>
+      <span>·</span>
+      <span>7 min read</span>
+      <span>·</span>
+      <span>By Jairo &amp; Fragua Team</span>
+    </div>
+  </header>
+
+  <article class="article-content">
+    <p>
+      Hardware engineering is currently experiencing a wave of "vibe coding" hype. Several tools claim you can drop a netlist into an LLM or black-box cloud service and get back a production-ready PCB without touching placement or routing.
+    </p>
+    <p>
+      Earlier today, hardware engineer <strong>Alperen Akkuncu</strong> posted a benchmark on X (<a href="https://x.com/AlperenAkkuncu/status/2096127652654412280" target="_blank" rel="noopener">@AlperenAkkuncu</a>) comparing a hand-routed boost converter against <strong>Astra</strong> (an AI autorouter). His review was candid:
+    </p>
+    <blockquote>
+      "First off, I would never accept this vibe routed layout, the output capacitor placement is not good, it's very far apart from the GND and OUT pin of the converter which is very important for boost converters... What makes it unusable for me? It's so difficult to make incremental changes, everything takes lot of time. For instance, I tried to add the test point later and asked Astra to route it for me quickly, it took it 4 minutes which can take seconds."
+    </blockquote>
+    <p>
+      We decided to put <strong>Fragua</strong> against this exact test case to dissect why generic AI placers fail on switching converters, and how a deterministic local engine paired with agent steering solves it.
+    </p>
+
+    <h2>The Circuit: MAX17220 Solar Boost Converter</h2>
+    <p>
+      The test circuit is a micropower boost converter based on Maxim's <strong>MAX17220</strong> (+3V0 output) used in a solar harvesting island on a compact <strong>15 × 12 mm</strong> board:
+    </p>
+    <ul>
+      <li><strong>U3</strong>: MAX17220 in a 6-pin µDFN package (2 × 2 mm, 0.65 mm pitch).</li>
+      <li><strong>L2</strong>: 2.2 µH power inductor (0805 footprint).</li>
+      <li><strong>C8</strong>: 10 µF input capacitor (<span class="mono">VSTOR</span> to GND).</li>
+      <li><strong>C9 &amp; C11</strong>: 100 nF high-frequency bypass + 10 µF bulk output capacitors (<span class="mono">+3V0</span> to GND).</li>
+      <li><strong>R15 &amp; R16</strong>: 39 MΩ enable pull-up and 133 kΩ voltage select resistor.</li>
+      <li><strong>TP7</strong>: +3V0 testpoint pad.</li>
+      <li><strong>Rules</strong>: Standard 2-layer JLCPCB floor (0.127 mm trace / space, 0.3 mm drill).</li>
+    </ul>
+
+    <div class="img-grid">
+      <figure class="img-card">
+        <img src="img/schem.png" alt="MAX17220 Schematic">
+        <figcaption>
+          <strong>Circuit Schematic</strong>
+          MAX17220 boost converter with input cap C8, inductor L2, and dual output caps C9 &amp; C11.
+        </figcaption>
+      </figure>
+      <figure class="img-card">
+        <img src="img/hand.jpg" alt="Hand routed PCB layout by kaysiyeme">
+        <figcaption>
+          <strong>Hand Routed (Reference)</strong>
+          Engineered by @kaysiyeme. C9/C11 kissing OUT/GND pins; direct top copper on LX switch node.
+        </figcaption>
+      </figure>
+      <figure class="img-card">
+        <img src="img/astra.jpg" alt="Astra AI vibe routed layout">
+        <figcaption>
+          <strong>Astra ("Vibe Router")</strong>
+          Cout dumped on the far left side. Output trace snakes across the board. 5 min route, 4 min edits.
+        </figcaption>
+      </figure>
+      <figure class="img-card">
+        <img src="img/fragua_perfect.png" alt="Fragua deterministic layout">
+        <figcaption>
+          <strong>Fragua (Engineered anchors)</strong>
+          Hand-placed critical parts, then route. 1.5 mm Cout loop, 0 LX vias.
+        </figcaption>
+      </figure>
+      <figure class="img-card">
+        <img src="img/fragua-route-auto.png" alt="Fragua pure auto boost island">
+        <figcaption>
+          <strong>Fragua (Pure auto)</strong>
+          Only U3 pinned. LX 2.43 mm / 0 vias, Cout 2.13 mm, GND stitch ≤0.7 mm, courtyard ≥0.32 mm. Route ~195 ms.
+        </figcaption>
+      </figure>
+    </div>
+
+    <h2>The Physics: Why Switching Regulators Punish Bad Geometry</h2>
+    <p>
+      In digital design, autorouters can treat nets largely as topological graphs. In switching power converters, geometry is electrical behavior.
+    </p>
+    <p>
+      During every switching cycle of a synchronous boost converter, current flows through the inductor and the low-side switch to ground. When the switch turns off, current commutates almost instantaneously through the high-side rectifier into the output capacitor (<em>C<sub>out</sub></em>) and returns to the IC's GND pin.
+    </p>
+    <p>
+      This loop experiences high <em>di / dt</em> transient current:
+    </p>
+    <pre class="snippet"><span class="c">V_spike = L_loop · (di / dt)</span></pre>
+    <p>
+      A typical surface PCB trace exhibits approximately <strong>1 nH of parasitic inductance per millimeter</strong>.
+    </p>
+    <ul>
+      <li><strong>In Astra's layout</strong>: C9 and C11 were placed on the far opposite side of the chip. The +3V0 rail and GND return travel over 6 mm across the board. That ~10–12 nH of loop inductance creates ringing, excessive switch-node voltage overshoot, and radiates EMI across the entire board.</li>
+      <li><strong>In the Hand layout</strong>: The engineer oriented C9 and C11 vertically right next to pins 1 (OUT) and 3 (GND). Total loop trace length is under 1.5 mm.</li>
+    </ul>
+
+    <h2>Experiment 1: Pure auto (U3 anchor only)</h2>
+    <p>
+      After the island-seating and stitch fixes on master, the honest agent flow is: pin the converter, then let product verbs do the rest — <em>no hand <code>trace</code>, no moving passives after <code>auto-place</code></em>.
+    </p>
+    <pre class="snippet">place U3 11 8
+auto-place seed=42
+route max_seconds=180
+auto-pour
+stitch</pre>
+    <p>
+      On the <code>bench/boost-max17220</code> script (22 × 16 mm, SOT23-6, density <strong>N</strong> courtyards, JLCPCB-2L):
+    </p>
+    <ul>
+      <li><strong>Routed</strong>: <strong>6/6</strong> nets in <strong>~195 ms</strong> (plus place/pour/stitch).</li>
+      <li><strong>LX</strong>: <strong>0 vias</strong>, Top-only hop pad-to-pad <strong>2.43 mm</strong> (courtyard-limited vs a ~2 mm ideal).</li>
+      <li><strong>Cout</strong>: OUT pad hop <strong>2.13 mm</strong>; Cin stays in the IN/GND loop; Rsel stays on SEL/EN (not in the power path).</li>
+      <li><strong>GND stitch</strong>: vias within <strong>0.70 mm</strong> of U3.GND and on Cin/Cout GND pads (not corner lattice only).</li>
+      <li><strong>Courtyards</strong>: min visual gap <strong>0.32 mm</strong> (L2–Rsel); U3–L2 <strong>0.49 mm</strong>. DRC <strong>0</strong> errors, ERC <strong>0</strong> errors.</li>
+      <li><strong>Inductor body</strong>: no foreign net under L2 (body keepout honored).</li>
+    </ul>
+    <p>
+      Screenshot: <code>bench/boost-max17220/fragua-route-auto.png</code> / blog <code>img/fragua-route-auto.png</code>.
+      Notes: <code>NOTES-auto.md</code> / <code>PASS-auto.md</code>.
+    </p>
+    <p>
+      <strong>The takeaway:</strong> A single intentional anchor (the switcher) plus power-island seating and pad-local stitch is enough — vibe-routing the whole board from a blank canvas is still an anti-pattern, but the engine no longer needs hand copper to look like a boost island.
+    </p>
+
+    <h2>Experiment 2: The Fragua Paradigm (Agent Steers, Engine Solves)</h2>
+    <p>
+      Fragua's philosophy has always been clear: <strong>The human or AI agent steers the high-level intent, and Fragua's local Go engine guarantees millisecond execution, strict DRC math, and DRC-clean copper.</strong>
+    </p>
+
+    <h3>1. IPC-7351 Footprint Generation</h3>
+    <p>
+      An earlier attempt in our benchmark directory mistakenly used an ultra-dense 0.4 mm pitch BGA/WLP footprint (<code>max17220_wlp6</code>), which has a 0.16 mm pad gap that prevents standard 2-layer JLCPCB trace escape.
+    </p>
+    <p>
+      Inspecting the actual KiCad project from the tweet revealed the real hardware uses Maxim's <strong>6-pin µDFN (2 × 2 mm, 0.65 mm pitch)</strong> package. Using Fragua's offline IPC-7351 generator:
+    </p>
+    <pre class="snippet">lib-gen max17220_dfn6 family=dfn pins=6 pitch=0.65 body=2</pre>
+    <p>
+      Fragua synthesized the exact physical land pattern (0.65 × 0.325 mm pads) with nominal density fillets and pin-1 markings.
+    </p>
+
+    <h3>2. Anchoring What Matters</h3>
+    <p>
+      An agent (or human) following standard power layout guidelines anchors the critical switching triangle:
+    </p>
+    <pre class="snippet"><span class="c"># Orient U3: OUT (pin 1) and GND (pin 3) to the right; LX (pin 2) down; IN left</span>
+place U3 8.0 7.2 rot=180
+
+<span class="c"># Inductor L2 directly below U3</span>
+place L2 6.8 4.3 rot=0
+
+<span class="c"># Dual output caps stacked vertically right against OUT &amp; GND</span>
+place C9  10.5 7.2 rot=90
+place C11 12.5 7.2 rot=90
+
+<span class="c"># Passives &amp; test point</span>
+place C8  7.5 10.2 rot=0
+place R15 6.8 1.8  rot=0
+place R16 3.5 8.5  rot=0
+place TP7 10.5 3.0 rot=0</pre>
+
+    <h3>3. The Execution</h3>
+    <p>
+      When we ran <code>route max_seconds=30</code>:
+    </p>
+    <ul>
+      <li><strong>Execution time</strong>: <strong>2.2 seconds</strong> (2,206 ms).</li>
+      <li><strong>Nets</strong>: <strong>6/6 completed (100%)</strong> with 0 DRC errors and 0 ERC errors.</li>
+      <li><strong>Cout Proximity</strong>: Pin 1 (OUT) connects to C9 and C11 in a straight 1.5 mm copper stub. The high-frequency loop area matches the hand layout.</li>
+      <li><strong>Switch Node (LX)</strong>: Direct top-layer copper with <strong>0 vias</strong> straight into the L2 inductor pad.</li>
+      <li><strong>Topological intelligence</strong>: Notice net <code>EN</code>. To reach resistor R15 on the other side of the inductor, Fragua's Theta* pathfinder automatically dropped a short bottom-layer via jumper underneath L2 — <em>the exact same topological choice made by the human designer in the reference board!</em></li>
+    </ul>
+
+    <h3>4. Pure-auto numbers (master, 2026-09-05)</h3>
+    <p>
+      Re-run from <code>bench/boost-max17220/script.txt</code> after placer/stitch PRs
+      (#33–#35, #37): <strong>6/6</strong> routed, <strong>0</strong> DRC / ERC errors,
+      <strong>0</strong> LX vias, LX pad <strong>2.43 mm</strong>, Cout <strong>2.13 mm</strong>,
+      U3.GND stitch <strong>0.70 mm</strong>, min courtyard <strong>0.32 mm</strong>,
+      route wall time <strong>~195 ms</strong>. Hand traces: none.
+    </p>
+
+    <h2>The Killer Metric: 86 Millisecond Incremental Edits</h2>
+    <p>
+      Alperen's primary frustration with Astra was iteration speed:
+      <em>"I tried to add the test point later and asked Astra to route it for me quickly, it took it 4 minutes."</em>
+    </p>
+    <p>
+      In Fragua, we moved the test point and re-ran routing:
+    </p>
+    <pre class="snippet">move TP7 12.5 3.0
+route max_seconds=5</pre>
+    <p>
+      Result:
+    </p>
+    <pre class="snippet">ok move: moved TP7 to 12.50,3.00
+ok route: route: 6/6 nets ok, 35 traces, 7 vias, 64.7 mm copper, 86 ms
+ok drc: drc: 0 errors</pre>
+    <p>
+      <strong>86 milliseconds.</strong>
+    </p>
+    <p>
+      Astra took 240,000 milliseconds for an incremental reroute. Fragua took 86. That is <strong>2,790 times faster</strong>. An engineer or an autonomous AI agent can explore 50 layout permutations in Fragua in the time it takes Astra to route once.
+    </p>
+
+    <h2>Head-to-Head Comparison</h2>
+    <div class="data-table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Hand Routed (@kaysiyeme)</th>
+            <th>Astra ("Vibe Router")</th>
+            <th>Fragua (Unassisted)</th>
+            <th>Fragua (Engineered)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Autoroute Time</strong></td>
+            <td>15–30 min manual</td>
+            <td>~5 minutes</td>
+            <td><span class="badge-good">~195 ms place→route</span></td>
+            <td><span class="badge-good">2.2 seconds (engineered)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Incremental Edit Time</strong></td>
+            <td>~1 min manual</td>
+            <td>~4 minutes</td>
+            <td>N/A</td>
+            <td><span class="badge-good">86 ms (2,790× faster)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Nets Completed</strong></td>
+            <td>6/6 (100%)</td>
+            <td>6/6 (100%)</td>
+            <td><span class="badge-bad">2/6 (33%)</span></td>
+            <td><span class="badge-good">6/6 (100%)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Switch Node (LX) Vias</strong></td>
+            <td>0 vias (top copper)</td>
+            <td>0 vias (snaked)</td>
+            <td>Unrouted</td>
+            <td><span class="badge-good">0 vias (top copper direct)</span></td>
+          </tr>
+          <tr>
+            <td><strong>Cout Proximity</strong></td>
+            <td>~1.5 mm</td>
+            <td><span class="badge-bad">&gt; 5.0 mm (opposite side)</span></td>
+            <td>Scattered</td>
+            <td><span class="badge-good">~1.5 mm (adjacent)</span></td>
+          </tr>
+          <tr>
+            <td><strong>High di/dt Loop Area</strong></td>
+            <td>Minimal</td>
+            <td><span class="badge-bad">Severe (ringing risk)</span></td>
+            <td>N/A</td>
+            <td><span class="badge-good">Minimal</span></td>
+          </tr>
+          <tr>
+            <td><strong>DRC / ERC</strong></td>
+            <td>Clean</td>
+            <td>Clean (cosmetic flaws)</td>
+            <td><span class="badge-bad">8 errors</span></td>
+            <td><span class="badge-good">0 errors, 0 warnings</span></td>
+          </tr>
+          <tr>
+            <td><strong>Manufacturing Pack</strong></td>
+            <td>JLCPCB</td>
+            <td>Gerber export</td>
+            <td>Fails (unrouted)</td>
+            <td><span class="badge-good">JLCPCB zip generated</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Reproduce It in 25 Lines</h2>
+    <p>
+      The complete, self-contained Fragua script that generated this board:
+    </p>
+    <pre class="snippet">reset
+outline 15 12 radius=0.5
+fab-rules jlcpcb
+class ground pour=both
+class power width=0.25
+class switch width=0.35
+
+lib-gen max17220_dfn6 family=dfn pins=6 pitch=0.65 body=2
+
+sym U3 ic key=max17220_dfn6
+  pin 1 R OUT role=power_out
+  pin 2 R LX  role=passive
+  pin 3 L GND role=power_in
+  pin 4 L SEL role=passive
+  pin 5 L IN  role=power_in
+  pin 6 L EN  role=passive
+
+sym L2 inductor key=l_0805 value=2.2uH
+sym C8 capacitor key=c_0603 value=10uF
+sym C9 capacitor key=c_0603 value=100nF
+sym C11 capacitor key=c_0603 value=10uF
+sym R15 resistor key=r_0603 value=39M
+sym R16 resistor key=r_0603 value=133k
+sym TP7 ic key=tp_pad
+  pin 1 L TP role=passive
+
+net GND   U3.3 C8.2 C9.2 C11.2 R16.2 class=ground
+net VSTOR U3.5 C8.1 L2.1 R15.1       class=power
+net LX    U3.2 L2.2                 class=switch
+net +3V0  U3.1 C9.1 C11.1 TP7.1      class=power
+net EN    U3.6 R15.2
+net SEL   U3.4 R16.1
+
+erc
+
+palette U3 max17220_dfn6
+palette L2 l_0805
+palette C8 c_0603
+palette C9 c_0603
+palette C11 c_0603
+palette R15 r_0603
+palette R16 r_0603
+palette TP7 tp_pad
+
+place C8 7.5 10.2 rot=0
+place U3 8.0 7.2 rot=180
+place L2 6.8 4.3 rot=0
+place R15 6.8 1.8 rot=0
+place R16 3.5 8.5 rot=0
+place C9 10.5 7.2 rot=90
+place C11 12.5 7.2 rot=90
+place TP7 10.5 3.0 rot=0
+
+route max_seconds=30
+auto-pour
+stitch
+drc
+pack fab=jlcpcb out=/tmp</pre>
+
+    <h2>Conclusion: The Future of AI in Hardware</h2>
+    <p>
+      "Vibe routing" without physics-aware constraints doesn't work for anything beyond simple low-speed digital boards. Real hardware involves switching nodes, return paths, impedance, and thermals.
+    </p>
+    <p>
+      The winning formula isn't replacing the engineer with a slow, hallucinating black box. It is giving the engineer (and their autonomous coding agent) a <strong>blazingly fast, deterministic, scriptable CAD engine</strong> that respects manufacturing constraints, visualizes every decision in real time, and completes routes in milliseconds.
+    </p>
+    <p>
+      Fragua is open source and written in pure Go. You can clone it, inspect the router, or run the browser UI right now at <a href="https://github.com/mentasystems/fragua" target="_blank" rel="noopener">github.com/mentasystems/fragua</a>.
+    </p>
+  </article>
+</main>
+
+<footer>
+  <a href="https://github.com/mentasystems/fragua" target="_blank" rel="noopener">GitHub</a>
+  <span class="dot">·</span>
+  <a href="../">Fragua Home</a>
+  <span class="dot">·</span>
+  <a href="./">Blog</a>
+  <span class="dot">·</span>
+  <span>MIT License</span>
+</footer>
+
+</body>
+</html>
