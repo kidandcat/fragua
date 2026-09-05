@@ -459,13 +459,21 @@ func hasNearbyVia(board *core.Board, net string, p core.Point, rMM float64) bool
 // the via is the return at that node, not a barrel in the outline corner.
 func padLocalStitchSites(board *core.Board, fp *core.Footprint, pad *core.Pad, cx, cy float64, shortDogbone bool) [][2]float64 {
 	sites := [][2]float64{{cx, cy}}
-	bx, by := cx+1, cy
-	if board.Outline != nil {
-		bx = (board.Outline.Min.X.ToMM() + board.Outline.Max.X.ToMM()) / 2
-		by = (board.Outline.Min.Y.ToMM() + board.Outline.Max.Y.ToMM()) / 2
-	}
-	dx, dy := bx-cx, by-cy
+	// Dogbone AWAY from the footprint origin so a SOT23 side pad (GND/OUT)
+	// does not aim the via into its neighbour row. Falling back to the board
+	// centre put U3.GND vias inside the package and every candidate failed
+	// clearance — leaving the IC return 3+ mm from the nearest stitch.
+	bx, by := fp.Position.X.ToMM(), fp.Position.Y.ToMM()
+	dx, dy := cx-bx, cy-by
 	d := math.Hypot(dx, dy)
+	if d < 1e-6 {
+		if board.Outline != nil {
+			bx = (board.Outline.Min.X.ToMM() + board.Outline.Max.X.ToMM()) / 2
+			by = (board.Outline.Min.Y.ToMM() + board.Outline.Max.Y.ToMM()) / 2
+			dx, dy = bx-cx, by-cy
+			d = math.Hypot(dx, dy)
+		}
+	}
 	if d < 1e-6 {
 		dx, dy, d = 1, 0, 1
 	}
