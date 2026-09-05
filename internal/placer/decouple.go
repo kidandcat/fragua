@@ -35,11 +35,11 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if board.Outline == nil || len(movable) == 0 {
 		return
 	}
-	// Power-island seating packs to courtyard clearance (~0.55 mm), not the
+	// Power-island seating packs to courtyard clearance (~0.42 mm), not the
 	// SA assembly gap (DefaultOptions uses MinFootprintGapMM = 2 mm). With a
 	// 2 mm floor the boost inductor never cleared U3's body_rect and stayed
 	// parked on the outline — LX/IN then failed to route.
-	hard := math.Max(opts.MinClearanceMM, 0.55)
+	hard := math.Max(opts.MinClearanceMM, 0.42)
 	if opts.SolderGapMM > 0 && opts.SolderGapMM < hard {
 		hard = opts.SolderGapMM
 	}
@@ -600,7 +600,7 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 				dSW := math.Hypot(ws.X.ToMM()-sx, ws.Y.ToMM()-sy)
 				dIN := math.Hypot(wi.X.ToMM()-ix, wi.Y.ToMM()-iy)
 				// Reward pad-pair closeness and axis alignment.
-				score := dSW*dSW + dIN*dIN - 0.5*align
+				score := 2.5*dSW*dSW + dIN*dIN - 0.5*align + 0.15*d
 				if score < bestScore {
 					bestScore = score
 					bestPos = fp.Position
