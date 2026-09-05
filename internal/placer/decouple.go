@@ -35,7 +35,14 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if board.Outline == nil || len(movable) == 0 {
 		return
 	}
-	hard := math.Max(opts.MinClearanceMM, opts.SolderGapMM)
+	// Power-island seating packs to courtyard clearance (~0.35 mm), not the
+	// SA assembly gap (DefaultOptions uses MinFootprintGapMM = 2 mm). With a
+	// 2 mm floor the boost inductor never cleared U3's body_rect and stayed
+	// parked on the outline — LX/IN then failed to route.
+	hard := math.Max(opts.MinClearanceMM, 0.35)
+	if opts.SolderGapMM > 0 && opts.SolderGapMM < hard {
+		hard = opts.SolderGapMM
+	}
 	movableSet := map[string]bool{}
 	for _, fp := range movable {
 		movableSet[fp.ID.String()] = true
@@ -412,7 +419,7 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 			if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
 				continue
 			}
-			if firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
+			if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
 				continue
 			}
 			return true
@@ -467,7 +474,7 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 			continue
 		}
 		if minGapAgainstOthers(board, fp) < hard+seatSlackMM ||
-			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
+			firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
 			continue
 		}
 		return
@@ -585,7 +592,7 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
 					continue
 				}
-				if firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
+				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
 					continue
 				}
 				ws := core.PadWorldCenter(fp, &fp.Pads[swOwn])
