@@ -1,6 +1,7 @@
 package router
 
 import (
+	"math"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -212,3 +213,82 @@ func TestPourTieIsDecidedByTheBarrelNotMapOrder(t *testing.T) {
 }
 
 func ptrLen(l core.Length) *core.Length { return &l }
+
+// A 2-layer GND pour that already touches the Top pads still needs a via
+// next to each return pad so the Bottom island is tied at that node. The
+// old lattice started at the outline corner and left U.GND / Cin.GND
+// floating on the far face.
+func TestStitchPlacesViasNextToSMDReturnPads(t *testing.T) {
+	gnd := "GND"
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(30), core.FromMM(20)))
+	b.Outline = &o
+	u3 := &core.Footprint{
+		ID: core.NewID(), Reference: "U3", Layer: core.LayerTop,
+		Position: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		Pads: []core.Pad{{
+			Number: "GND", Offset: core.Origin,
+			Size:  [2]core.Length{core.FromMM(0.8), core.FromMM(0.9)},
+			Layer: core.LayerTop, Net: &gnd,
+		}},
+	}
+	cin := &core.Footprint{
+		ID: core.NewID(), Reference: "Cin", Layer: core.LayerTop,
+		Position: core.NewPoint(core.FromMM(18), core.FromMM(10)),
+		Pads: []core.Pad{{
+			Number: "2", Offset: core.Origin,
+			Size:  [2]core.Length{core.FromMM(0.8), core.FromMM(0.9)},
+			Layer: core.LayerTop, Net: &gnd,
+		}},
+	}
+	b.AddFootprint(u3)
+	b.AddFootprint(cin)
+	b.Pours = []core.Pour{
+		{ID: core.NewID(), Net: "GND", Layer: core.LayerTop},
+		{ID: core.NewID(), Net: "GND", Layer: core.LayerBottom},
+	}
+
+	added := StitchIsolatedPads(b, DefaultOptions())
+	if added == 0 || len(b.Vias) == 0 {
+		t.Fatalf("expected pad-local stitch vias, added=%d vias=%d", added, len(b.Vias))
+	}
+
+	near := func(fp *core.Footprint) bool {
+		c := core.PadWorldCenter(fp, &fp.Pads[0])
+		for _, v := range b.Vias {
+			if v.Net != "GND" {
+				continue
+			}
+			if math.Hypot(v.Position.X.ToMM()-c.X.ToMM(), v.Position.Y.ToMM()-c.Y.ToMM()) <= 1.5 {
+				return true
+			}
+		}
+		return false
+	}
+	if !near(u3) {
+		t.Fatalf("no GND via within 1.5 mm of U3.GND; vias=%v", viaXY(b))
+	}
+	if !near(cin) {
+		t.Fatalf("no GND via within 1.5 mm of Cin.GND; vias=%v", viaXY(b))
+	}
+	// A via only in the outline corner is the failure mode this covers.
+	cornerOnly := true
+	for _, v := range b.Vias {
+		x, y := v.Position.X.ToMM(), v.Position.Y.ToMM()
+		if x > 4 && y > 4 && x < 26 && y < 16 {
+			cornerOnly = false
+			break
+		}
+	}
+	if cornerOnly {
+		t.Fatalf("stitch vias landed only on the outline lattice: %v", viaXY(b))
+	}
+}
+
+func viaXY(b *core.Board) [][2]float64 {
+	out := make([][2]float64, len(b.Vias))
+	for i, v := range b.Vias {
+		out[i] = [2]float64{v.Position.X.ToMM(), v.Position.Y.ToMM()}
+	}
+	return out
+}

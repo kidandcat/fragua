@@ -522,3 +522,86 @@ func TestCrossLayerNetGetsAVia(t *testing.T) {
 		t.Fatal("a routed cross-layer net must own at least one via")
 	}
 }
+
+// A 2 mm same-layer hop with a clear top path must not pick a via jumper.
+// Switching nets (LX) get the same preference even when a slightly longer
+// same-layer detour exists.
+func TestShortSameLayerNetRoutesWithNoVias(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(16)))
+	b.Outline = &o
+	b.AddFootprint(footprint("U3", 8, 8, []core.Pad{pad("LX", 0, 0, "LX")}))
+	b.AddFootprint(footprint("L2", 10, 8, []core.Pad{pad("1", 0, 0, "LX")}))
+
+	opts := DefaultOptions()
+	opts.MaxSeconds = 15
+	rep := Route(b, opts)
+	ok := false
+	for _, n := range rep.PerNet {
+		if n.Net == "LX" && n.Outcome.Status == "ok" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("LX should route, got %+v", rep.PerNet)
+	}
+	for _, v := range b.Vias {
+		if v.Net == "LX" {
+			t.Fatalf("short LX hop used a via at (%.2f,%.2f); want top-only",
+				v.Position.X.ToMM(), v.Position.Y.ToMM())
+		}
+	}
+	if len(b.Traces) == 0 {
+		t.Fatal("expected a top trace between the LX pads")
+	}
+	for _, tr := range b.Traces {
+		if tr.Net == "LX" && tr.Layer.Index != core.LayerTop.Index {
+			t.Fatalf("LX left the top layer: %+v", tr)
+		}
+	}
+}
+
+func TestPreferSameLayerMatchesSwitchNamesAndShortSpan(t *testing.T) {
+	near := []padLoc{
+		{p: core.NewPoint(core.FromMM(5), core.FromMM(5))},
+		{p: core.NewPoint(core.FromMM(7), core.FromMM(5))},
+	}
+	far := []padLoc{
+		{p: core.NewPoint(core.FromMM(2), core.FromMM(2))},
+		{p: core.NewPoint(core.FromMM(18), core.FromMM(14))},
+	}
+	if !preferSameLayer("SIG", near, nil) {
+		t.Fatal("2 mm pad span should prefer the same layer")
+	}
+	if preferSameLayer("SIG", far, nil) {
+		t.Fatal("a long signal should still be allowed to via")
+	}
+	if !preferSameLayer("LX", far, nil) {
+		t.Fatal("LX is a switching net regardless of span")
+	}
+	sch := core.NewSchematic()
+	sch.NetToClass["SW1"] = "switch"
+	if !preferSameLayer("SW1", far, sch) {
+		t.Fatal("class name 'switch' should prefer the same layer")
+	}
+}
+
+func TestInductorBodyBlocksForeignGridCells(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(20), core.FromMM(16)))
+	b.Outline = &o
+	l2 := footprint("L2", 10, 8, []core.Pad{
+		pad("1", -1.5, 0, "LX"),
+		pad("2", 1.5, 0, "IN"),
+	})
+	l2.BodyRect = &core.BodyRect{MinXMM: -1.2, MinYMM: -0.8, MaxXMM: 1.2, MaxYMM: 0.8}
+	b.AddFootprint(l2)
+	g := newGrid(b, DefaultOptions())
+	cx, cy, ok := g.worldToCell(core.FromMM(10), core.FromMM(8))
+	if !ok {
+		t.Fatal("body centre is off the grid")
+	}
+	if g.blocked[0][cy*g.w+cx] != "*" {
+		t.Fatalf("inductor body centre should be a keepout, got %q", g.blocked[0][cy*g.w+cx])
+	}
+}

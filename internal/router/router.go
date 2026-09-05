@@ -73,6 +73,10 @@ type Options struct {
 	// expensive search there is, so it is worth its price only where one
 	// net is tried once and nobody is queued behind it.
 	exploreTrees bool
+	// sameLayerOnly forbids A* layer changes. Short hops and switching
+	// nets (LX / SW) try this before a via-jumper so a 2 mm top path is
+	// not beaten by an 8-cell via to the bottom.
+	sameLayerOnly bool
 }
 
 // Route budget, in seconds. A route call is never unbounded: an autorouter
@@ -464,7 +468,8 @@ func Route(board *core.Board, opts Options) Report {
 		routableLeft--
 		setPending(name)
 		out := routeNet(board, g, name, pads, opts, netDead, hasDeadline)
-		if out.Status != "ok" && len(pads) <= 3 && !pastDeadline() {
+		if out.Status != "ok" && len(pads) <= 3 && !pastDeadline() &&
+			!preferSameLayer(name, pads, opts.Schematic) {
 			cheap := opts
 			cheap.ViaCost = 2
 			out = routeNet(board, g, name, pads, cheap, deadline, hasDeadline)
@@ -885,6 +890,67 @@ func (o Options) padClear() float64 {
 		return o.SearchClearMM
 	}
 	return 0.127
+}
+
+// shortNetSpanMM is the pad-pad distance (or HPWL) below which a net
+// should stay on one layer when a path exists. ~4–5 mm covers an
+// inductor–LX hop and a Cout–OUT hop on a boost island.
+const shortNetSpanMM = 5.0
+
+func preferSameLayer(name string, pads []padLoc, sch *core.Schematic) bool {
+	if isSwitchNet(name) {
+		return true
+	}
+	if sch != nil && sch.NetToClass != nil {
+		if cn := sch.NetToClass[name]; cn != "" && isSwitchNet(cn) {
+			return true
+		}
+	}
+	return padSpanMM(pads) <= shortNetSpanMM
+}
+
+func isSwitchNet(name string) bool {
+	u := strings.ToUpper(strings.TrimPrefix(name, "+"))
+	switch u {
+	case "LX", "SW", "SWITCH", "VSW", "SWX", "SWITCHING":
+		return true
+	}
+	return strings.HasPrefix(u, "LX") || strings.HasPrefix(u, "SW")
+}
+
+func padSpanMM(pads []padLoc) float64 {
+	if len(pads) < 2 {
+		return 0
+	}
+	minX, minY := pads[0].p.X.ToMM(), pads[0].p.Y.ToMM()
+	maxX, maxY := minX, minY
+	maxPair := 0.0
+	for i := range pads {
+		x, y := pads[i].p.X.ToMM(), pads[i].p.Y.ToMM()
+		if x < minX {
+			minX = x
+		}
+		if y < minY {
+			minY = y
+		}
+		if x > maxX {
+			maxX = x
+		}
+		if y > maxY {
+			maxY = y
+		}
+		for j := i + 1; j < len(pads); j++ {
+			d := hypotMM(pads[i].p, pads[j].p)
+			if d > maxPair {
+				maxPair = d
+			}
+		}
+	}
+	hpwl := (maxX - minX) + (maxY - minY)
+	if maxPair > hpwl {
+		return maxPair
+	}
+	return hpwl
 }
 
 func netOrderKey(name string) int {
@@ -1312,29 +1378,41 @@ func routeNetAtOnce(board *core.Board, g *grid, name string, pads []padLoc, opts
 			}
 		}
 	}
+	// Short / switching nets try a single-layer tree before any via
+	// jumper. ViaCost=8 is only 2 mm of extra length, so A* otherwise
+	// hops to the bottom around the first slightly-blocked L-shape.
+	attempts := []Options{opts}
+	if preferSameLayer(name, pads, opts.Schematic) {
+		same := opts
+		same.sameLayerOnly = true
+		same.ViaCost = 1e6
+		attempts = []Options{same, opts}
+	}
 	// One tree shape per attempt, cheapest-first: the shape the router has
 	// always built, then the alternatives. Only a net that failed ever gets
 	// past the first entry, and the deadline gates every one after it.
 	var out Outcome
-	for i, at := range treeAttempts(pads, seed0, opts.exploreTrees) {
-		if i > 0 && hasDeadline && time.Now().After(deadline) {
-			break
-		}
-		out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, opts, deadline, hasDeadline)
-		// A commit rejected for a via site bans that cell; the same search
-		// then finds a different barrel. Bounded so a net cannot spin — and
-		// only on the first shape, because a ban outlives the net that
-		// earned it and hands every later net a smaller board.
-		for retry := 0; i == 0 && retry < 3 && out.Reason == "drc-via"; retry++ {
-			if hasDeadline && time.Now().After(deadline) {
+	for _, o := range attempts {
+		for i, at := range treeAttempts(pads, seed0, o.exploreTrees) {
+			if i > 0 && hasDeadline && time.Now().After(deadline) {
 				break
 			}
-			out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, opts, deadline, hasDeadline)
-		}
-		if out.Status == "ok" {
-			out.TraceSegments += preSegs
-			out.LengthMM += preLen
-			return out
+			out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, o, deadline, hasDeadline)
+			// A commit rejected for a via site bans that cell; the same search
+			// then finds a different barrel. Bounded so a net cannot spin — and
+			// only on the first shape, because a ban outlives the net that
+			// earned it and hands every later net a smaller board.
+			for retry := 0; i == 0 && retry < 3 && out.Reason == "drc-via"; retry++ {
+				if hasDeadline && time.Now().After(deadline) {
+					break
+				}
+				out = routeNetFrom(board, g, name, pads, at.seed, at.order, already, o, deadline, hasDeadline)
+			}
+			if out.Status == "ok" {
+				out.TraceSegments += preSegs
+				out.LengthMM += preLen
+				return out
+			}
 		}
 	}
 	if (!hasDeadline || time.Now().Before(deadline)) &&
@@ -1716,6 +1794,12 @@ func routeClearHops(board *core.Board, g *grid, name string, pads []padLoc, opts
 }
 
 func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed int, order growthOrder, already map[int]bool, opts Options, deadline time.Time, hasDeadline bool) Outcome {
+	defer func(v float64, s bool) {
+		g.opts.ViaCost = v
+		g.opts.sameLayerOnly = s
+	}(g.opts.ViaCost, g.opts.sameLayerOnly)
+	g.opts.ViaCost = opts.ViaCost
+	g.opts.sameLayerOnly = opts.sameLayerOnly
 	lb := lowerBoundMM(pads)
 
 	// Prim growth: connected set starts with pad 0; multi-source A* from
@@ -1831,7 +1915,7 @@ func routeNetFrom(board *core.Board, g *grid, name string, pads []padLoc, seed i
 			goalP, anyLayer = v, true
 		}
 		path, ok := g.aStarMultiAt(sources, goalP, goalLayer, anyLayer, name, deadline, hasDeadline)
-		if !ok && !anyLayer {
+		if !ok && !anyLayer && !opts.sameLayerOnly {
 			path, ok = g.aStarMulti(sources, goalP, signalOtherLayer(g, goalLayer), name, deadline, hasDeadline)
 		}
 		if !ok {
@@ -3049,6 +3133,8 @@ func newGrid(board *core.Board, opts Options) *grid {
 		g.stampRectObstacle(*k.Rect)
 	}
 
+	stampInductorBodies(g, board)
+
 	// Pads: stamp BARE copper only. A 2.54 mm header with a 0.40 mm
 	// clearance halo on each pad overwrites its neighbour's centre
 	// (fecha U1 V5/GND) and A* "arrives" on a foreign cell. Foreign
@@ -3140,6 +3226,61 @@ func (g *grid) obstacleRadius(halfWidthMM float64) int {
 		r = 1
 	}
 	return r
+}
+
+// stampInductorBodies blocks empty cells under an inductor body_rect so a
+// foreign net (SEL under L2) cannot sneak through the ferrite. Own-net pad
+// cells are stamped afterwards and stay passable.
+func stampInductorBodies(g *grid, board *core.Board) {
+	if g == nil || board == nil {
+		return
+	}
+	for _, fp := range footprintsStable(board) {
+		if fp == nil || fp.BodyRect == nil || !inductorFootprint(fp) {
+			continue
+		}
+		body, ok := core.CourtyardWorld(fp)
+		if !ok {
+			continue
+		}
+		c0x, c0y := clampCell(body.Min, g)
+		c1x, c1y := clampCell(body.Max, g)
+		if c0x > c1x {
+			c0x, c1x = c1x, c0x
+		}
+		if c0y > c1y {
+			c0y, c1y = c1y, c0y
+		}
+		for L := uint8(0); L < uint8(g.layers); L++ {
+			for y := c0y; y <= c1y; y++ {
+				for x := c0x; x <= c1x; x++ {
+					if x < 0 || y < 0 || x >= g.w || y >= g.h {
+						continue
+					}
+					idx := y*g.w + x
+					if g.blocked[L][idx] == "" {
+						g.blocked[L][idx] = "*"
+					}
+				}
+			}
+		}
+	}
+}
+
+func inductorFootprint(fp *core.Footprint) bool {
+	if fp == nil {
+		return false
+	}
+	ref := strings.ToUpper(strings.TrimSpace(fp.Reference))
+	if len(ref) > 0 && ref[0] == 'L' && (len(ref) == 1 || !isAlpha(ref[1])) {
+		return true
+	}
+	blob := strings.ToLower(fp.Key + " " + fp.Library + " " + fp.Description + " " + fp.Value)
+	return strings.Contains(blob, "inductor")
+}
+
+func isAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func (g *grid) stampRectObstacle(r core.Rect) {
@@ -3621,7 +3762,7 @@ func (g *grid) aStarMultiAt(sources []cellKey, to core.Point, goalLayer uint8, a
 		} // end non-plane lateral walk
 		// A layer change means a drilled via here — only where the fab's
 		// hole-to-hole gap to every other drill still holds.
-		if !g.viaSiteOK(cur.k.x, cur.k.y, net) {
+		if g.opts.sameLayerOnly || !g.viaSiteOK(cur.k.x, cur.k.y, net) {
 			continue
 		}
 		for L := uint8(0); L < uint8(g.layers); L++ {

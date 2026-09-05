@@ -24,6 +24,11 @@ type anchorPin struct {
 	centre [2]float64
 }
 
+type cand struct {
+	fp   *core.Footprint
+	nets []string
+}
+
 // PullPassivesToAnchors seats 2–4 pad passives on a ring outside a
 // specific same-net IC/connector pad (Rust decouple.rs process).
 func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Options) {
@@ -36,13 +41,9 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 		movableSet[fp.ID.String()] = true
 	}
 
-	type cand struct {
-		fp   *core.Footprint
-		nets []string
-	}
 	var cands []cand
 	for _, fp := range movable {
-		if fp.EdgeMounted || len(fp.Pads) < 2 || len(fp.Pads) > 4 {
+		if fp == nil || fp.Pinned || fp.EdgeMounted || len(fp.Pads) < 2 || len(fp.Pads) > 4 {
 			continue
 		}
 		seen := map[string]bool{}
@@ -66,7 +67,19 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if len(cands) == 0 {
 		return
 	}
+	// Inductors and output caps claim their IC pads first so Cin does not
+	// steal LX / OUT. HF (smaller) output caps sit closer than bulk.
 	sort.Slice(cands, func(i, j int) bool {
+		pi, pj := passivePriority(cands[i]), passivePriority(cands[j])
+		if pi != pj {
+			return pi < pj
+		}
+		if pi == priHFCap {
+			si, sj := passiveAreaMM2(cands[i].fp), passiveAreaMM2(cands[j].fp)
+			if si != sj {
+				return si < sj
+			}
+		}
 		return cands[i].fp.Reference < cands[j].fp.Reference
 	})
 
@@ -107,15 +120,19 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	for _, c := range cands {
 		here := [2]float64{c.fp.Position.X.ToMM(), c.fp.Position.Y.ToMM()}
 		type rank struct {
+			kind  int
 			gnd   bool
 			count int
 			name  string
 		}
 		var ranks []rank
 		for _, n := range c.nets {
-			ranks = append(ranks, rank{isGround(n), netCount[n], n})
+			ranks = append(ranks, rank{passiveNetKind(c.fp, n), isGround(n), netCount[n], n})
 		}
 		sort.Slice(ranks, func(i, j int) bool {
+			if ranks[i].kind != ranks[j].kind {
+				return ranks[i].kind < ranks[j].kind
+			}
 			if ranks[i].gnd != ranks[j].gnd {
 				return !ranks[i].gnd && ranks[j].gnd
 			}
@@ -163,6 +180,114 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	}
 }
 
+const (
+	priInductor = 0
+	priHFCap    = 1
+	priOther    = 2
+)
+
+func passivePriority(c cand) int {
+	if isInductor(c.fp) {
+		return priInductor
+	}
+	if hasOutAndGND(c.nets) {
+		return priHFCap
+	}
+	return priOther
+}
+
+func passiveAreaMM2(fp *core.Footprint) float64 {
+	b, ok := footprintBounds(fp)
+	if !ok {
+		return 0
+	}
+	return b.Width().ToMM() * b.Height().ToMM()
+}
+
+func hasOutAndGND(nets []string) bool {
+	out, gnd := false, false
+	for _, n := range nets {
+		if isGround(n) {
+			gnd = true
+		}
+		if isPowerOutNet(n) {
+			out = true
+		}
+	}
+	return out && gnd
+}
+
+func passiveNetKind(fp *core.Footprint, net string) int {
+	if isInductor(fp) {
+		if isSwitchNet(net) {
+			return 0
+		}
+		if isPowerInNet(net) {
+			return 1
+		}
+		if isGround(net) {
+			return 4
+		}
+		return 2
+	}
+	if isPowerOutNet(net) {
+		return 0
+	}
+	if isPowerInNet(net) {
+		return 1
+	}
+	if isGround(net) {
+		return 4
+	}
+	return 2
+}
+
+func isInductor(fp *core.Footprint) bool {
+	if fp == nil {
+		return false
+	}
+	ref := strings.ToUpper(strings.TrimSpace(fp.Reference))
+	if len(ref) > 0 && ref[0] == 'L' && (len(ref) == 1 || !isAlphaByte(ref[1])) {
+		return true
+	}
+	blob := strings.ToLower(fp.Key + " " + fp.Library + " " + fp.Description + " " + fp.Value)
+	if strings.Contains(blob, "inductor") {
+		return true
+	}
+	return false
+}
+
+func isAlphaByte(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func isSwitchNet(net string) bool {
+	u := strings.ToUpper(strings.TrimPrefix(net, "+"))
+	switch u {
+	case "LX", "SW", "SWITCH", "VSW", "SWX", "SWITCHING":
+		return true
+	}
+	return strings.HasPrefix(u, "LX") || strings.HasPrefix(u, "SW")
+}
+
+func isPowerInNet(net string) bool {
+	u := strings.ToUpper(strings.TrimPrefix(net, "+"))
+	switch u {
+	case "IN", "VIN", "VBAT", "VSYS", "PVIN", "PVCC":
+		return true
+	}
+	return u == "VIN" || strings.HasSuffix(u, "_IN") || strings.HasPrefix(u, "IN")
+}
+
+func isPowerOutNet(net string) bool {
+	u := strings.ToUpper(strings.TrimPrefix(net, "+"))
+	switch u {
+	case "OUT", "VOUT", "VCC", "VDD", "3V3", "5V", "1V8", "1V2":
+		return true
+	}
+	return strings.Contains(u, "OUT") || strings.HasPrefix(u, "3V") || strings.HasPrefix(u, "5V")
+}
+
 func isGround(net string) bool {
 	u := strings.ToUpper(net)
 	switch u {
@@ -191,7 +316,7 @@ func nearestPin(list []anchorPin, here [2]float64, used map[string]bool, freeOnl
 }
 
 func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string, hard float64, opts Options) bool {
-	if pin.fp == nil || board.Outline == nil {
+	if fp == nil || fp.Pinned || pin.fp == nil || board.Outline == nil {
 		return false
 	}
 	abb, ok := footprintBounds(pin.fp)
@@ -286,7 +411,7 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 }
 
 func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movableSet map[string]bool, hard float64, opts Options) {
-	if board.Outline == nil {
+	if fp == nil || fp.Pinned || board.Outline == nil {
 		return
 	}
 	ax, ay, n := 0.0, 0.0, 0.0

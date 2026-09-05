@@ -1,0 +1,54 @@
+# MAX17220 solar-boost island — intended agent flow (no hand copper).
+# Product verbs only: place U3 to anchor, then auto-place / route / pour / stitch.
+# Do not claim this board passes a layout review unless you ran it.
+#
+# Typical island: L between LX and IN, Cin on IN/GND, Cout on OUT/GND.
+# SEL is a resistor that must not sneak under the inductor body.
+
+outline 22 16 radius=1
+fab-rules jlcpcb
+class ground pour=both
+class power width=0.35
+class switch width=0.35
+
+lib-gen max17220 family=sot23-6
+lib-gen l_2016 family=chip size=0805 kind=l
+lib-gen c_0603 family=chip size=0603 kind=c
+lib-gen r_0603 family=chip size=0603 kind=r
+
+sym U3 ic key=max17220
+  pin 1 L OUT role=power_out
+  pin 2 L GND role=power_in
+  pin 3 L EN role=input
+  pin 4 R BATT role=power_in
+  pin 5 R SEL role=input
+  pin 6 R LX role=output
+sym L2 inductor key=l_2016
+sym Cin capacitor key=c_0603
+sym Cout capacitor key=c_0603
+sym Rsel resistor key=r_0603
+sym Cen capacitor key=c_0603
+
+net GND U3.GND Cin.2 Cout.2 Cen.2 class=ground
+net IN U3.BATT L2.2 Cin.1 class=power
+net OUT U3.OUT Cout.1 class=power
+net LX U3.LX L2.1 class=switch
+net SEL U3.SEL Rsel.1
+net EN U3.EN Cen.1 Rsel.2
+
+erc
+
+palette U3 max17220
+palette L2 l_2016
+palette Cin c_0603 value=10uF
+palette Cout c_0603 value=10uF
+palette Rsel r_0603 value=0
+palette Cen c_0603 value=100nF
+
+place U3 11 8
+auto-place seed=42
+route max_seconds=90
+auto-pour
+stitch
+drc
+status
