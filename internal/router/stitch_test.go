@@ -292,3 +292,53 @@ func viaXY(b *core.Board) [][2]float64 {
 	}
 	return out
 }
+
+// A SOT23 GND pad between OUT and EN cannot take a via on its centre or
+// toward the package. Dogbones must aim outward or the IC return is left
+// without a pad-local stitch.
+func TestStitchDogboneOutwardOnSOT23SidePad(t *testing.T) {
+	gnd, out, en := "GND", "OUT", "EN"
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(22), core.FromMM(16)))
+	b.Outline = &o
+	u3 := &core.Footprint{
+		ID: core.NewID(), Reference: "U3", Layer: core.LayerTop,
+		Position: core.NewPoint(core.FromMM(11), core.FromMM(8)),
+		Pads: []core.Pad{
+			{Number: "1", Offset: core.NewPoint(core.FromMM(-1.0), core.FromMM(0.95)),
+				Size: [2]core.Length{core.FromMM(1.3), core.FromMM(0.57)}, Layer: core.LayerTop, Net: &out},
+			{Number: "2", Offset: core.NewPoint(core.FromMM(-1.0), core.FromMM(0)),
+				Size: [2]core.Length{core.FromMM(1.3), core.FromMM(0.57)}, Layer: core.LayerTop, Net: &gnd},
+			{Number: "3", Offset: core.NewPoint(core.FromMM(-1.0), core.FromMM(-0.95)),
+				Size: [2]core.Length{core.FromMM(1.3), core.FromMM(0.57)}, Layer: core.LayerTop, Net: &en},
+		},
+	}
+	b.AddFootprint(u3)
+	b.Pours = []core.Pour{
+		{ID: core.NewID(), Net: "GND", Layer: core.LayerTop},
+		{ID: core.NewID(), Net: "GND", Layer: core.LayerBottom},
+	}
+	added := StitchIsolatedPads(b, DefaultOptions())
+	if added == 0 {
+		t.Fatalf("expected a stitch via near U3.GND, added=0 vias=%v", viaXY(b))
+	}
+	gndPad := core.PadWorldCenter(u3, &u3.Pads[1])
+	best := math.Inf(1)
+	for _, v := range b.Vias {
+		if v.Net != "GND" {
+			continue
+		}
+		d := math.Hypot(v.Position.X.ToMM()-gndPad.X.ToMM(), v.Position.Y.ToMM()-gndPad.Y.ToMM())
+		if d < best {
+			best = d
+		}
+		// Via must not sit to the right of the pad (into the package).
+		if v.Position.X.ToMM() > gndPad.X.ToMM()+0.2 {
+			t.Fatalf("GND via at (%.2f,%.2f) is toward the package from pad (%.2f,%.2f)",
+				v.Position.X.ToMM(), v.Position.Y.ToMM(), gndPad.X.ToMM(), gndPad.Y.ToMM())
+		}
+	}
+	if best > 1.5 {
+		t.Fatalf("nearest GND via is %.2f mm from U3.GND; want ≤ 1.5", best)
+	}
+}

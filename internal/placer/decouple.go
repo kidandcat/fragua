@@ -35,11 +35,11 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if board.Outline == nil || len(movable) == 0 {
 		return
 	}
-	// Power-island seating packs to courtyard clearance (~0.35 mm), not the
+	// Power-island seating packs to courtyard clearance (~0.55 mm), not the
 	// SA assembly gap (DefaultOptions uses MinFootprintGapMM = 2 mm). With a
 	// 2 mm floor the boost inductor never cleared U3's body_rect and stayed
 	// parked on the outline — LX/IN then failed to route.
-	hard := math.Max(opts.MinClearanceMM, 0.35)
+	hard := math.Max(opts.MinClearanceMM, 0.55)
 	if opts.SolderGapMM > 0 && opts.SolderGapMM < hard {
 		hard = opts.SolderGapMM
 	}
