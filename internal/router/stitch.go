@@ -44,45 +44,37 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 				continue
 			}
 			sameLayer := false
+			otherLayerPour := false
 			for _, L := range layers {
 				if L == pad.Layer.Index {
 					sameLayer = true
-					break
+				} else {
+					otherLayerPour = true
 				}
 			}
-			if sameLayer {
+			// A pad sitting in a same-layer pour is already tied on that
+			// face. When the same net is also poured on another layer,
+			// that other island is still floating at this node unless a
+			// via lands next to the pad — a lattice in the board corner
+			// does not count as the return path.
+			if sameLayer && !otherLayerPour {
 				continue
 			}
 			c := core.PadWorldCenter(fp, pad)
 			// A QFN dogbone sits ~0.7–1.4 mm off the pad and already
 			// ties it to an inner plane; don't drop a second via on top.
-			if hasNearbyCopper(board, *pad.Net, c, 1.8) {
+			// For a multi-layer pour, only a nearby via is a tie — a
+			// same-net stub is not the other-layer island.
+			if otherLayerPour {
+				if hasNearbyVia(board, *pad.Net, c, 1.2) {
+					continue
+				}
+			} else if hasNearbyCopper(board, *pad.Net, c, 1.8) {
 				continue
 			}
 			net := *pad.Net
 			cx, cy := c.X.ToMM(), c.Y.ToMM()
-			sites := [][2]float64{{cx, cy}}
-			if pad.Drill == nil {
-				bx, by := 0.0, 0.0
-				if board.Outline != nil {
-					bx = (board.Outline.Min.X.ToMM() + board.Outline.Max.X.ToMM()) / 2
-					by = (board.Outline.Min.Y.ToMM() + board.Outline.Max.Y.ToMM()) / 2
-				}
-				dx, dy := bx-cx, by-cy
-				d := math.Hypot(dx, dy)
-				if d < 1e-6 {
-					dx, dy, d = 1, 0, 1
-				}
-				ux, uy := dx/d, dy/d
-				px, py := -uy, ux
-				w, h := core.PadWorldSize(fp, pad)
-				base := math.Max(w.ToMM(), h.ToMM())/2 + 0.45
-				for _, r := range []float64{base, base + 0.35, base + 0.70} {
-					for _, lat := range []float64{0, 0.35, -0.35} {
-						sites = append(sites, [2]float64{cx + ux*r + px*lat, cy + uy*r + py*lat})
-					}
-				}
-			}
+			sites := padLocalStitchSites(board, fp, pad, cx, cy, otherLayerPour)
 			need := opts.TraceWidthMM/2 + 0.13
 			placed := false
 			for _, s := range sites {
@@ -105,7 +97,8 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 					ID: core.NewID(), Net: net, Position: vp,
 					Drill: core.FromMM(opts.ViaDrillMM), Diameter: core.FromMM(opts.ViaDiameterMM),
 				})
-				if pad.Drill == nil {
+				// A via on the pad centre needs no stub.
+				if math.Hypot(vx-cx, vy-cy) > 1e-6 {
 					board.Traces = append(board.Traces, core.Trace{
 						ID: core.NewID(), Layer: pad.Layer, Net: net,
 						Width: core.FromMM(opts.TraceWidthMM), Start: c, End: vp,
@@ -429,16 +422,14 @@ func pointInPoly(poly []core.Point, x, y float64) bool {
 }
 
 func hasNearbyCopper(board *core.Board, net string, p core.Point, rMM float64) bool {
+	if hasNearbyVia(board, net, p, rMM) {
+		return true
+	}
 	r2 := rMM * rMM
 	near := func(q core.Point) bool {
 		dx := q.X.ToMM() - p.X.ToMM()
 		dy := q.Y.ToMM() - p.Y.ToMM()
 		return dx*dx+dy*dy <= r2
-	}
-	for _, v := range board.Vias {
-		if v.Net == net && near(v.Position) {
-			return true
-		}
 	}
 	for _, t := range board.Traces {
 		if t.Net == net && (near(t.Start) || near(t.End)) {
@@ -446,4 +437,50 @@ func hasNearbyCopper(board *core.Board, net string, p core.Point, rMM float64) b
 		}
 	}
 	return false
+}
+
+func hasNearbyVia(board *core.Board, net string, p core.Point, rMM float64) bool {
+	r2 := rMM * rMM
+	for _, v := range board.Vias {
+		if v.Net != net {
+			continue
+		}
+		dx := v.Position.X.ToMM() - p.X.ToMM()
+		dy := v.Position.Y.ToMM() - p.Y.ToMM()
+		if dx*dx+dy*dy <= r2 {
+			return true
+		}
+	}
+	return false
+}
+
+// padLocalStitchSites is pad centre, then a short dogbone toward the board
+// centre / pour. Multi-layer pour ties stay within ~1.0 mm of the pad so
+// the via is the return at that node, not a barrel in the outline corner.
+func padLocalStitchSites(board *core.Board, fp *core.Footprint, pad *core.Pad, cx, cy float64, shortDogbone bool) [][2]float64 {
+	sites := [][2]float64{{cx, cy}}
+	bx, by := cx+1, cy
+	if board.Outline != nil {
+		bx = (board.Outline.Min.X.ToMM() + board.Outline.Max.X.ToMM()) / 2
+		by = (board.Outline.Min.Y.ToMM() + board.Outline.Max.Y.ToMM()) / 2
+	}
+	dx, dy := bx-cx, by-cy
+	d := math.Hypot(dx, dy)
+	if d < 1e-6 {
+		dx, dy, d = 1, 0, 1
+	}
+	ux, uy := dx/d, dy/d
+	px, py := -uy, ux
+	radii := []float64{0.70, 0.85, 1.00}
+	if !shortDogbone {
+		w, h := core.PadWorldSize(fp, pad)
+		base := math.Max(w.ToMM(), h.ToMM())/2 + 0.45
+		radii = []float64{base, base + 0.35, base + 0.70}
+	}
+	for _, r := range radii {
+		for _, lat := range []float64{0, 0.35, -0.35} {
+			sites = append(sites, [2]float64{cx + ux*r + px*lat, cy + uy*r + py*lat})
+		}
+	}
+	return sites
 }

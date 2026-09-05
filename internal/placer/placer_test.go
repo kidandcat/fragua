@@ -510,3 +510,88 @@ func TestEdgePlaceKeepsACastellatedModuleFlush(t *testing.T) {
 			body.Max.X.ToMM(), o.Max.X.ToMM())
 	}
 }
+
+func TestPullPassivesSeatsBoostPowerIsland(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	u3 := footprint("U3", 20, 15, []core.Pad{
+		pad("OUT", 2.5, 0, "OUT"),
+		pad("GND", 0, -2.5, "GND"),
+		pad("LX", -2.5, 0, "LX"),
+		pad("IN", 0, 2.5, "IN"),
+	})
+	u3.Pinned = true
+	b.AddFootprint(u3)
+	l2 := footprint("L2", 3, 3, []core.Pad{
+		pad("1", -0.8, 0, "LX"),
+		pad("2", 0.8, 0, "IN"),
+	})
+	l2.Key = "l_2016"
+	l2.Description = "chip inductor"
+	b.AddFootprint(l2)
+	cin := footprint("Cin", 36, 4, []core.Pad{
+		pad("1", -0.8, 0, "IN"),
+		pad("2", 0.8, 0, "GND"),
+	})
+	b.AddFootprint(cin)
+	cout := footprint("Cout", 36, 26, []core.Pad{
+		pad("1", -0.8, 0, "OUT"),
+		pad("2", 0.8, 0, "GND"),
+	})
+	b.AddFootprint(cout)
+
+	opts := DefaultOptions()
+	opts.SolderGapMM = 0.3
+	PullPassivesToAnchors(b, []*core.Footprint{l2, cin, cout}, opts)
+
+	lx := core.PadWorldCenter(u3, &u3.Pads[2]) // LX
+	out := core.PadWorldCenter(u3, &u3.Pads[0])
+	lPos := l2.Position
+	cPos := cout.Position
+
+	dLToLX := math.Hypot(lPos.X.ToMM()-lx.X.ToMM(), lPos.Y.ToMM()-lx.Y.ToMM())
+	dLToCorner := math.Hypot(lPos.X.ToMM()-3, lPos.Y.ToMM()-3)
+	if dLToLX >= 8 {
+		t.Fatalf("L2 is %.2f mm from U3.LX (at %.2f,%.2f); want it seated on the LX island, not the corner",
+			dLToLX, lPos.X.ToMM(), lPos.Y.ToMM())
+	}
+	if dLToLX > dLToCorner+0.5 && dLToCorner < 2 {
+		t.Fatalf("L2 stayed in the corner (%.2f,%.2f); LX is at (%.2f,%.2f)",
+			lPos.X.ToMM(), lPos.Y.ToMM(), lx.X.ToMM(), lx.Y.ToMM())
+	}
+
+	dCToOut := math.Hypot(cPos.X.ToMM()-out.X.ToMM(), cPos.Y.ToMM()-out.Y.ToMM())
+	dCToFar := math.Hypot(cPos.X.ToMM()-36, cPos.Y.ToMM()-26)
+	if dCToOut >= 8 {
+		t.Fatalf("Cout is %.2f mm from U3.OUT (at %.2f,%.2f); want it on the OUT island",
+			dCToOut, cPos.X.ToMM(), cPos.Y.ToMM())
+	}
+	if dCToOut > dCToFar+0.5 && dCToFar < 2 {
+		t.Fatalf("Cout stayed on the far edge (%.2f,%.2f); OUT is at (%.2f,%.2f)",
+			cPos.X.ToMM(), cPos.Y.ToMM(), out.X.ToMM(), out.Y.ToMM())
+	}
+}
+
+func TestPullPassivesLeavesPinnedFootprintsAlone(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	u3 := footprint("U3", 20, 15, []core.Pad{
+		pad("LX", -2.5, 0, "LX"),
+		pad("IN", 2.5, 0, "IN"),
+	})
+	u3.Pinned = true
+	b.AddFootprint(u3)
+	l2 := footprint("L2", 4, 4, []core.Pad{
+		pad("1", -0.8, 0, "LX"),
+		pad("2", 0.8, 0, "IN"),
+	})
+	l2.Pinned = true
+	b.AddFootprint(l2)
+	want := l2.Position
+	PullPassivesToAnchors(b, []*core.Footprint{l2}, DefaultOptions())
+	if l2.Position != want {
+		t.Fatalf("pinned L2 moved: %v → %v", want, l2.Position)
+	}
+}
