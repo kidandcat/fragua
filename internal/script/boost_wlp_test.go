@@ -1,7 +1,6 @@
 package script
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -67,52 +66,7 @@ auto-place seed=42
 		rep = router.Route(b, opts)
 	})
 	if !strings.Contains(rep.Summary(), "6/6") {
-		var pos []string
-		p.RLock()
-		b := p.Board()
-		for _, fp := range b.Footprints {
-			pos = append(pos, fmt.Sprintf("%s@%.2f,%.2f r=%.0f", fp.Reference, fp.Position.X.ToMM(), fp.Position.Y.ToMM(), fp.Rotation))
-		}
-		p.RUnlock()
-		var nets []string
-		for _, n := range rep.PerNet {
-			nets = append(nets, fmt.Sprintf("%s=%s/%s", n.Net, n.Outcome.Status, n.Outcome.Reason))
-		}
-		var extra []string
-		u3 := b.FootprintByRef("U3")
-		r16 := b.FootprintByRef("R16")
-		l2 := b.FootprintByRef("L2")
-		if u3 != nil {
-			for i := range u3.Pads {
-				if u3.Pads[i].Name == "SEL" || u3.Pads[i].Number == "C2" {
-					c := core.PadWorldCenter(u3, &u3.Pads[i])
-					extra = append(extra, fmt.Sprintf("U3.SEL=%.2f,%.2f", c.X.ToMM(), c.Y.ToMM()))
-				}
-			}
-		}
-		if r16 != nil {
-			c := core.PadWorldCenter(r16, &r16.Pads[0])
-			extra = append(extra, fmt.Sprintf("R16.1=%.2f,%.2f", c.X.ToMM(), c.Y.ToMM()))
-			if cy, ok := core.CourtyardWorld(r16); ok {
-				extra = append(extra, fmt.Sprintf("R16.cy=%.2f..%.2f,%.2f..%.2f", cy.Min.X.ToMM(), cy.Max.X.ToMM(), cy.Min.Y.ToMM(), cy.Max.Y.ToMM()))
-			}
-		}
-		if l2 != nil {
-			if cy, ok := core.CourtyardWorld(l2); ok {
-				extra = append(extra, fmt.Sprintf("L2.cy=%.2f..%.2f,%.2f..%.2f", cy.Min.X.ToMM(), cy.Max.X.ToMM(), cy.Min.Y.ToMM(), cy.Max.Y.ToMM()))
-			}
-		}
-		for _, v := range b.Vias {
-			if v.Net == "SEL" {
-				extra = append(extra, fmt.Sprintf("viaSEL=%.2f,%.2f", v.Position.X.ToMM(), v.Position.Y.ToMM()))
-			}
-		}
-		for _, tr := range b.Traces {
-			if tr.Net == "SEL" {
-				extra = append(extra, fmt.Sprintf("trSEL=%.2f,%.2f→%.2f,%.2f w=%.2f", tr.Start.X.ToMM(), tr.Start.Y.ToMM(), tr.End.X.ToMM(), tr.End.Y.ToMM(), tr.Width.ToMM()))
-			}
-		}
-		t.Fatalf("route did not finish 6/6: %s\n%s\nplace %s\n%s", rep.Summary(), strings.Join(nets, " "), strings.Join(pos, " "), strings.Join(extra, " "))
+		t.Fatalf("route did not finish 6/6: %s", rep.Summary())
 	}
 	rs = RunScript(p, "auto-pour\nstitch\n")
 	for _, r := range rs {
@@ -121,21 +75,21 @@ auto-place seed=42
 		}
 	}
 	p.RLock()
+	defer p.RUnlock()
 	b := p.Board()
 	l2 := b.FootprintByRef("L2")
 	r16 := b.FootprintByRef("R16")
 	if l2 == nil || r16 == nil {
-		p.RUnlock()
 		t.Fatal("missing L2 or R16")
 	}
 	if r16CY, ok := core.CourtyardWorld(r16); ok {
 		if l2CY, ok := core.CourtyardWorld(l2); ok && r16CY.Intersects(l2CY) {
-			p.RUnlock()
-			t.Fatalf("R16 courtyard intersects L2")
+			t.Fatalf("R16 courtyard intersects L2 (R16 %.2f,%.2f L2 %.2f,%.2f)",
+				r16.Position.X.ToMM(), r16.Position.Y.ToMM(),
+				l2.Position.X.ToMM(), l2.Position.Y.ToMM())
 		}
 	}
 	drep := drc.Check(b, p.Schematic(), drc.DefaultOptions())
-	p.RUnlock()
 	if drep.Errors != 0 {
 		t.Fatalf("drc: %s", drep.Detail())
 	}

@@ -33,7 +33,13 @@ On master, `place U3` + `auto-place` + `route` left **VSTOR** and/or **SEL** ope
 - Two-pin signals with a same-layer partner inside 5 mm stay on one layer (no dogbone).
 - `existingNetSources` no longer treats the far end of a dogbone stub as already on the tree.
 
-## Expected
+## Result
 
-- **6/6 nets**, **DRC 0 errors**, no hand `trace`.
-- R16 courtyard does not intersect L2.
+See `PASS-auto.md`. `go run bench/boost-max17220-fair/dump.go`:
+
+```
+ok route: route: 6/6 nets ok (1 necked at escapes), 207 traces, 4 vias, 48.6 mm copper, 17 ms
+ok drc: drc: 0 errors, 0 warnings (0 findings)
+```
+
+R16 at 10.77,3.68 stays off L2 (10.80,7.20). Courtyards are density N.
