@@ -579,6 +579,58 @@ func TestPullPassivesSeatsBoostPowerIsland(t *testing.T) {
 	}
 }
 
+func TestPullPassivesSeatsVSTORInductorAndKeepsRselOffBody(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(18), core.FromMM(14)))
+	b.Outline = &o
+	// WLP-6: LX and VSTOR (BATT) on the right column, SEL below LX.
+	u3 := footprint("U3", 9, 7, []core.Pad{
+		pad("A1", -0.2, 0.4, "+3V0"),
+		pad("A2", 0.2, 0.4, "VSTOR"),
+		pad("B1", -0.2, 0, "GND"),
+		pad("B2", 0.2, 0, "LX"),
+		pad("C1", -0.2, -0.4, "EN"),
+		pad("C2", 0.2, -0.4, "SEL"),
+	})
+	for i := range u3.Pads {
+		u3.Pads[i].Size = [2]core.Length{core.FromMM(0.24), core.FromMM(0.24)}
+	}
+	u3.Pinned = true
+	u3.BodyRect = &core.BodyRect{MinXMM: -0.445, MinYMM: -0.71, MaxXMM: 0.445, MaxYMM: 0.71}
+	b.AddFootprint(u3)
+	l2 := footprint("L2", 3, 3, []core.Pad{
+		pad("1", -0.8, 0, "LX"),
+		pad("2", 0.8, 0, "VSTOR"),
+	})
+	l2.Key = "l_2016"
+	l2.Description = "chip inductor"
+	l2.BodyRect = &core.BodyRect{MinXMM: -1.25, MinYMM: -0.88, MaxXMM: 1.25, MaxYMM: 0.88}
+	b.AddFootprint(l2)
+	rsel := footprint("R16", 16, 3, []core.Pad{
+		pad("1", -0.8, 0, "SEL"),
+		pad("2", 0.8, 0, "GND"),
+	})
+	rsel.BodyRect = &core.BodyRect{MinXMM: -1.0, MinYMM: -0.5, MaxXMM: 1.0, MaxYMM: 0.5}
+	b.AddFootprint(rsel)
+
+	opts := DefaultOptions()
+	opts.SolderGapMM = 0.3
+	PullPassivesToAnchors(b, []*core.Footprint{l2, rsel}, opts)
+
+	lx := core.PadWorldCenter(u3, &u3.Pads[3]) // B2 LX
+	lPad := core.PadWorldCenter(l2, &l2.Pads[0])
+	dPad := math.Hypot(lPad.X.ToMM()-lx.X.ToMM(), lPad.Y.ToMM()-lx.Y.ToMM())
+	if dPad > 2.8 {
+		t.Fatalf("L2.LX pad is %.2f mm from U3.LX (L2 at %.2f,%.2f); VSTOR must seat the bridge",
+			dPad, l2.Position.X.ToMM(), l2.Position.Y.ToMM())
+	}
+	if overlapsInductorBody(b, rsel, 0.05) {
+		t.Fatalf("R16 sat under L2 (R16 %.2f,%.2f L2 %.2f,%.2f)",
+			rsel.Position.X.ToMM(), rsel.Position.Y.ToMM(),
+			l2.Position.X.ToMM(), l2.Position.Y.ToMM())
+	}
+}
+
 func TestPullPassivesLeavesPinnedFootprintsAlone(t *testing.T) {
 	b := core.NewBoard()
 	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))

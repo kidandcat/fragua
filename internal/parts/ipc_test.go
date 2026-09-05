@@ -238,6 +238,35 @@ func TestGenQFN(t *testing.T) {
 	}
 }
 
+func TestGenWLP(t *testing.T) {
+	p := gen(t, GenSpec{Key: "max17220_wlp6", Family: "wlp", Pins: 6, Pitch: 0.4, Body: 0.89, BodyLen: 1.42, Pad: 0.24})
+	if len(p.Entry.Pads) != 6 {
+		t.Fatalf("pads = %d, want 6", len(p.Entry.Pads))
+	}
+	a1, ok := padByNumber(p.Entry, "A1")
+	if !ok {
+		t.Fatal("missing A1")
+	}
+	a2, _ := padByNumber(p.Entry, "A2")
+	c2, _ := padByNumber(p.Entry, "C2")
+	near(t, "wlp pitch x", math.Abs(a2.XMM-a1.XMM), 0.4, 1e-9)
+	near(t, "wlp pitch y", math.Abs(a1.YMM-c2.YMM), 0.8, 1e-9)
+	near(t, "wlp pad", a1.WMM, 0.24, 1e-9)
+	// Pad-pad air at 0.4 pitch / 0.24 land is 0.16 ≥ JLCPCB 0.127.
+	if gap := 0.4 - a1.WMM; gap < 0.127 {
+		t.Errorf("pad-pad gap %.3f < 0.127", gap)
+	}
+	if a1.YMM <= 0 || c2.YMM >= 0 {
+		t.Errorf("A1 should be north of C2: A1.y=%.3f C2.y=%.3f", a1.YMM, c2.YMM)
+	}
+	if _, err := Generate(GenSpec{Key: "X", Family: "wlp", Pins: 5}); err == nil {
+		t.Error("want error when pins is not a multiple of 2")
+	}
+	if _, err := Generate(GenSpec{Key: "X", Family: "wlp", Pins: 6, Pitch: 0.4, Pad: 0.30}); err == nil {
+		t.Error("want error when pad leaves < 0.127 mm")
+	}
+}
+
 func TestGenQFP(t *testing.T) {
 	p := gen(t, GenSpec{Key: "LQFP-64", Family: "lqfp", Pins: 64, Pitch: 0.5, Body: 10})
 	if len(p.Entry.Pads) != 64 {

@@ -144,7 +144,9 @@ type GenSpec struct {
 	EPX     float64 // exposed-pad size (QFN/DFN), 0 = none
 	EPY     float64
 	Rows    int     // header rows
+	Cols    int     // WLP columns (default 2)
 	Spacing float64 // DIP row spacing
+	Pad     float64 // WLP land size (mm); 0 = pitch-limited default
 	Density Density
 	// Kind forces the schematic symbol kind; empty infers it from Key/family.
 	Kind string
@@ -155,7 +157,7 @@ func Families() []string {
 	return []string{
 		"chip", "sot23", "sot23-5", "sot23-6", "sot223", "sot89",
 		"soic", "tssop", "ssop", "msop", "qfn", "dfn", "qfp", "lqfp",
-		"dip", "header",
+		"wlp", "dip", "header",
 	}
 }
 
@@ -188,6 +190,8 @@ func Generate(spec GenSpec) (*Part, error) {
 		part, err = genTSSOP(spec, family)
 	case "qfn", "dfn":
 		part, err = genNoLead(spec, family)
+	case "wlp", "csp", "bga":
+		part, err = genWLP(spec)
 	case "qfp", "lqfp":
 		part, err = genQFP(spec)
 	case "dip":
@@ -588,6 +592,71 @@ func genNoLead(spec GenSpec, family string) (*Part, error) {
 		part.Entry.Silk = bodySilk(rect, -cX, padLen)
 	}
 	part.Entry.BodyRect = courtyard(spec.Density, pads, rect)
+	return part, nil
+}
+
+// ─── WLP / CSP (area-array bumps) ────────────────────────────────────
+
+// genWLP builds a 2-column (default) wafer-level land: JEDEC A1… numbering,
+// pads small enough that neighbours keep the fab clearance at `pitch`.
+// MAX17220 is `lib-gen max17220_wlp6 family=wlp pins=6 pitch=0.4 body=0.89 body_len=1.42 pad=0.24`.
+func genWLP(spec GenSpec) (*Part, error) {
+	cols := spec.Cols
+	if cols <= 0 {
+		cols = 2
+	}
+	if spec.Pins < 4 || spec.Pins%cols != 0 {
+		return nil, fmt.Errorf("lib-gen wlp: pins=N must be a multiple of %d and ≥ 4", cols)
+	}
+	rows := spec.Pins / cols
+	pitch := spec.Pitch
+	if pitch <= 0 {
+		pitch = 0.4
+	}
+	// Pad-pad air must stay at the JLCPCB floor (0.127). A 0.25 mm land on
+	// 0.4 mm pitch leaves 0.15 mm — legal, but 0.24 is the safer default.
+	pad := spec.Pad
+	if pad <= 0 {
+		pad = math.Min(0.24, pitch-0.15)
+	}
+	if gap := pitch - pad; gap < 0.127-1e-9 {
+		return nil, fmt.Errorf("lib-gen wlp: pad=%.3f at pitch=%.3f leaves %.3f mm (need ≥ 0.127)", pad, pitch, gap)
+	}
+
+	bodyX := spec.Body
+	if bodyX <= 0 {
+		bodyX = float64(cols-1)*pitch + pad + 0.25
+	}
+	bodyY := spec.BodyLen
+	if bodyY <= 0 {
+		bodyY = float64(rows-1)*pitch + pad + 0.25
+	}
+
+	startX := -pitch * float64(cols-1) / 2
+	startY := pitch * float64(rows-1) / 2
+	pads := make([]core.LibraryPad, 0, spec.Pins)
+	for r := 0; r < rows; r++ {
+		row := string(rune('A' + r))
+		for c := 0; c < cols; c++ {
+			num := fmt.Sprintf("%s%d", row, c+1)
+			pads = append(pads, core.LibraryPad{
+				Number: num, Name: num,
+				XMM: startX + float64(c)*pitch,
+				YMM: startY - float64(r)*pitch,
+				WMM: pad, HMM: pad,
+			})
+		}
+	}
+	rect := core.BodyRect{MinXMM: -bodyX / 2, MinYMM: -bodyY / 2, MaxXMM: bodyX / 2, MaxYMM: bodyY / 2}
+	part := &Part{Entry: core.LibraryEntry{
+		Description: fmt.Sprintf("WLP-%d %dx%d P%.2f %.2fx%.2fmm land, pad %.2f, density %s",
+			spec.Pins, cols, rows, pitch, bodyX, bodyY, pad, spec.Density),
+		Pads: pads,
+	}}
+	part.Entry.Silk = rectSilk(rect)
+	part.Entry.Silk = append(part.Entry.Silk, pin1Marker(startX-pad/2-ipcSilkClearance, startY)...)
+	part.Entry.BodyRect = courtyard(spec.Density, pads, rect)
+	part.Kind = "generic_ic"
 	return part, nil
 }
 

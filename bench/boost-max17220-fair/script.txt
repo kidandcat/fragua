@@ -1,0 +1,54 @@
+# MAX17220 boost island — Hand/Astra fair BOM (WLP-6, dual Cout, R15/R16).
+# Product verbs only: place U3 to anchor, then auto-place / route / pour / stitch.
+# No hand `trace`. Courtyards stay density N (do not cheat L).
+
+outline 18 14 radius=1
+fab-rules jlcpcb
+class ground pour=both
+class power width=0.35
+class switch width=0.35
+
+lib-gen max17220_wlp6 family=wlp pins=6 pitch=0.4 body=0.89 body_len=1.42 pad=0.24
+lib-gen l_2016 family=chip size=0805 kind=l
+lib-gen c_0603 family=chip size=0603 kind=c
+lib-gen r_0603 family=chip size=0603 kind=r
+
+# WLP bump map (top view, A1 north-west): A1 OUT, A2 BATT, B1 GND, B2 LX, C1 EN, C2 SEL.
+sym U3 ic key=max17220_wlp6
+  pin A1 L OUT role=power_out
+  pin A2 R BATT role=power_in
+  pin B1 L GND role=power_in
+  pin B2 R LX role=output
+  pin C1 L EN role=passive
+  pin C2 R SEL role=passive
+sym L2 inductor key=l_2016
+sym C8 capacitor key=c_0603
+sym C9 capacitor key=c_0603
+sym C11 capacitor key=c_0603
+sym R15 resistor key=r_0603
+sym R16 resistor key=r_0603
+
+net GND U3.GND C8.2 C9.2 C11.2 R16.2 class=ground
+net VSTOR U3.BATT L2.2 C8.1 R15.1 class=power
+net +3V0 U3.OUT C9.1 C11.1 class=power
+net LX U3.LX L2.1 class=switch
+net SEL U3.SEL R16.1
+net EN U3.EN R15.2
+
+erc
+
+palette U3 max17220_wlp6
+palette L2 l_2016 value=2.2uH
+palette C8 c_0603 value=10uF
+palette C9 c_0603 value=100nF
+palette C11 c_0603 value=10uF
+palette R15 r_0603 value=39M
+palette R16 r_0603 value=133k
+
+place U3 9 7
+auto-place seed=42
+route max_seconds=180
+auto-pour
+stitch
+drc
+status
