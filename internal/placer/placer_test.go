@@ -550,8 +550,14 @@ func TestPullPassivesSeatsBoostPowerIsland(t *testing.T) {
 	lPos := l2.Position
 	cPos := cout.Position
 
+	lPad := core.PadWorldCenter(l2, &l2.Pads[0]) // LX pad on L2
+	dPad := math.Hypot(lPad.X.ToMM()-lx.X.ToMM(), lPad.Y.ToMM()-lx.Y.ToMM())
 	dLToLX := math.Hypot(lPos.X.ToMM()-lx.X.ToMM(), lPos.Y.ToMM()-lx.Y.ToMM())
 	dLToCorner := math.Hypot(lPos.X.ToMM()-3, lPos.Y.ToMM()-3)
+	if dPad > 2.5 {
+		t.Fatalf("L2.LX pad is %.2f mm from U3.LX (L2 at %.2f,%.2f); want pad-to-pad ≤ 2.5 mm on the island",
+			dPad, lPos.X.ToMM(), lPos.Y.ToMM())
+	}
 	if dLToLX >= 8 {
 		t.Fatalf("L2 is %.2f mm from U3.LX (at %.2f,%.2f); want it seated on the LX island, not the corner",
 			dLToLX, lPos.X.ToMM(), lPos.Y.ToMM())
