@@ -118,11 +118,47 @@ func TestBodyClearanceOnTouchingModules(t *testing.T) {
 	if hits := ComponentHits(a, b, DefaultComponentRules()); len(hits) != 0 {
 		t.Fatalf("0.6 mm chip gap must pass, got %+v", hits)
 	}
+	// A module next to a chip uses the 0.5 mm body floor. Two modules at
+	// the same 0.60 mm still fail the 1 mm floor.
 	a.Key = "esp32_s3_zero_top"
+	if hits := ComponentHits(a, b, DefaultComponentRules()); len(hits) != 0 {
+		t.Fatalf("0.6 mm module-to-chip gap must pass, got %+v", hits)
+	}
+	b.Key = "xl1262_lora"
 	hits = ComponentHits(a, b, DefaultComponentRules())
 	h, ok = bodyHit(hits)
 	if !ok || h.Need != 1 || len(hits) != 1 {
-		t.Fatalf("0.6 mm module gap must fail on the body only, got %+v", hits)
+		t.Fatalf("0.6 mm module-to-module gap must fail on the body only, got %+v", hits)
+	}
+}
+
+func TestModuleToPassiveUsesBodyGap(t *testing.T) {
+	// Fecha door strip: a 0603 decap 0.922 mm from the LoRa module (and
+	// 0.972 mm from the OLED) must not take the 1 mm module floor.
+	module := func(ref, key string, x float64) *Footprint {
+		return &Footprint{
+			ID: NewID(), Reference: ref, Key: key, Layer: LayerTop,
+			Position: NewPoint(FromMM(x), FromMM(10)),
+			BodyRect: &BodyRect{MinXMM: -9, MinYMM: -5, MaxXMM: 9, MaxYMM: 5},
+			Pads:     edgePads(),
+		}
+	}
+	u2 := module("U2", "xl1262_lora", 10)
+	c3 := module("C3", "c_0603", 28.922)
+	if hits := ComponentHits(u2, c3, DefaultComponentRules()); len(hits) != 0 {
+		t.Fatalf("0.922 mm module-to-0603 must pass, got %+v", hits)
+	}
+	ds1 := module("DS1", "oled_module", 10)
+	c3.Position = NewPoint(FromMM(28.972), FromMM(10))
+	if hits := ComponentHits(ds1, c3, DefaultComponentRules()); len(hits) != 0 {
+		t.Fatalf("0.972 mm module-to-0603 must pass, got %+v", hits)
+	}
+	// Same spacing between two modules is still a body clearance.
+	other := module("U1", "esp32_s3_zero_top", 28.922)
+	hits := ComponentHits(u2, other, DefaultComponentRules())
+	h, ok := bodyHit(hits)
+	if !ok || h.Need != 1 || abs(h.Gap-0.922) > 1e-6 {
+		t.Fatalf("module pair at 0.922 mm: %+v", hits)
 	}
 }
 

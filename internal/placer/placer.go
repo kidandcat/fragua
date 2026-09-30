@@ -635,7 +635,8 @@ func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64)
 }
 
 // componentClash reports whether probe violates the board's component
-// clearance (courtyard overlap, or body gap under the chip/module floor).
+// clearance (courtyard overlap, or body gap under the chip floor, or the
+// module floor when both parts are modules).
 // The solder gap is a separate, often looser-or-tighter pad rule; this one
 // is the same check DRC runs, so auto-place cannot hand DRC a violation.
 func componentClash(board *core.Board, probe *core.Footprint) bool {

@@ -2,7 +2,7 @@ package core
 
 // ComponentRules are the component-to-component floors DRC and the placer share.
 // Courtyards must not overlap. Bodies must keep MinBodyGapMM, or MinModuleGapMM
-// when either part is a module.
+// when both parts are modules.
 type ComponentRules struct {
 	CourtyardMarginMM float64
 	MinBodyGapMM      float64
@@ -10,7 +10,7 @@ type ComponentRules struct {
 }
 
 // DefaultComponentRules is the IPC-7351 nominal courtyard (0.25 mm), a 0.5 mm
-// body gap, and a 1.0 mm gap when a module is involved.
+// body gap, and a 1.0 mm gap between two modules.
 func DefaultComponentRules() ComponentRules {
 	return ComponentRules{
 		CourtyardMarginMM: CourtyardMarginMM,
@@ -39,9 +39,11 @@ func (b *Board) ComponentRules() ComponentRules {
 	return r
 }
 
-// GapBetween is the body-to-body minimum for this pair.
+// GapBetween is the body-to-body minimum for this pair. The module floor
+// applies only when both parts are modules, so a decoupling cap can sit on
+// the body gap next to a module pin.
 func (r ComponentRules) GapBetween(a, b *Footprint) float64 {
-	if a.IsModule() || b.IsModule() {
+	if a.IsModule() && b.IsModule() {
 		return r.MinModuleGapMM
 	}
 	return r.MinBodyGapMM
