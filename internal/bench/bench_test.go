@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mentasystems/fragua/internal/core"
+	"github.com/mentasystems/fragua/internal/drc"
 )
 
 const tinyBoard = `# bench: place=auto
@@ -91,6 +94,33 @@ func TestPlaceDetection(t *testing.T) {
 	}
 	if !placeDirective("# nothing here\n", true) {
 		t.Fatal("no directive must keep the default")
+	}
+}
+
+// Reference boards ship already placed. A new component-clearance error
+// here means the saved placement has to move, or the rule is too tight.
+func TestReferenceBoardsComponentClearance(t *testing.T) {
+	dir := filepath.Join("..", "..", "bench", "boards")
+	files, err := Discover(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no reference boards")
+	}
+	for _, f := range files {
+		p, err := core.LoadFromPath(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.RLock()
+		rep := drc.Check(p.Board(), p.Schematic(), drc.DefaultOptions())
+		p.RUnlock()
+		for _, v := range rep.Violations {
+			if v.Kind == drc.KindBodyClearance || v.Kind == drc.KindCourtyardOverlap {
+				t.Errorf("%s: %s %s", filepath.Base(f), v.Kind, v.Message)
+			}
+		}
 	}
 }
 

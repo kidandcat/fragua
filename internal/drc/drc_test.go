@@ -301,6 +301,74 @@ func TestAnnularRingTooSmall(t *testing.T) {
 	}
 }
 
+func TestBodyClearanceReportsGap(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(80, 30)
+	b.Outline = &o
+	// Module outlines 0.10 mm apart, with lands on the outline so the rect
+	// is the package rather than a courtyard. The old overlap-only check
+	// stayed silent because those rects do not intersect.
+	u1 := fp("U1", 15, 12, []core.Pad{pad("1", -8.5, 0, ""), pad("2", 8.5, 0, "")})
+	u1.Key = "esp32_s3_zero_top"
+	u1.BodyRect = &core.BodyRect{MinXMM: -9, MinYMM: -6, MaxXMM: 9, MaxYMM: 6}
+	u2 := fp("U2", 33.1, 12, []core.Pad{pad("1", -8.5, 0, ""), pad("2", 8.5, 0, "")})
+	u2.Key = "xl1262_lora"
+	u2.BodyRect = &core.BodyRect{MinXMM: -9, MinYMM: -6, MaxXMM: 9, MaxYMM: 6}
+	b.AddFootprint(u1)
+	b.AddFootprint(u2)
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindCourtyardOverlap) != 1 {
+		t.Fatalf("a tight body plus the 0.25 mm margin must overlap: %+v", rep.Violations)
+	}
+	if countKind(rep, KindBodyClearance) != 1 {
+		t.Fatalf("want one body_clearance, got %+v", rep.Violations)
+	}
+	msg := ""
+	for _, v := range rep.Violations {
+		if v.Kind == KindBodyClearance {
+			msg = v.Message
+		}
+	}
+	if !strings.Contains(msg, "U1") || !strings.Contains(msg, "U2") || !strings.Contains(msg, "0.100") {
+		t.Fatalf("finding must name the pair and the gap: %q", msg)
+	}
+	if !strings.Contains(msg, "1.000") {
+		t.Fatalf("module floor should be 1 mm: %q", msg)
+	}
+
+	// Loosen the floor under the measured gap and the error goes away.
+	gap := 0.05
+	b.FabRules = &core.FabRules{MinModuleGapMM: &gap, MinBodyGapMM: &gap}
+	if n := countKind(Check(b, nil, DefaultOptions()), KindBodyClearance); n != 0 {
+		t.Fatalf("explicit 0.05 mm floor must accept a 0.10 mm gap, got %d", n)
+	}
+}
+
+func TestCourtyardMarginFallback(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// 1×1.2 pads, centres 1.4 mm apart → pad gap 0.4 mm. Default courtyard
+	// margin 0.25 mm per side makes the courtyards overlap; the bodies are
+	// also inside the 0.5 mm floor.
+	b.AddFootprint(fp("R1", 10.0, 10.0, []core.Pad{pad("1", 0, 0, "")}))
+	b.AddFootprint(fp("R2", 11.4, 10.0, []core.Pad{pad("1", 0, 0, "")}))
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindCourtyardOverlap) == 0 || countKind(rep, KindBodyClearance) == 0 {
+		t.Fatalf("want both courtyard overlap and body clearance, got %+v", rep.Violations)
+	}
+	// A zero courtyard margin drops the overlap; the body gap remains.
+	z := 0.0
+	b.FabRules = &core.FabRules{CourtyardMarginMM: &z}
+	rep = Check(b, nil, DefaultOptions())
+	if countKind(rep, KindCourtyardOverlap) != 0 {
+		t.Fatalf("zero courtyard margin must not invent an overlap: %+v", rep.Violations)
+	}
+	if countKind(rep, KindBodyClearance) == 0 {
+		t.Fatal("0.4 mm body gap is still under 0.5 mm")
+	}
+}
+
 func TestCourtyardOverlap(t *testing.T) {
 	b := core.NewBoard()
 	o := outline(40, 20)
@@ -540,6 +608,9 @@ func TestCourtyardOverlapIgnoresOppositeFaces(t *testing.T) {
 	b.AddFootprint(bot)
 	if n := countKind(Check(b, nil, DefaultOptions()), KindCourtyardOverlap); n != 0 {
 		t.Fatalf("opposite faces must not clash, got %d", n)
+	}
+	if n := countKind(Check(b, nil, DefaultOptions()), KindBodyClearance); n != 0 {
+		t.Fatalf("opposite faces must not take a body gap, got %d", n)
 	}
 	// A through-hole pad is on every layer, so it still does.
 	d := core.FromMM(0.8)

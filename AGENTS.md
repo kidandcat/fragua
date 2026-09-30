@@ -200,6 +200,15 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
   `nc`. A rail with no `power_out` anywhere warns.
 - **Unused pins warn until you say so.** `nc U1.IO9 U1.IO10 …`.
 - **Set `fab-rules` before routing**, not after — they are the floor the router respects.
+  The same rules carry component clearance. Defaults: courtyard margin 0.25 mm
+  (IPC-7351 nominal; applied when a part has no courtyard, on top of the
+  body or pad box), body-to-body gap 0.50 mm, module gap 1.00 mm when either
+  part is a module (`module=true`, or a key/description containing module,
+  lora or castellated, or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA,
+  WLP or SOT). `drc` reports `courtyard_overlap` and
+  `body_clearance` with the two references and the measured gap. `auto-place`
+  and `place-legal` keep the same gap. Override with
+  `fab-rules body_gap=0.8 module_gap=1.5 courtyard=0.25`.
 - **Pours go after routing.** `auto-pour` then `stitch`. Re-routing means `clear-pour`,
   `route`, `auto-pour`, `stitch` again.
 - **A memory-only session loses everything.** `save /abs/path.fragua` early.

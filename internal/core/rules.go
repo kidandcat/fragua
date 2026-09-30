@@ -15,6 +15,12 @@ type FabRules struct {
 	MinHoleToHoleMM    float64     `json:"min_hole_to_hole_mm,omitempty"`
 	MinSliverMM        float64     `json:"min_sliver_mm,omitempty"`
 	MaxBoardSizeMM     *[2]float64 `json:"max_board_size_mm,omitempty"`
+	// Component-to-component assembly floors. Nil means "use the built-in
+	// default" so a fab preset and an old saved board keep today's numbers.
+	// A stored 0 is explicit: no extra courtyard air, or bodies may touch.
+	CourtyardMarginMM *float64 `json:"courtyard_margin_mm,omitempty"`
+	MinBodyGapMM      *float64 `json:"min_body_gap_mm,omitempty"`
+	MinModuleGapMM    *float64 `json:"min_module_gap_mm,omitempty"`
 }
 
 // RuleArea is a rectangular region with rule overrides.

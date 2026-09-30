@@ -347,6 +347,45 @@ func TestEdgePlaceTurnsTheMatingFaceOutward(t *testing.T) {
 	}
 }
 
+// Two module outlines 0.1 mm apart used to survive auto-place: the solder
+// gap is measured on pads, and these pads are nowhere near each other.
+// Legalisation has to open the same body gap DRC enforces.
+func TestPlacerOpensModuleBodyGap(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(80), core.FromMM(30)))
+	b.Outline = &o
+	body := &core.BodyRect{MinXMM: -9, MinYMM: -6, MaxXMM: 9, MaxYMM: 6}
+	u1 := footprint("U1", 15, 15, []core.Pad{pad("1", -8.5, 0, ""), pad("2", 8.5, 0, "")})
+	u1.Key = "esp32_s3_zero_top"
+	u1.BodyRect = body
+	u1.Pinned = true
+	u2 := footprint("U2", 33.1, 15, []core.Pad{pad("1", -8.5, 0, ""), pad("2", 8.5, 0, "")})
+	u2.Key = "xl1262_lora"
+	u2.BodyRect = &core.BodyRect{MinXMM: -9, MinYMM: -6, MaxXMM: 9, MaxYMM: 6}
+	b.AddFootprint(u1)
+	b.AddFootprint(u2)
+	if !componentClash(b, u2) {
+		t.Fatal("0.1 mm between module bodies must be a clash before placement")
+	}
+	opts := DefaultOptions()
+	opts.Seed = 7
+	opts.SolderGapMM = 0.2
+	opts.GlobalStage = false
+	opts.Decouple = false
+	opts.Iterations = 2000
+	if _, err := Place(b, []string{"U2"}, opts); err != nil {
+		t.Fatal(err)
+	}
+	if componentClash(b, b.FootprintByRef("U2")) {
+		ba, _ := core.BodyWorld(b.FootprintByRef("U1"))
+		bb, _ := core.BodyWorld(b.FootprintByRef("U2"))
+		t.Fatalf("U2 still clashes with U1, gap %.3f mm at (%.2f, %.2f)",
+			core.RectGapMM(ba, bb),
+			b.FootprintByRef("U2").Position.X.ToMM(),
+			b.FootprintByRef("U2").Position.Y.ToMM())
+	}
+}
+
 // A part with a declared body is bigger than its pads: a screw terminal's wire
 // mouth, a module wider than its castellated rows. auto-place used to seat a
 // neighbour inside that body because the hard overlap test looked at pads

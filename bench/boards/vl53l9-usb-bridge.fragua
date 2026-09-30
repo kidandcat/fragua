@@ -20,8 +20,8 @@
         "value": "10uF",
         "library": "library:c_0603",
         "position": {
-          "x": 21515977,
-          "y": 20409439
+          "x": 22788769,
+          "y": 21682231
         },
         "rotation": 0,
         "layer": "Top",
@@ -959,8 +959,8 @@
         "value": "22pF",
         "library": "library:c_0603",
         "position": {
-          "x": 16398812,
-          "y": 23554906
+          "x": 14524979,
+          "y": 25428739
         },
         "rotation": 0,
         "layer": "Top",
@@ -1242,7 +1242,7 @@
         "library": "library:r_0603",
         "position": {
           "x": 24451068,
-          "y": 27666104
+          "y": 27566104
         },
         "rotation": 0,
         "layer": "Top",
@@ -2048,7 +2048,7 @@
         "value": "100nF",
         "library": "library:c_0603",
         "position": {
-          "x": 22500000,
+          "x": 23500000,
           "y": 14500000
         },
         "rotation": 0,
@@ -2563,7 +2563,7 @@
         "value": "10uF",
         "library": "library:c_0603",
         "position": {
-          "x": 13500000,
+          "x": 12500000,
           "y": 14500000
         },
         "rotation": 0,
@@ -2610,7 +2610,7 @@
         "value": "1uF",
         "library": "library:c_0603",
         "position": {
-          "x": 21292274,
+          "x": 23492274,
           "y": 18013663
         },
         "rotation": 0,
@@ -2657,7 +2657,7 @@
         "value": "22pF",
         "library": "library:c_0603",
         "position": {
-          "x": 19713234,
+          "x": 21463234,
           "y": 23447675
         },
         "rotation": 0,
@@ -2705,7 +2705,7 @@
         "library": "library:c_0603",
         "position": {
           "x": 18853362,
-          "y": 19956156
+          "y": 21856156
         },
         "rotation": 0,
         "layer": "Top",

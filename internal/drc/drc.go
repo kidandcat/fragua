@@ -40,6 +40,7 @@ const (
 	KindViaPadClearance        Kind = "via_pad_clearance"
 	KindViaTraceClearance      Kind = "via_trace_clearance"
 	KindCourtyardOverlap       Kind = "courtyard_overlap"
+	KindBodyClearance          Kind = "body_clearance"
 	KindIsolatedPour           Kind = "isolated_pour"
 	KindUnstitchedPour         Kind = "unstitched_pour"
 	KindHoleToHole             Kind = "hole_to_hole"
@@ -490,29 +491,42 @@ func checkAnnularRing(board *core.Board, minAnnularMM float64, rep *Report) {
 }
 
 func checkCourtyardOverlap(board *core.Board, rep *Report) {
-	type body struct {
-		ref      string
-		rect     core.Rect
-		elevated bool
-		layer    core.Layer
-		throughH bool
+	fps := orderedFootprints(board)
+	rules := board.ComponentRules()
+	for i := 0; i < len(fps); i++ {
+		for j := i + 1; j < len(fps); j++ {
+			for _, h := range core.ComponentHits(fps[i], fps[j], rules) {
+				kind := KindCourtyardOverlap
+				msg := fmt.Sprintf("courtyard overlap %s – %s: gap %.3f mm", h.A, h.B, h.Gap)
+				if h.Kind == core.HitBodyClearance {
+					kind = KindBodyClearance
+					msg = fmt.Sprintf("body clearance %s – %s: gap %.3f mm < %.3f mm", h.A, h.B, h.Gap, h.Need)
+				}
+				rep.add(Violation{
+					Kind: kind, Severity: SeverityError,
+					Message: msg,
+					XMM:     h.X, YMM: h.Y,
+				})
+			}
+		}
 	}
-	var bodies []body
+}
+
+// orderedFootprints is FootprintOrder, then any map-only ids sorted so a
+// pair is reported once and the message is stable.
+func orderedFootprints(board *core.Board) []*core.Footprint {
+	if board == nil {
+		return nil
+	}
+	var out []*core.Footprint
+	seen := map[string]bool{}
 	for _, id := range board.FootprintOrder {
 		fp := board.Footprints[id]
 		if fp == nil {
 			continue
 		}
-		r, ok := core.CourtyardWorld(fp)
-		if !ok {
-			continue
-		}
-		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated,
-			layer: fp.Layer, throughH: hasThroughHolePad(fp)})
-	}
-	seen := map[string]bool{}
-	for _, id := range board.FootprintOrder {
 		seen[id] = true
+		out = append(out, fp)
 	}
 	var extras []string
 	for id := range board.Footprints {
@@ -522,53 +536,11 @@ func checkCourtyardOverlap(board *core.Board, rep *Report) {
 	}
 	sort.Strings(extras)
 	for _, id := range extras {
-		fp := board.Footprints[id]
-		if fp == nil {
-			continue
-		}
-		r, ok := core.CourtyardWorld(fp)
-		if !ok {
-			continue
-		}
-		bodies = append(bodies, body{ref: fp.Reference, rect: r, elevated: fp.Elevated,
-			layer: fp.Layer, throughH: hasThroughHolePad(fp)})
-	}
-	for i := 0; i < len(bodies); i++ {
-		for j := i + 1; j < len(bodies); j++ {
-			a, b := bodies[i], bodies[j]
-			if a.elevated != b.elevated {
-				continue // elevated body may overlap a low one
-			}
-			// A courtyard is the assembly envelope on ONE face. Two parts on
-			// opposite faces have no shared envelope; only a through-hole part
-			// occupies both. Without this a two-sided board reports a
-			// courtyard clash for every decap placed under its own IC.
-			if a.layer != b.layer && !a.throughH && !b.throughH {
-				continue
-			}
-			if !a.rect.Intersects(b.rect) {
-				continue
-			}
-			cx := (a.rect.Min.X.ToMM() + a.rect.Max.X.ToMM() + b.rect.Min.X.ToMM() + b.rect.Max.X.ToMM()) / 4
-			cy := (a.rect.Min.Y.ToMM() + a.rect.Max.Y.ToMM() + b.rect.Min.Y.ToMM() + b.rect.Max.Y.ToMM()) / 4
-			rep.add(Violation{
-				Kind: KindCourtyardOverlap, Severity: SeverityError,
-				Message: fmt.Sprintf("courtyard overlap %s – %s", a.ref, b.ref),
-				XMM:     cx, YMM: cy,
-			})
+		if fp := board.Footprints[id]; fp != nil {
+			out = append(out, fp)
 		}
 	}
-}
-
-// hasThroughHolePad reports whether any pad is drilled, i.e. the part occupies
-// every layer rather than just fp.Layer.
-func hasThroughHolePad(fp *core.Footprint) bool {
-	for i := range fp.Pads {
-		if fp.Pads[i].Drill != nil && *fp.Pads[i].Drill > 0 {
-			return true
-		}
-	}
-	return false
+	return out
 }
 
 func checkTracePad(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {

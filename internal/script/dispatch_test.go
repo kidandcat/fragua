@@ -796,3 +796,56 @@ palette RE r10k_0603
 		}
 	}
 }
+
+func TestComponentClearanceRule(t *testing.T) {
+	p := core.NewProject("clearance")
+	lib, err := core.OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetLibrary(lib)
+	rs := RunScript(p, `
+outline 40 20
+lib chip
+  pad 1 0 0 1 1.2
+lib custom_box module=true
+  pad 1 0 0 1 1
+sym R1 resistor key=chip
+sym R2 resistor key=chip
+palette R1 chip
+palette R2 chip
+place R1 10 10
+place R2 11.4 10
+drc
+`)
+	for _, r := range rs[:len(rs)-1] {
+		if !r.OK {
+			t.Fatalf("line %d %s: %s", r.Line, r.Tool, r.Result)
+		}
+	}
+	drcLine := rs[len(rs)-1]
+	if !drcLine.OK {
+		t.Fatal(drcLine.Result)
+	}
+	if !strings.Contains(drcLine.Result, "body_clearance") || !strings.Contains(drcLine.Result, "R1") || !strings.Contains(drcLine.Result, "R2") {
+		t.Fatalf("drc should name the pair: %s", drcLine.Result)
+	}
+	if !strings.Contains(drcLine.Result, "gap ") {
+		t.Fatalf("drc should report the gap: %s", drcLine.Result)
+	}
+	entry, ok := p.Library().Get("custom_box")
+	if !ok {
+		t.Fatal("custom_box missing")
+	}
+	if !entry.Module {
+		t.Fatal("module=true did not stick on the library entry")
+	}
+
+	rs = RunScript(p, "fab-rules body_gap=0.2 courtyard=0\ndrc\n")
+	if !rs[0].OK || !strings.Contains(rs[0].Result, "body gap 0.200") {
+		t.Fatalf("fab-rules: %s", rs[0].Result)
+	}
+	if !rs[1].OK || strings.Contains(rs[1].Result, "body_clearance") || strings.Contains(rs[1].Result, "courtyard_overlap") {
+		t.Fatalf("loosened rules should clear component findings: %s", rs[1].Result)
+	}
+}

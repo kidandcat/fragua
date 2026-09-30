@@ -165,13 +165,15 @@ type LibrarySilk struct {
 // Source/Datasheet/JLCClass/Pins/SymbolKindName are optional: entries written
 // before they existed still load, and hand-authored `lib` entries omit them.
 type LibraryEntry struct {
-	Key                    string          `json:"key"`
-	Description            string          `json:"description"`
-	DefaultValue           string          `json:"default_value"`
-	DefaultRotationDeg     float32         `json:"default_rotation_deg"`
-	EdgeMounted            bool            `json:"edge_mounted"`
-	EdgeSide               *EdgeSide       `json:"edge_side"`
-	Elevated               bool            `json:"elevated,omitempty"`
+	Key                string    `json:"key"`
+	Description        string    `json:"description"`
+	DefaultValue       string    `json:"default_value"`
+	DefaultRotationDeg float32   `json:"default_rotation_deg"`
+	EdgeMounted        bool      `json:"edge_mounted"`
+	EdgeSide           *EdgeSide `json:"edge_side"`
+	Elevated           bool      `json:"elevated,omitempty"`
+	// Module marks a tall module so DRC and the placer use the larger body gap.
+	Module                 bool            `json:"module,omitempty"`
 	Pads                   []LibraryPad    `json:"pads"`
 	Silk                   []LibrarySilk   `json:"silk"`
 	LcscID                 *string         `json:"lcsc_id,omitempty"`
@@ -376,6 +378,7 @@ func (e *LibraryEntry) ToFootprint(reference, value string, layer Layer, rotatio
 		EdgeSide:        e.EdgeSide,
 		PlacementMargin: e.BodyKeepout(),
 		Elevated:        e.Elevated,
+		Module:          e.Module,
 		Model:           e.Model,
 	}
 	if e.BodyRect != nil {

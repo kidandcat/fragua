@@ -161,6 +161,15 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
   `nc`. A rail with no `power_out` anywhere warns.
 - **Unused pins warn until you say so.** `nc U1.IO9 U1.IO10 …`.
 - **Set `fab-rules` before routing**, not after — they are the floor the router respects.
+  The same rules carry component clearance. Defaults: courtyard margin 0.25 mm
+  (IPC-7351 nominal; applied when a part has no courtyard, on top of the
+  body or pad box), body-to-body gap 0.50 mm, module gap 1.00 mm when either
+  part is a module (`module=true`, or a key/description containing module,
+  lora or castellated, or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA,
+  WLP or SOT). `drc` reports `courtyard_overlap` and
+  `body_clearance` with the two references and the measured gap. `auto-place`
+  and `place-legal` keep the same gap. Override with
+  `fab-rules body_gap=0.8 module_gap=1.5 courtyard=0.25`.
 - **Pours go after routing.** `auto-pour` then `stitch`. Re-routing means `clear-pour`,
   `route`, `auto-pour`, `stitch` again.
 - **A memory-only session loses everything.** `save /abs/path.fragua` early.
@@ -273,7 +282,7 @@ Script verbs (line-oriented, agent-first):
   teardrop on|off             (copper fillets at pad/via junctions)
   silk-line X1 Y1 X2 Y2 | silk-text X Y TEXT [size=1]
   rule-area NAME x1 y1 x2 y2 [clearance=N] …
-  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
+  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list [body_gap=N] [courtyard=N] [module_gap=N]
   escape via-in-pad REF.PAD | via-in-pad-stranded [on|off] | list
   layer list|add|remove|rename|dielectric
   drc / erc
@@ -410,7 +419,8 @@ first — see `list-lib` — and only define a footprint the library lacks.
 entry also sets `value=` and the symbol's value agrees (put per-value ids on
 the `sym` line instead). `model=` is an optional 3D override (a KiCad
 `Library.3dshapes/Name.wrl` path or a local .wrl/.obj) used by `fragua
-render`.
+render`. `module=true` marks a tall module so DRC and auto-place keep the
+larger module body gap.
 
 Examples:
   lib my_conn
@@ -664,7 +674,9 @@ Aliases:
   place_legal
 
 Place a footprint at the first legal spot found by search, instead of at
-coordinates you pick. Useful when you do not care where a part lands.
+coordinates you pick. Useful when you do not care where a part lands. A
+legal spot is on the board, clear of keepouts, and clear of the
+component-clearance rule (courtyards and body gap).
 
 Examples:
   place-legal C3
@@ -781,7 +793,9 @@ bound by `palette` / `part` / `lib-gen` but never placed are seated on the
 board first (reported as `seated N new`), so you do not have to `place` them
 by hand. Anything you `place`d or `edge-place`d stays put and is routed
 around; name it as a REF to move it anyway. Pass a `seed` to make the result
-reproducible. Needs an outline.
+reproducible. Needs an outline. Legalisation keeps the same component
+clearance DRC enforces: courtyards do not overlap, and bodies stay at least
+the body gap apart (the module gap when either part is a module).
 
 Examples:
   auto-place
@@ -1118,19 +1132,28 @@ Full reference: `fragua help` or GET /help
 fab-rules — fragua script verb
 
 Usage:
-  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list
+  fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list [body_gap=N] [courtyard=N] [module_gap=N]
 
 Aliases:
   fab_rules
 
 Load a fabricator's minimum rule set. These become the floor DRC and the
 router will not go below them. Set this before routing so you never route
-something the fab rejects.
+something the fab rejects. The same rules carry component clearance, which
+DRC and auto-place both enforce. Defaults: courtyard margin 0.25 mm
+(IPC-7351 nominal, used when a part has no courtyard of its own),
+body-to-body gap 0.50 mm, module gap 1.00 mm (either part is a module:
+`module=true`, or a key/description containing module, lora or castellated,
+or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA, WLP or SOT).
+`body_gap=`, `courtyard=` and `module_gap=` override those floors; a later
+line updates them without clearing the fab preset. Zero is allowed and means
+bodies may touch, or pad outlines are the courtyard.
 
 Examples:
   fab-rules list
   fab-rules jlcpcb
   fab-rules jlcpcb-4l
+  fab-rules body_gap=0.8 module_gap=1.5
 
 Full reference: `fragua help` or GET /help
 ```
@@ -1188,7 +1211,10 @@ Aliases:
 
 `erc` checks the schematic (floating pins, unconnected nets, power
 conflicts); `drc` checks the geometry (clearance, shorts, annular ring,
-board edge). Both print violations; both must be clean before `pack`.
+board edge, component courtyard overlap and body-to-body gap). Both print
+violations. `pack` refuses on ERC errors and reports DRC errors, including
+`courtyard_overlap` and `body_clearance`, in `drc_err`. A `body_clearance`
+line names the two references and the measured gap.
 
 Examples:
   erc

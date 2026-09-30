@@ -85,9 +85,15 @@ type Footprint struct {
 	// Fiducial is a board optical mark: in CPL, omitted from BOM.
 	Fiducial bool `json:"fiducial,omitempty"`
 	// Courtyard / body: used by DRC. BodyRect is footprint-local mm (Y-up).
+	// When set it is the part's outline (IPC and KiCad imports store the
+	// courtyard keep-out there; a hand-authored module stores its body).
 	BodyRect        *BodyRect       `json:"body_rect,omitempty"`
 	PlacementMargin PlacementMargin `json:"placement_margin,omitempty"`
 	Elevated        bool            `json:"elevated,omitempty"`
+	// Module marks a tall module (ESP32, LoRa, …). DRC and the placer then
+	// use the larger module body gap. A key/description that already says
+	// so is detected even when this flag is unset; see IsModule.
+	Module bool `json:"module,omitempty"`
 }
 
 // Trace is a copper segment.
@@ -483,54 +489,46 @@ func ResolveSilkText(fp *Footprint, raw string) string {
 	return strings.ReplaceAll(s, "{VAL}", fp.Value)
 }
 
-// CourtyardMarginMM is applied around the pad-union AABB when a footprint
-// has no library body_rect and no placement_margin. Documented default
-// for DRC courtyard overlap (not a fab rule).
+// CourtyardMarginMM is the IPC-7351 nominal courtyard excess (mm). Applied
+// around the pad-union AABB when a footprint has no library body_rect and no
+// placement_margin. A board may override it via FabRules.CourtyardMarginMM.
 const CourtyardMarginMM = 0.25
+
+// DefaultBodyGapMM is the minimum gap between component outlines (mm).
+// IPC-7351 nominal courtyards of 0.25 mm on each part sum to the same 0.5 mm.
+const DefaultBodyGapMM = 0.5
+
+// DefaultModuleGapMM is the body gap when either part is a module (mm).
+// Modules are taller than chip parts and need room to rework.
+const DefaultModuleGapMM = 1.0
 
 // CourtyardWorld returns the world-space courtyard AABB.
 // Preference: library body_rect (rotated), else pad-union expanded by
 // placement_margin, else pad-union + CourtyardMarginMM.
 func CourtyardWorld(fp *Footprint) (Rect, bool) {
+	return CourtyardWorldMargin(fp, CourtyardMarginMM)
+}
+
+// CourtyardWorldMargin is CourtyardWorld with an explicit fallback margin.
+// marginMM is used only when the footprint declares neither a body_rect nor
+// a placement margin: the pad union is grown by that much on every side.
+func CourtyardWorldMargin(fp *Footprint, marginMM float64) (Rect, bool) {
 	if fp == nil {
 		return Rect{}, false
 	}
-	if fp.BodyRect != nil {
-		corners := []Point{
-			{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MinYMM)},
-			{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MinYMM)},
-			{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
-			{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
-		}
-		w0 := LocalToWorld(fp, corners[0])
-		out := Rect{Min: w0, Max: w0}
-		for _, c := range corners[1:] {
-			p := LocalToWorld(fp, c)
-			if p.X < out.Min.X {
-				out.Min.X = p.X
-			}
-			if p.Y < out.Min.Y {
-				out.Min.Y = p.Y
-			}
-			if p.X > out.Max.X {
-				out.Max.X = p.X
-			}
-			if p.Y > out.Max.Y {
-				out.Max.Y = p.Y
-			}
-		}
-		return out, true
+	if r, ok := bodyRectWorld(fp); ok {
+		return r, true
 	}
-	if len(fp.Pads) == 0 {
+	body, ok := padUnionWorld(fp)
+	if !ok {
 		return Rect{}, false
-	}
-	body := PadWorldAABB(fp, &fp.Pads[0])
-	for i := 1; i < len(fp.Pads); i++ {
-		body = body.Union(PadWorldAABB(fp, &fp.Pads[i]))
 	}
 	m := fp.PlacementMargin
 	if m.IsZero() {
-		return body.Expand(FromMM(CourtyardMarginMM)), true
+		if marginMM < 0 {
+			marginMM = 0
+		}
+		return body.Expand(FromMM(marginMM)), true
 	}
 	// Placement margin is footprint-local (top/right/bottom/left). After
 	// 90° snaps, expand the world AABB by the matching sides.
@@ -551,6 +549,101 @@ func CourtyardWorld(fp *Footprint) (Rect, bool) {
 		Min: Point{X: body.Min.X - FromMM(left), Y: body.Min.Y - FromMM(bottom)},
 		Max: Point{X: body.Max.X + FromMM(right), Y: body.Max.Y + FromMM(top)},
 	}, true
+}
+
+// BodyWorld is the outline the body-to-body gap is measured on.
+// A declared body_rect wins (for IPC and KiCad parts that rectangle is the
+// courtyard keep-out, which is a conservative stand-in for the package).
+// Otherwise it is the pad-union AABB, with no courtyard margin added.
+func BodyWorld(fp *Footprint) (Rect, bool) {
+	if r, ok := bodyRectWorld(fp); ok {
+		return r, true
+	}
+	return padUnionWorld(fp)
+}
+
+func bodyRectWorld(fp *Footprint) (Rect, bool) {
+	if fp == nil || fp.BodyRect == nil {
+		return Rect{}, false
+	}
+	corners := []Point{
+		{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MinYMM)},
+		{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MinYMM)},
+		{X: FromMM(fp.BodyRect.MaxXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
+		{X: FromMM(fp.BodyRect.MinXMM), Y: FromMM(fp.BodyRect.MaxYMM)},
+	}
+	w0 := LocalToWorld(fp, corners[0])
+	out := Rect{Min: w0, Max: w0}
+	for _, c := range corners[1:] {
+		p := LocalToWorld(fp, c)
+		if p.X < out.Min.X {
+			out.Min.X = p.X
+		}
+		if p.Y < out.Min.Y {
+			out.Min.Y = p.Y
+		}
+		if p.X > out.Max.X {
+			out.Max.X = p.X
+		}
+		if p.Y > out.Max.Y {
+			out.Max.Y = p.Y
+		}
+	}
+	return out, true
+}
+
+func padUnionWorld(fp *Footprint) (Rect, bool) {
+	if fp == nil || len(fp.Pads) == 0 {
+		return Rect{}, false
+	}
+	body := PadWorldAABB(fp, &fp.Pads[0])
+	for i := 1; i < len(fp.Pads); i++ {
+		body = body.Union(PadWorldAABB(fp, &fp.Pads[i]))
+	}
+	return body, true
+}
+
+// HasThroughHole reports whether any pad is drilled, so the part occupies
+// every copper layer rather than just fp.Layer.
+func (fp *Footprint) HasThroughHole() bool {
+	if fp == nil {
+		return false
+	}
+	for i := range fp.Pads {
+		if fp.Pads[i].Drill != nil && *fp.Pads[i].Drill > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// IsModule reports whether this footprint takes the larger module body gap.
+// An explicit Module flag wins. Otherwise the key, library and description
+// are scanned: "module", "lora" and "castellated" always count, and an
+// ESP32/ESP8266 name counts unless it is a bare package (QFN, QFP, BGA, WLP).
+func (fp *Footprint) IsModule() bool {
+	if fp == nil {
+		return false
+	}
+	if fp.Module {
+		return true
+	}
+	blob := strings.ToLower(fp.Key + " " + fp.Library + " " + fp.Description)
+	for _, w := range []string{"module", "lora", "castellat"} {
+		if strings.Contains(blob, w) {
+			return true
+		}
+	}
+	esp := strings.Contains(blob, "esp32") || strings.Contains(blob, "esp8266")
+	if !esp {
+		return false
+	}
+	for _, pkg := range []string{"qfn", "qfp", "bga", "wlp", "sot"} {
+		if strings.Contains(blob, pkg) {
+			return false
+		}
+	}
+	return true
 }
 
 // PadWorldAABB returns the axis-aligned bounding box of a pad (90° rotations).
