@@ -268,7 +268,8 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		}
 
 		if !padsInside(fp, o, opts.EdgeClearanceMM) ||
-			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) {
+			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) ||
+			componentClash(board, fp) {
 			fp.Position = core.NewPoint(old.x, old.y)
 			fp.Rotation = old.rot
 			continue
@@ -633,6 +634,44 @@ func firstOverlapperGap(board *core.Board, probe *core.Footprint, gapMM float64)
 	return false
 }
 
+// componentClash reports whether probe violates the board's component
+// clearance (courtyard overlap, or body gap under the chip/module floor).
+// The solder gap is a separate, often looser-or-tighter pad rule; this one
+// is the same check DRC runs, so auto-place cannot hand DRC a violation.
+func componentClash(board *core.Board, probe *core.Footprint) bool {
+	if board == nil || probe == nil {
+		return false
+	}
+	rules := board.ComponentRules()
+	for _, fp := range footprintsAll(board) {
+		if len(core.ComponentHits(probe, fp, rules)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// componentViolationMM2 is a flat cost per violating pair, scaled so that
+// any legal pose beats any illegal one on the annealer's score. The hard
+// veto already refuses a move that stays in violation; this term is what
+// makes the escape the best-seen state rather than the illegal start.
+func componentViolationMM2(board *core.Board) float64 {
+	if board == nil {
+		return 0
+	}
+	rules := board.ComponentRules()
+	fps := footprintsAll(board)
+	n := 0
+	for i := 0; i < len(fps); i++ {
+		for j := i + 1; j < len(fps); j++ {
+			if len(core.ComponentHits(fps[i], fps[j], rules)) > 0 {
+				n++
+			}
+		}
+	}
+	return float64(n) * 50
+}
+
 // collisionBounds is the rectangle the placer must keep clear of its
 // neighbours: the pad AABB grown by half the assembly gap, unioned with the
 // courtyard when the library declares one. Testing pads alone let auto-place
@@ -966,7 +1005,8 @@ func overlapAreaMM2(board *core.Board, fps []*core.Footprint, gapMM float64) flo
 func compositeScore(board *core.Board, movable []*core.Footprint, opts Options) float64 {
 	return weightedHPWL(board) + opts.GapPenalty*totalGapPenalty(board, opts.MinGapMM) +
 		noPlacePenalty*(noPlaceOverlapMM2(board, movable)+
-			overlapAreaMM2(board, movable, opts.SolderGapMM))
+			overlapAreaMM2(board, movable, opts.SolderGapMM)+
+			componentViolationMM2(board))
 }
 
 // LegalAt reports whether fp (already posed) clears the solder floor
@@ -981,5 +1021,5 @@ func LegalAt(board *core.Board, fp *core.Footprint) bool {
 	if hitsNoPlace(board, fp) {
 		return false
 	}
-	return !firstOverlapper(board, fp)
+	return !firstOverlapper(board, fp) && !componentClash(board, fp)
 }

@@ -445,7 +445,7 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
 					continue
 				}
-				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
+				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) || componentClash(board, fp) {
 					continue
 				}
 				if overlapsInductorBody(board, fp, 0.15) {
@@ -505,6 +505,7 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 		}
 		if minGapAgainstOthers(board, fp) < hard+seatSlackMM ||
 			firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) ||
+			componentClash(board, fp) ||
 			overlapsInductorBody(board, fp, 0.15) {
 			continue
 		}
@@ -622,7 +623,7 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
 					continue
 				}
-				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) {
+				if firstOverlapperGap(board, fp, hard) || hitsNoPlace(board, fp) || componentClash(board, fp) {
 					continue
 				}
 				if coversForeignPad(fp, swPin.fp) {

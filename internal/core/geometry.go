@@ -1,5 +1,7 @@
 package core
 
+import "math"
+
 // Point is a 2D point in board coordinates (nanometres).
 type Point struct {
 	X Length `json:"x"`
@@ -68,6 +70,39 @@ func (r Rect) Expand(margin Length) Rect {
 func (r Rect) Intersects(other Rect) bool {
 	return r.Min.X < other.Max.X && r.Max.X > other.Min.X &&
 		r.Min.Y < other.Max.Y && r.Max.Y > other.Min.Y
+}
+
+// RectGapMM is the signed clearance between two axis-aligned rectangles, in mm.
+// A positive value is the Euclidean distance between them. Zero means the
+// edges touch. A negative value is an overlap, and its magnitude is the
+// shortest translation that separates the two rectangles.
+func RectGapMM(a, b Rect) float64 {
+	gapX := axisGapMM(a.Min.X.ToMM(), a.Max.X.ToMM(), b.Min.X.ToMM(), b.Max.X.ToMM())
+	gapY := axisGapMM(a.Min.Y.ToMM(), a.Max.Y.ToMM(), b.Min.Y.ToMM(), b.Max.Y.ToMM())
+	switch {
+	case gapX >= 0 && gapY >= 0:
+		return math.Hypot(gapX, gapY)
+	case gapX >= 0:
+		return gapX
+	case gapY >= 0:
+		return gapY
+	default:
+		// Both axes overlap; the smaller penetration is the one that matters.
+		if gapX > gapY {
+			return gapX
+		}
+		return gapY
+	}
+}
+
+func axisGapMM(a0, a1, b0, b1 float64) float64 {
+	if a1 < b0 {
+		return b0 - a1
+	}
+	if b1 < a0 {
+		return a0 - b1
+	}
+	return -(math.Min(a1, b1) - math.Max(a0, b0))
 }
 
 // ContainsPoint reports whether p is inside or on the boundary of r.

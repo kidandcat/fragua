@@ -53,7 +53,7 @@ var Verbs = []VerbHelp{
 	{
 		Name:     "lib",
 		Usage:    "lib KEY … + indented pad NUMBER X Y W H",
-		Describe: "Define a custom footprint under KEY. Follow it with indented `pad NUMBER X Y W H` lines (mm, relative to the footprint origin). Use the built-in palette first — see `list-lib` — and only define a footprint the library lacks. `lcsc=`/`mpn=` name ONE part: on a passive they only reach the BOM when the entry also sets `value=` and the symbol's value agrees (put per-value ids on the `sym` line instead). `model=` is an optional 3D override (a KiCad `Library.3dshapes/Name.wrl` path or a local .wrl/.obj) used by `fragua render`.",
+		Describe: "Define a custom footprint under KEY. Follow it with indented `pad NUMBER X Y W H` lines (mm, relative to the footprint origin). Use the built-in palette first — see `list-lib` — and only define a footprint the library lacks. `lcsc=`/`mpn=` name ONE part: on a passive they only reach the BOM when the entry also sets `value=` and the symbol's value agrees (put per-value ids on the `sym` line instead). `model=` is an optional 3D override (a KiCad `Library.3dshapes/Name.wrl` path or a local .wrl/.obj) used by `fragua render`. `module=true` marks a tall module so DRC and auto-place keep the larger module body gap.",
 		Examples: []string{"lib my_conn\n  pad 1 -1.27 0 1.0 1.8\n  pad 2 1.27 0 1.0 1.8"},
 	},
 	{
@@ -145,7 +145,7 @@ var Verbs = []VerbHelp{
 		Name:     "place-legal",
 		Aliases:  []string{"place_legal"},
 		Usage:    "place-legal REF [tries=N] [rot=DEG]",
-		Describe: "Place a footprint at the first legal spot found by search, instead of at coordinates you pick. Useful when you do not care where a part lands.",
+		Describe: "Place a footprint at the first legal spot found by search, instead of at coordinates you pick. Useful when you do not care where a part lands. A legal spot is on the board, clear of keepouts, and clear of the component-clearance rule (courtyards and body gap).",
 		Examples: []string{"place-legal C3", "place-legal C3 tries=200"},
 	},
 	{
@@ -185,7 +185,8 @@ var Verbs = []VerbHelp{
 		Usage:   "auto-place [REF...] [seed=N] [iters=N]",
 		Describe: "ePlace global placement (Poisson/DCT + Nesterov) plus simulated-annealing legalisation over the listed parts (all movable parts if none listed). " +
 			"Parts bound by `palette` / `part` / `lib-gen` but never placed are seated on the board first (reported as `seated N new`), so you do not have to `place` them by hand. " +
-			"Anything you `place`d or `edge-place`d stays put and is routed around; name it as a REF to move it anyway. Pass a `seed` to make the result reproducible. Needs an outline.",
+			"Anything you `place`d or `edge-place`d stays put and is routed around; name it as a REF to move it anyway. Pass a `seed` to make the result reproducible. Needs an outline. " +
+			"Legalisation keeps the same component clearance DRC enforces: courtyards do not overlap, and bodies stay at least the body gap apart (the module gap when either part is a module).",
 		Examples: []string{"auto-place", "auto-place R1 C1 C2 seed=42", "auto-place seed=7 iters=4000"},
 	},
 	{
@@ -299,11 +300,13 @@ var Verbs = []VerbHelp{
 		Examples: []string{"rule-area hv 20 0 30 20 clearance=0.5"},
 	},
 	{
-		Name:     "fab-rules",
-		Aliases:  []string{"fab_rules"},
-		Usage:    "fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list",
-		Describe: "Load a fabricator's minimum rule set. These become the floor DRC and the router will not go below them. Set this before routing so you never route something the fab rejects.",
-		Examples: []string{"fab-rules list", "fab-rules jlcpcb", "fab-rules jlcpcb-4l"},
+		Name:    "fab-rules",
+		Aliases: []string{"fab_rules"},
+		Usage:   "fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list [body_gap=N] [courtyard=N] [module_gap=N]",
+		Describe: "Load a fabricator's minimum rule set. These become the floor DRC and the router will not go below them. Set this before routing so you never route something the fab rejects. " +
+			"The same rules carry component clearance, which DRC and auto-place both enforce. Defaults: courtyard margin 0.25 mm (IPC-7351 nominal, used when a part has no courtyard of its own), body-to-body gap 0.50 mm, module gap 1.00 mm (either part is a module: `module=true`, or a key/description containing module, lora or castellated, or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA, WLP or SOT). " +
+			"`body_gap=`, `courtyard=` and `module_gap=` override those floors; a later line updates them without clearing the fab preset. Zero is allowed and means bodies may touch, or pad outlines are the courtyard.",
+		Examples: []string{"fab-rules list", "fab-rules jlcpcb", "fab-rules jlcpcb-4l", "fab-rules body_gap=0.8 module_gap=1.5"},
 	},
 	{
 		Name:     "escape",
@@ -321,7 +324,7 @@ var Verbs = []VerbHelp{
 		Name:     "drc",
 		Aliases:  []string{"erc"},
 		Usage:    "drc / erc",
-		Describe: "`erc` checks the schematic (floating pins, unconnected nets, power conflicts); `drc` checks the geometry (clearance, shorts, annular ring, board edge). Both print violations; both must be clean before `pack`.",
+		Describe: "`erc` checks the schematic (floating pins, unconnected nets, power conflicts); `drc` checks the geometry (clearance, shorts, annular ring, board edge, component courtyard overlap and body-to-body gap). Both print violations. `pack` refuses on ERC errors and reports DRC errors, including `courtyard_overlap` and `body_clearance`, in `drc_err`. A `body_clearance` line names the two references and the measured gap.",
 		Examples: []string{"erc", "drc"},
 	},
 	{

@@ -418,6 +418,9 @@ func listLib(p *core.Project) string {
 		if e.Elevated {
 			b.WriteString(" elevated")
 		}
+		if e.Module {
+			b.WriteString(" module")
+		}
 		if e.BodyRect != nil {
 			b.WriteString(" body")
 		}
@@ -943,6 +946,8 @@ func addLibrary(p *core.Project, args string, pads []core.LibraryPad) (string, e
 			entry.EdgeMounted = strings.EqualFold(strings.TrimPrefix(t, "edge="), "true")
 		case strings.HasPrefix(t, "elevated="):
 			entry.Elevated = strings.EqualFold(strings.TrimPrefix(t, "elevated="), "true")
+		case strings.HasPrefix(t, "module="):
+			entry.Module = strings.EqualFold(strings.TrimPrefix(t, "module="), "true")
 		case strings.HasPrefix(t, "desc="):
 			entry.Description = strings.TrimPrefix(t, "desc=")
 		case strings.HasPrefix(t, "description="):
@@ -1395,41 +1400,145 @@ func escapeCmd(p *core.Project, args string) (string, error) {
 }
 
 func setFabRules(p *core.Project, args string) (string, error) {
-	// fab-rules PRESET | clear | list
+	// fab-rules PRESET | clear | list | body_gap=N courtyard=N module_gap=N
 	fields := strings.Fields(args)
 	if len(fields) < 1 {
-		return "", fmt.Errorf("fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list")
+		return "", fmt.Errorf("fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list [body_gap=N] [courtyard=N] [module_gap=N]")
 	}
-	key := strings.ToLower(fields[0])
-	switch key {
+	var preset string
+	var bodyGap, courtyard, moduleGap *float64
+	for _, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "body_gap="):
+			v, err := parseRuleMM(f)
+			if err != nil {
+				return "", fmt.Errorf("fab-rules body_gap: %w", err)
+			}
+			bodyGap = &v
+		case strings.HasPrefix(f, "courtyard="), strings.HasPrefix(f, "courtyard_margin="):
+			v, err := parseRuleMM(f)
+			if err != nil {
+				return "", fmt.Errorf("fab-rules courtyard: %w", err)
+			}
+			courtyard = &v
+		case strings.HasPrefix(f, "module_gap="):
+			v, err := parseRuleMM(f)
+			if err != nil {
+				return "", fmt.Errorf("fab-rules module_gap: %w", err)
+			}
+			moduleGap = &v
+		case f == "clear" || f == "none" || f == "list":
+			if preset != "" || bodyGap != nil || courtyard != nil || moduleGap != nil || len(fields) != 1 {
+				return "", fmt.Errorf("fab-rules %s takes no other arguments", f)
+			}
+			preset = f
+		default:
+			if strings.Contains(f, "=") {
+				return "", fmt.Errorf("fab-rules: unknown option %q (body_gap, courtyard, module_gap)", f)
+			}
+			if preset != "" {
+				return "", fmt.Errorf("fab-rules: unexpected %q", f)
+			}
+			preset = f
+		}
+	}
+	switch preset {
 	case "clear", "none":
 		p.MutateBoard(func(b *core.Board) { b.FabRules = nil })
 		return "fab rules cleared", nil
 	case "list":
-		return "fab-rules presets: jlcpcb-2l (via 0.30/0.60 standard), jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02", nil
+		return "fab-rules presets: jlcpcb-2l (via 0.30/0.60 standard), jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02\n" +
+			"component clearance defaults: courtyard 0.25 mm, body gap 0.50 mm, module gap 1.00 mm\n" +
+			"overrides: body_gap=N courtyard=N module_gap=N", nil
 	}
-	rules := core.FabRulesPreset(key)
-	if rules == nil {
-		return "", fmt.Errorf("fab-rules: unknown preset %q (have jlcpcb-2l, jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02)", fields[0])
+
+	var rules *core.FabRules
+	if preset != "" {
+		rules = core.FabRulesPreset(preset)
+		if rules == nil {
+			return "", fmt.Errorf("fab-rules: unknown preset %q (have jlcpcb-2l, jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02)", preset)
+		}
 	}
-	p.MutateBoard(func(b *core.Board) { b.FabRules = rules })
-	// also set session profile for pack/drc
-	maxSz := [2]float64{100, 100}
-	if rules.MaxBoardSizeMM != nil {
-		maxSz = *rules.MaxBoardSizeMM
-	}
-	p.SetFabProfile(&core.FabProfileHandle{
-		Name: rules.Preset, MinTraceWidthMM: rules.MinTraceWidthMM,
-		MinClearanceMM: rules.MinClearanceMM, MinDrillMM: rules.MinViaDrillMM,
-		MinAnnularRingMM: rules.MinAnnularRingMM, MinViaDiameterMM: rules.MinViaDiameterMM,
-		MinEdgeClearanceMM: rules.MinEdgeClearanceMM,
-		MinHoleToHoleMM:    rules.MinHoleToHoleMM, MinSliverMM: rules.MinSliverMM,
-		MaxBoardSizeMM: maxSz,
+	p.MutateBoard(func(b *core.Board) {
+		if rules != nil {
+			b.FabRules = rules
+		}
+		if b.FabRules == nil {
+			b.FabRules = &core.FabRules{}
+		}
+		if bodyGap != nil {
+			b.FabRules.MinBodyGapMM = bodyGap
+		}
+		if courtyard != nil {
+			b.FabRules.CourtyardMarginMM = courtyard
+		}
+		if moduleGap != nil {
+			b.FabRules.MinModuleGapMM = moduleGap
+		}
 	})
-	return fmt.Sprintf(
-		"fab rules `%s`: trace %.3f mm, space %.3f mm, via drill %.3f mm, via dia %.3f mm",
-		rules.Preset, rules.MinTraceWidthMM, rules.MinClearanceMM, rules.MinViaDrillMM, rules.MinViaDiameterMM,
-	), nil
+
+	p.RLock()
+	stored := p.Board().FabRules
+	var copied core.FabRules
+	if stored != nil {
+		copied = *stored
+	}
+	p.RUnlock()
+
+	if copied.Preset != "" && copied.MinClearanceMM > 0 {
+		maxSz := [2]float64{100, 100}
+		if copied.MaxBoardSizeMM != nil {
+			maxSz = *copied.MaxBoardSizeMM
+		}
+		p.SetFabProfile(&core.FabProfileHandle{
+			Name: copied.Preset, MinTraceWidthMM: copied.MinTraceWidthMM,
+			MinClearanceMM: copied.MinClearanceMM, MinDrillMM: copied.MinViaDrillMM,
+			MinAnnularRingMM: copied.MinAnnularRingMM, MinViaDiameterMM: copied.MinViaDiameterMM,
+			MinEdgeClearanceMM: copied.MinEdgeClearanceMM,
+			MinHoleToHoleMM:    copied.MinHoleToHoleMM, MinSliverMM: copied.MinSliverMM,
+			MaxBoardSizeMM: maxSz,
+		})
+	}
+	eff := core.ComponentRules{CourtyardMarginMM: core.CourtyardMarginMM, MinBodyGapMM: core.DefaultBodyGapMM, MinModuleGapMM: core.DefaultModuleGapMM}
+	// Re-read through the board helper so nil fields stay at the defaults.
+	p.RLock()
+	eff = p.Board().ComponentRules()
+	presetName := ""
+	if p.Board().FabRules != nil {
+		presetName = p.Board().FabRules.Preset
+	}
+	trace, space, drill, dia := 0.0, 0.0, 0.0, 0.0
+	if p.Board().FabRules != nil {
+		trace = p.Board().FabRules.MinTraceWidthMM
+		space = p.Board().FabRules.MinClearanceMM
+		drill = p.Board().FabRules.MinViaDrillMM
+		dia = p.Board().FabRules.MinViaDiameterMM
+	}
+	p.RUnlock()
+	comp := fmt.Sprintf("component: courtyard %.3f mm, body gap %.3f mm, module gap %.3f mm",
+		eff.CourtyardMarginMM, eff.MinBodyGapMM, eff.MinModuleGapMM)
+	if presetName != "" && trace > 0 {
+		return fmt.Sprintf(
+			"fab rules `%s`: trace %.3f mm, space %.3f mm, via drill %.3f mm, via dia %.3f mm; %s",
+			presetName, trace, space, drill, dia, comp,
+		), nil
+	}
+	return "fab rules: " + comp, nil
+}
+
+func parseRuleMM(tok string) (float64, error) {
+	i := strings.IndexByte(tok, '=')
+	if i < 0 || i == len(tok)-1 {
+		return 0, fmt.Errorf("expected name=mm")
+	}
+	v, err := strconv.ParseFloat(tok[i+1:], 64)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("%s must be >= 0", tok[:i])
+	}
+	return v, nil
 }
 
 // ─── layer ───────────────────────────────────────────────────────────

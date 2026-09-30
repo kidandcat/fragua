@@ -66,3 +66,49 @@ func TestPackShipsKiCadBoard(t *testing.T) {
 	}
 	t.Fatal("the fab zip has no .kicad_pcb")
 }
+
+// Component-clearance failures are ordinary DRC errors: pack still writes the
+// zip (it only refuses on ERC) and the count includes them.
+func TestPackReportsBodyClearance(t *testing.T) {
+	p := core.NewProject("touching-modules")
+	b := p.Board()
+	o := core.Rect{Max: core.Point{X: core.FromMM(60), Y: core.FromMM(30)}}
+	b.Outline = &o
+	add := func(ref string, x float64, key string) {
+		b.AddFootprint(&core.Footprint{
+			ID: core.NewID(), Reference: ref, Key: key, Layer: core.LayerTop,
+			Position: core.Point{X: core.FromMM(x), Y: core.FromMM(12)},
+			BodyRect: &core.BodyRect{MinXMM: -8, MinYMM: -5, MaxXMM: 8, MaxYMM: 5},
+			Pads: []core.Pad{
+				{
+					Number: "1",
+					Offset: core.NewPoint(core.FromMM(-7.5), 0),
+					Size:   [2]core.Length{core.FromMM(1), core.FromMM(1)},
+					Layer:  core.LayerTop,
+				},
+				{
+					Number: "2",
+					Offset: core.NewPoint(core.FromMM(7.5), 0),
+					Size:   [2]core.Length{core.FromMM(1), core.FromMM(1)},
+					Layer:  core.LayerTop,
+				},
+			},
+		})
+	}
+	// Outlines [4, 20] and [20.1, 36.1]: 0.10 mm apart, courtyards do not overlap.
+	add("U1", 12, "esp32_s3_zero_top")
+	add("U2", 28.1, "xl1262_lora")
+	res, err := Pack(p, "jlcpcb", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ERCErrors != 0 {
+		t.Fatalf("erc errors %d; pack should only be refusing on those", res.ERCErrors)
+	}
+	if res.DRCErrors < 1 {
+		t.Fatalf("drc_err=%d, want the body clearance counted", res.DRCErrors)
+	}
+	if res.ZipPath == "" {
+		t.Fatal("pack dropped the zip")
+	}
+}
