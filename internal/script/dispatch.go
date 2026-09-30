@@ -1448,7 +1448,7 @@ func setFabRules(p *core.Project, args string) (string, error) {
 		return "fab rules cleared", nil
 	case "list":
 		return "fab-rules presets: jlcpcb-2l (via 0.30/0.60 standard), jlcpcb-2l-via02, jlcpcb-4l, jlcpcb-4l-via02\n" +
-			"component clearance defaults: courtyard 0.25 mm, body gap 0.50 mm, module gap 1.00 mm\n" +
+			"component clearance defaults: courtyard 0.25 mm, body gap 0.50 mm, module gap 1.00 mm (two modules only)\n" +
 			"overrides: body_gap=N courtyard=N module_gap=N", nil
 	}
 

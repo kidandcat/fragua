@@ -90,9 +90,10 @@ type Footprint struct {
 	BodyRect        *BodyRect       `json:"body_rect,omitempty"`
 	PlacementMargin PlacementMargin `json:"placement_margin,omitempty"`
 	Elevated        bool            `json:"elevated,omitempty"`
-	// Module marks a tall module (ESP32, LoRa, …). DRC and the placer then
-	// use the larger module body gap. A key/description that already says
-	// so is detected even when this flag is unset; see IsModule.
+	// Module marks a tall module (ESP32, LoRa, …). Two modules keep the
+	// larger body gap; a module next to a passive keeps the body gap.
+	// A key/description that already says so is detected even when this
+	// flag is unset; see IsModule.
 	Module bool `json:"module,omitempty"`
 }
 
@@ -498,8 +499,10 @@ const CourtyardMarginMM = 0.25
 // IPC-7351 nominal courtyards of 0.25 mm on each part sum to the same 0.5 mm.
 const DefaultBodyGapMM = 0.5
 
-// DefaultModuleGapMM is the body gap when either part is a module (mm).
-// Modules are taller than chip parts and need room to rework.
+// DefaultModuleGapMM is the body gap between two modules (mm).
+// Modules are taller than chip parts and need room to rework each other.
+// A module next to a passive uses DefaultBodyGapMM, so a decap can sit
+// on the supply pins.
 const DefaultModuleGapMM = 1.0
 
 // CourtyardWorld returns the world-space courtyard AABB.
@@ -617,10 +620,11 @@ func (fp *Footprint) HasThroughHole() bool {
 	return false
 }
 
-// IsModule reports whether this footprint takes the larger module body gap.
-// An explicit Module flag wins. Otherwise the key, library and description
-// are scanned: "module", "lora" and "castellated" always count, and an
-// ESP32/ESP8266 name counts unless it is a bare package (QFN, QFP, BGA, WLP).
+// IsModule reports whether this footprint is a module. The larger body gap
+// applies only to a pair of modules. An explicit Module flag wins. Otherwise
+// the key, library and description are scanned: "module", "lora" and
+// "castellated" always count, and an ESP32/ESP8266 name counts unless it is
+// a bare package (QFN, QFP, BGA, WLP, SOT).
 func (fp *Footprint) IsModule() bool {
 	if fp == nil {
 		return false
