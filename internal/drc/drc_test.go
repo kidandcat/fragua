@@ -1,6 +1,7 @@
 package drc
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -617,5 +618,34 @@ func TestCourtyardOverlapIgnoresOppositeFaces(t *testing.T) {
 	b.FootprintByRef("R2").Pads[0].Drill = &d
 	if n := countKind(Check(b, nil, DefaultOptions()), KindCourtyardOverlap); n == 0 {
 		t.Fatal("a through-hole part must still clash with the other face")
+	}
+}
+
+// Fecha door strip: U2 is the XL1262 LoRa module and C3 is a 0603 100 nF
+// decap whose description says "HF decap at LoRa VDD". The bodies are
+// 0.922 mm apart. That used to be reported as a 1 mm module-to-module gap
+// because the decap comment contains "LoRa".
+func TestFechaLoRaDecapIsNotAModule(t *testing.T) {
+	p, err := core.LoadFromPath(filepath.Join("testdata", "fecha_u2_c3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := p.Board()
+	u2, c3 := b.FootprintByRef("U2"), b.FootprintByRef("C3")
+	if u2 == nil || c3 == nil {
+		t.Fatal("fixture missing U2 or C3")
+	}
+	if !u2.IsModule() {
+		t.Fatal("U2 xl1262_lora is a module")
+	}
+	if c3.IsModule() {
+		t.Fatal("C3 c_0603 must not be a module")
+	}
+	if need := b.ComponentRules().GapBetween(u2, c3); need != 0.5 {
+		t.Fatalf("module-to-0603 floor %v, want 0.5", need)
+	}
+	rep := Check(b, p.Schematic(), DefaultOptions())
+	if rep.Errors != 0 {
+		t.Fatalf("drc errors=%d warnings=%d\n%v", rep.Errors, rep.Warnings, rep.Violations)
 	}
 }

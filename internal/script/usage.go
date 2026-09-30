@@ -304,7 +304,7 @@ var Verbs = []VerbHelp{
 		Aliases: []string{"fab_rules"},
 		Usage:   "fab-rules jlcpcb|jlcpcb-2l-via02|jlcpcb-4l|clear|list [body_gap=N] [courtyard=N] [module_gap=N]",
 		Describe: "Load a fabricator's minimum rule set. These become the floor DRC and the router will not go below them. Set this before routing so you never route something the fab rejects. " +
-			"The same rules carry component clearance, which DRC and auto-place both enforce. Defaults: courtyard margin 0.25 mm (IPC-7351 nominal, used when a part has no courtyard of its own), body-to-body gap 0.50 mm, module gap 1.00 mm only when both parts are modules (`module=true`, or a key/description containing module, lora or castellated, or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA, WLP or SOT). A module next to a passive uses the body gap. " +
+			"The same rules carry component clearance, which DRC and auto-place both enforce. Defaults: courtyard margin 0.25 mm (IPC-7351 nominal, used when a part has no courtyard of its own), body-to-body gap 0.50 mm, module gap 1.00 mm only when both parts are modules (`module=true`, or a footprint key or footprint description containing module, lora or castellated, or an ESP32/ESP8266 that is not a bare QFN, QFP, BGA, WLP or SOT). A standard passive — r/c/l 0201–2512, SOD, SOT, LED — is never a module. Part value, net names and neighbours are not consulted. A module next to a passive uses the body gap. " +
 			"`body_gap=`, `courtyard=` and `module_gap=` override those floors; a later line updates them without clearing the fab preset. Zero is allowed and means bodies may touch, or pad outlines are the courtyard.",
 		Examples: []string{"fab-rules list", "fab-rules jlcpcb", "fab-rules jlcpcb-4l", "fab-rules body_gap=0.8 module_gap=1.5"},
 	},

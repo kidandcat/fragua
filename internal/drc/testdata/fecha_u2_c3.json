@@ -1,0 +1,373 @@
+{
+  "name": "fecha-u2-c3",
+  "board": {
+    "outline": {
+      "min": {
+        "x": 0,
+        "y": 0
+      },
+      "max": {
+        "x": 92000000,
+        "y": 24200000
+      }
+    },
+    "footprints": {
+      "60b384fd-0759-4a50-b412-006db62322f1": {
+        "id": "60b384fd-0759-4a50-b412-006db62322f1",
+        "reference": "C3",
+        "value": "100nF",
+        "library": "library:c_0603",
+        "position": {
+          "x": 41800000,
+          "y": 12100000
+        },
+        "rotation": 0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "",
+            "offset": {
+              "x": -820638,
+              "y": 0
+            },
+            "size": [
+              813889,
+              1015164
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "2",
+            "name": "",
+            "offset": {
+              "x": 820638,
+              "y": 0
+            },
+            "size": [
+              813889,
+              1015164
+            ],
+            "layer": "Top",
+            "net": "GND"
+          }
+        ],
+        "key": "c_0603",
+        "description": "HF decap at LoRa VDD",
+        "edge_mounted": false,
+        "edge_side": null,
+        "pinned": true,
+        "silk": null,
+        "body_rect": {
+          "min_x_mm": -1.4775819451966714,
+          "min_y_mm": -0.7575819451966712,
+          "max_x_mm": 1.4775819451966714,
+          "max_y_mm": 0.7575819451966712
+        },
+        "placement_margin": {
+          "top_mm": 0.25,
+          "right_mm": 0.25,
+          "bottom_mm": 0.25,
+          "left_mm": 0.76
+        }
+      },
+      "ec1108b8-d793-417b-a87b-b499bc4773f4": {
+        "id": "ec1108b8-d793-417b-a87b-b499bc4773f4",
+        "reference": "U2",
+        "value": "",
+        "library": "library:xl1262_lora",
+        "position": {
+          "x": 31750000,
+          "y": 12100000
+        },
+        "rotation": 0,
+        "layer": "Top",
+        "pads": [
+          {
+            "number": "1",
+            "name": "GND_1",
+            "offset": {
+              "x": -7400000,
+              "y": 7000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "2",
+            "name": "MISO",
+            "offset": {
+              "x": -7400000,
+              "y": 5000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "MISO"
+          },
+          {
+            "number": "3",
+            "name": "MOSI",
+            "offset": {
+              "x": -7400000,
+              "y": 3000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "MOSI"
+          },
+          {
+            "number": "4",
+            "name": "SCK",
+            "offset": {
+              "x": -7400000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "SCK"
+          },
+          {
+            "number": "5",
+            "name": "NSS",
+            "offset": {
+              "x": -7400000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "NSS"
+          },
+          {
+            "number": "6",
+            "name": "NRESET",
+            "offset": {
+              "x": -7400000,
+              "y": -3000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "NRESET"
+          },
+          {
+            "number": "7",
+            "name": "NC1",
+            "offset": {
+              "x": -7400000,
+              "y": -5000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "8",
+            "name": "GND_2",
+            "offset": {
+              "x": -7400000,
+              "y": -7000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "9",
+            "name": "ANT",
+            "offset": {
+              "x": 7400000,
+              "y": -7000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "10",
+            "name": "GND_3",
+            "offset": {
+              "x": 7400000,
+              "y": -5000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "GND"
+          },
+          {
+            "number": "11",
+            "name": "DIO3",
+            "offset": {
+              "x": 7400000,
+              "y": -3000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "12",
+            "name": "NC2",
+            "offset": {
+              "x": 7400000,
+              "y": -1000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "13",
+            "name": "VCC",
+            "offset": {
+              "x": 7400000,
+              "y": 1000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "+3V3"
+          },
+          {
+            "number": "14",
+            "name": "NC3",
+            "offset": {
+              "x": 7400000,
+              "y": 3000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": null
+          },
+          {
+            "number": "15",
+            "name": "DIO1",
+            "offset": {
+              "x": 7400000,
+              "y": 5000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "DIO1"
+          },
+          {
+            "number": "16",
+            "name": "BUSY",
+            "offset": {
+              "x": 7400000,
+              "y": 7000000
+            },
+            "size": [
+              1000000,
+              1400000
+            ],
+            "layer": "Top",
+            "net": "BUSY"
+          }
+        ],
+        "key": "xl1262_lora",
+        "description": "XL1262 SX1262 868",
+        "edge_mounted": false,
+        "edge_side": null,
+        "silk": [
+          {
+            "kind": "text",
+            "layer": "Top",
+            "start": {
+              "x": 0,
+              "y": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0
+            },
+            "width": 75000,
+            "position": {
+              "x": -6000000,
+              "y": 6500000
+            },
+            "text": "*",
+            "size": 600000,
+            "rotation": 270,
+            "anchor": "Middle"
+          },
+          {
+            "kind": "text",
+            "layer": "Top",
+            "start": {
+              "x": 0,
+              "y": 0
+            },
+            "end": {
+              "x": 0,
+              "y": 0
+            },
+            "width": 150000,
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "text": "{REF}",
+            "size": 1200000,
+            "rotation": 270,
+            "anchor": "Middle"
+          }
+        ],
+        "placement_margin": {
+          "top_mm": 0,
+          "right_mm": 0,
+          "bottom_mm": 0,
+          "left_mm": 0
+        }
+      }
+    }
+  },
+  "schematic": {
+    "symbols": {}
+  },
+  "palette": []
+}
