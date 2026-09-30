@@ -92,8 +92,9 @@ type Footprint struct {
 	Elevated        bool            `json:"elevated,omitempty"`
 	// Module marks a tall module (ESP32, LoRa, …). Two modules keep the
 	// larger body gap; a module next to a passive keeps the body gap.
-	// A key/description that already says so is detected even when this
-	// flag is unset; see IsModule.
+	// A footprint key or footprint description that already says so is
+	// detected even when this flag is unset. A standard passive is never
+	// a module. See IsModule.
 	Module bool `json:"module,omitempty"`
 }
 
@@ -620,19 +621,29 @@ func (fp *Footprint) HasThroughHole() bool {
 	return false
 }
 
+// passiveChipSizes are the EIA chip codes from 0201 through 2512.
+var passiveChipSizes = []string{"0201", "0402", "0603", "0805", "1206", "1210", "2010", "2512"}
+
 // IsModule reports whether this footprint is a module. The larger body gap
-// applies only to a pair of modules. An explicit Module flag wins. Otherwise
-// the key, library and description are scanned: "module", "lora" and
-// "castellated" always count, and an ESP32/ESP8266 name counts unless it is
-// a bare package (QFN, QFP, BGA, WLP, SOT).
+// applies only to a pair of modules.
+//
+// A standard passive is never a module: r/c/l chips 0201–2512, SOD, SOT, and
+// LED packages. Otherwise an explicit Module flag wins. The only other signal
+// is the footprint key and the footprint description — not the part value,
+// a role comment stored elsewhere, net names, or neighbouring parts.
+// "module", "lora" and "castellated" count, and an ESP32/ESP8266 name counts
+// unless it is a bare package (QFN, QFP, BGA, WLP, SOT).
 func (fp *Footprint) IsModule() bool {
 	if fp == nil {
+		return false
+	}
+	if isStandardPassive(fp) {
 		return false
 	}
 	if fp.Module {
 		return true
 	}
-	blob := strings.ToLower(fp.Key + " " + fp.Library + " " + fp.Description)
+	blob := strings.ToLower(fp.Key + " " + fp.Description)
 	for _, w := range []string{"module", "lora", "castellat"} {
 		if strings.Contains(blob, w) {
 			return true
@@ -648,6 +659,65 @@ func (fp *Footprint) IsModule() bool {
 		}
 	}
 	return true
+}
+
+// isStandardPassive reports whether the footprint key (or library id) is a
+// chip resistor, capacitor or inductor, a SOD/SOT package, or an LED.
+func isStandardPassive(fp *Footprint) bool {
+	if fp == nil {
+		return false
+	}
+	return standardPassiveKey(fp.Key) || standardPassiveKey(fp.Library)
+}
+
+func standardPassiveKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.TrimPrefix(key, "library:")
+	if key == "" {
+		return false
+	}
+	if chipPassiveKey(key) {
+		return true
+	}
+	for _, tok := range keyTokens(key) {
+		if tok == "led" || (strings.HasPrefix(tok, "led") && len(tok) > 3 && tok[3] >= '0' && tok[3] <= '9') {
+			return true
+		}
+		if tok == "sod" || tok == "sot" {
+			return true
+		}
+		if (strings.HasPrefix(tok, "sod") || strings.HasPrefix(tok, "sot")) && len(tok) > 3 && tok[3] >= '0' && tok[3] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func chipPassiveKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	switch key[0] {
+	case 'r', 'c', 'l':
+	default:
+		return false
+	}
+	rest := key[1:]
+	if strings.HasPrefix(rest, "_") || strings.HasPrefix(rest, "-") {
+		rest = rest[1:]
+	}
+	for _, sz := range passiveChipSizes {
+		if rest == sz || strings.HasPrefix(rest, sz+"_") || strings.HasPrefix(rest, sz+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+func keyTokens(key string) []string {
+	return strings.FieldsFunc(key, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
 }
 
 // PadWorldAABB returns the axis-aligned bounding box of a pad (90° rotations).

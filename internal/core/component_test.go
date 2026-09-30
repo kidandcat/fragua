@@ -57,6 +57,32 @@ func TestIsModuleFromKeyOrFlag(t *testing.T) {
 	if qfn.IsModule() {
 		t.Fatal("a bare ESP32 QFN is a chip, not a module")
 	}
+	// Fecha C3: a 0603 whose value and description mention the radio is
+	// still a capacitor. The flag cannot promote it either.
+	decap := &Footprint{
+		Reference: "C3", Key: "c_0603", Library: "library:c_0603",
+		Value: "100nF", Description: "HF decap at LoRa VDD", Module: true,
+	}
+	if decap.IsModule() {
+		t.Fatal("c_0603 must not become a module from its value, description, or module flag")
+	}
+	for _, key := range []string{"r_0402", "l_2512", "c-0805", "sot-23", "sot23", "sod123", "led_0603", "ldo_sot23_5"} {
+		fp := &Footprint{Reference: "X", Key: key, Description: "LoRa module", Value: "LoRa", Module: true}
+		if fp.IsModule() {
+			t.Fatalf("%s is a standard passive", key)
+		}
+	}
+	// Value and nets are not a signal. The footprint description is.
+	if (&Footprint{Key: "custom_box", Value: "LoRa"}).IsModule() {
+		t.Fatal("part value must not classify a module")
+	}
+	if !(&Footprint{Key: "radio_brick", Description: "castellated LoRa module"}).IsModule() {
+		t.Fatal("footprint description should still mark a module")
+	}
+	oled := &Footprint{Key: "oled_096_gm009605", Description: "0.96 OLED full body courtyard"}
+	if oled.IsModule() {
+		t.Fatal("an OLED module name is not an LED package, and this description is not a module keyword")
+	}
 }
 
 func edgePads() []Pad {

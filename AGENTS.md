@@ -203,10 +203,12 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
   The same rules carry component clearance. Defaults: courtyard margin 0.25 mm
   (IPC-7351 nominal; applied when a part has no courtyard, on top of the
   body or pad box), body-to-body gap 0.50 mm, module gap 1.00 mm only when
-  both parts are modules (`module=true`, or a key/description containing
-  module, lora or castellated, or an ESP32/ESP8266 that is not a bare QFN,
-  QFP, BGA, WLP or SOT). A module next to a passive uses the body gap, so a
-  decap can sit on a module's supply pins. `drc` reports `courtyard_overlap` and
+  both parts are modules (`module=true`, or a footprint key or footprint
+  description containing module, lora or castellated, or an ESP32/ESP8266
+  that is not a bare QFN, QFP, BGA, WLP or SOT). A standard passive
+  (r/c/l 0201–2512, SOD, SOT, LED) is never a module; part value, net names
+  and neighbours are not consulted. A module next to a passive uses the body
+  gap, so a decap can sit on a module's supply pins. `drc` reports `courtyard_overlap` and
   `body_clearance` with the two references and the measured gap. `auto-place`
   and `place-legal` keep the same gap. Override with
   `fab-rules body_gap=0.8 module_gap=1.5 courtyard=0.25`.
