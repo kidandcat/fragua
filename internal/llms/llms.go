@@ -12,7 +12,7 @@ import (
 
 //go:generate go run ../../cmd/gen-llms ../../docs
 
-const repo = "https://github.com/mentasystems/fragua"
+const repo = "https://github.com/kidandcat/fragua"
 
 // Index renders llms.txt: the short overview plus links.
 func Index() string {

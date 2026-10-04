@@ -13,7 +13,7 @@ browser UI for the human. You drive the board end to end; they watch and steer.
 Check it is installed (`fragua help`). If not:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kidandcat/fragua/master/scripts/install.sh | sh
 ```
 
 Then start it. **Bare `fragua` only prints help and exits** — you need a subcommand:

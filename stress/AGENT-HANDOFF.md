@@ -6,7 +6,7 @@
 
 **Audience:** a capable coding agent continuing Fragua work without prior session context.  
 **Language of this doc:** English (repo convention). Jairo speaks Spanish; code/docs stay English.  
-**Repo:** `~/pcb` → `github.com/mentasystems/fragua` (personal; push to `master` is OK).  
+**Repo:** `~/pcb` → `github.com/kidandcat/fragua` (personal; push to `master` is OK).  
 **Not guarded:** direct edits on `master` are fine (only `~/mono` is worktree-guarded).
 
 ---
@@ -721,7 +721,7 @@ to the script `route` line, or set `negotiate: true` in the probe's
 | `~/.pcb-library/` | Global component library |
 | `VISION.md` / `ARCHITECTURE.md` / `README.md` | Product docs |
 
-**Accounts:** personal GitHub `kidandcat` / mentasystems fragua. Use `personal` if push perms wrong.
+**Accounts:** personal GitHub `kidandcat` / kidandcat/fragua. Use `personal` if push perms wrong.
 
 ---
 

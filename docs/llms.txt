@@ -17,12 +17,12 @@ fragua render --3d board.fragua -o board.png  # 3D shot; KiCad WRL models, else 
 ## Docs
 
 - [llms-full.txt](https://fragua.cloud/llms-full.txt): the agent guide plus the complete script verb reference. Read this one.
-- [README](https://github.com/mentasystems/fragua/blob/master/README.md): install, run, and drive it from an agent.
-- [AGENTS.md](https://github.com/mentasystems/fragua/blob/master/agent/AGENTS.md): the onboarding guide `fragua init` writes into a project.
-- [VISION.md](https://github.com/mentasystems/fragua/blob/master/VISION.md): what the product is and its non-negotiables.
-- [ARCHITECTURE.md](https://github.com/mentasystems/fragua/blob/master/ARCHITECTURE.md): packages and data flow.
-- [rust-vs-go.md](https://github.com/mentasystems/fragua/blob/master/docs/rust-vs-go.md): ePlace and topo are Go ports of rust 4e20ae0.
-- [CONTRIBUTING.md](https://github.com/mentasystems/fragua/blob/master/CONTRIBUTING.md): scope and house style.
+- [README](https://github.com/kidandcat/fragua/blob/master/README.md): install, run, and drive it from an agent.
+- [AGENTS.md](https://github.com/kidandcat/fragua/blob/master/agent/AGENTS.md): the onboarding guide `fragua init` writes into a project.
+- [VISION.md](https://github.com/kidandcat/fragua/blob/master/VISION.md): what the product is and its non-negotiables.
+- [ARCHITECTURE.md](https://github.com/kidandcat/fragua/blob/master/ARCHITECTURE.md): packages and data flow.
+- [rust-vs-go.md](https://github.com/kidandcat/fragua/blob/master/docs/rust-vs-go.md): ePlace and topo are Go ports of rust 4e20ae0.
+- [CONTRIBUTING.md](https://github.com/kidandcat/fragua/blob/master/CONTRIBUTING.md): scope and house style.
 
 ## API
 
@@ -36,4 +36,4 @@ fragua render --3d board.fragua -o board.png  # 3D shot; KiCad WRL models, else 
 ## Optional
 
 - [Landing](https://fragua.cloud)
-- [Releases](https://github.com/mentasystems/fragua/releases/latest)
+- [Releases](https://github.com/kidandcat/fragua/releases/latest)

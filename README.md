@@ -1,9 +1,9 @@
 # fragua
 
-[![CI](https://github.com/mentasystems/fragua/actions/workflows/ci.yml/badge.svg)](https://github.com/mentasystems/fragua/actions/workflows/ci.yml)
+[![CI](https://github.com/kidandcat/fragua/actions/workflows/ci.yml/badge.svg)](https://github.com/kidandcat/fragua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d6905b.svg)](LICENSE)
 [![Landing](https://img.shields.io/badge/landing-fragua.cloud-d6905b)](https://fragua.cloud)
-[![Release](https://img.shields.io/github/v/release/mentasystems/fragua?color=d6905b)](https://github.com/mentasystems/fragua/releases/latest)
+[![Release](https://img.shields.io/github/v/release/kidandcat/fragua?color=d6905b)](https://github.com/kidandcat/fragua/releases/latest)
 
 AI-native PCB design tool. The agent does the work, the human watches and steers.
 
@@ -44,12 +44,12 @@ Agent loop: schematic → board → JLCPCB-ready zip.
 One-liner (macOS arm64/x64, Linux x64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kidandcat/fragua/master/scripts/install.sh | sh
 ```
 
 Drops the `fragua` binary in `/usr/local/bin` (or `~/.local/bin` if it
 can't write there). Windows users: grab `fragua-<ver>-windows-x64.zip`
-from the [releases page](https://github.com/mentasystems/fragua/releases/latest).
+from the [releases page](https://github.com/kidandcat/fragua/releases/latest).
 
 Then tell your AI to design the hardware with the `fragua` CLI — it opens
 the browser UI, exposes the HTTP script API, and the agent drives the rest.

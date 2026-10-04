@@ -29,7 +29,7 @@ and exits so agents can discover the surface without starting the server.
 ## Layout
 
 ```
-pcb/   (repo: mentasystems/fragua)
+pcb/   (repo: kidandcat/fragua)
 ├── go.mod
 ├── cmd/
 │   ├── fragua/            HTTP host + embedded UI

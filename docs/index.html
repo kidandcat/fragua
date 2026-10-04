@@ -9,7 +9,7 @@
   <!-- Open Graph / Twitter cards. Cheap to add, makes shared links not look broken. -->
   <meta property="og:title" content="fragua — AI-native PCB design">
   <meta property="og:description" content="The agent designs the PCB. You watch and steer. Schematic → routing → fab-ready zip in one loop.">
-  <meta property="og:url" content="https://mentasystems.github.io/fragua/">
+  <meta property="og:url" content="https://kidandcat.github.io/fragua/">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary">
 
@@ -35,7 +35,7 @@
     <a href="#install" data-i18n="nav.install">install</a>
     <a href="#status" data-i18n="nav.status">status</a>
     <a class="github-link" href="blog/">Blog</a>
-    <a class="github-link" href="https://github.com/mentasystems/fragua">GitHub →</a>
+    <a class="github-link" href="https://github.com/kidandcat/fragua">GitHub →</a>
     <!-- Language toggle. Auto-detects browser language on first visit
          (es-* → Spanish, everything else → English) and persists the
          explicit choice in localStorage. -->
@@ -58,7 +58,7 @@
       redirects when needed, and clicks "order".
     </p>
     <div class="hero-cta">
-      <a class="btn primary" href="https://github.com/mentasystems/fragua" data-i18n="hero.cta1">Get the source</a>
+      <a class="btn primary" href="https://github.com/kidandcat/fragua" data-i18n="hero.cta1">Get the source</a>
       <a class="btn ghost" href="#install" data-i18n="hero.cta2">Run it locally</a>
     </div>
   </div>
@@ -190,10 +190,10 @@ pack fab=jlcpcb out=~/Downloads</pre>
   <p data-i18n="install.p1">Fragua is a single Go binary: local HTTP API and a browser UI. Pre-built binaries are on GitHub Releases; or build from source:</p>
 
 <pre class="snippet"><span class="c"># One-liner install (macOS arm64/x64, Linux x64).</span>
-curl -fsSL https://raw.githubusercontent.com/mentasystems/fragua/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kidandcat/fragua/master/scripts/install.sh | sh
 
 <span class="c"># From source:</span>
-git clone https://github.com/mentasystems/fragua.git
+git clone https://github.com/kidandcat/fragua.git
 cd fragua
 go build -o fragua ./cmd/fragua
 
@@ -231,7 +231,7 @@ curl -s http://127.0.0.1:7878/script \
   <h2 data-i18n="status.h2">Status</h2>
   <p class="status-lead" data-i18n="status.lead">
     <strong>v1.1.x</strong>. Every bullet below works in the current
-    <a href="https://github.com/mentasystems/fragua">master</a>; the
+    <a href="https://github.com/kidandcat/fragua">master</a>; the
     "what's next" list is what the maintainers are most likely to
     work on, not a commitment.
   </p>
@@ -268,7 +268,7 @@ curl -s http://127.0.0.1:7878/script \
 <section class="oss">
   <h2 data-i18n="oss.h2">Open source</h2>
   <p data-i18n="oss.p1">
-    MIT licensed. See <a href="https://github.com/mentasystems/fragua/blob/master/CONTRIBUTING.md">CONTRIBUTING.md</a> for what's in scope. Issues
+    MIT licensed. See <a href="https://github.com/kidandcat/fragua/blob/master/CONTRIBUTING.md">CONTRIBUTING.md</a> for what's in scope. Issues
     and PRs welcome — especially adding fab providers, library
     parts, and bug fixes from real-world designs.
   </p>
@@ -283,13 +283,13 @@ curl -s http://127.0.0.1:7878/script \
 
 <footer>
   <div>
-    <a href="https://github.com/mentasystems/fragua">github.com/mentasystems/fragua</a>
+    <a href="https://github.com/kidandcat/fragua">github.com/kidandcat/fragua</a>
     <span class="dot">·</span>
     <span data-i18n="footer.license">MIT license</span>
     <span class="dot">·</span>
-    <a href="https://github.com/mentasystems/fragua/blob/master/VISION.md" data-i18n="footer.vision">vision</a>
+    <a href="https://github.com/kidandcat/fragua/blob/master/VISION.md" data-i18n="footer.vision">vision</a>
     <span class="dot">·</span>
-    <a href="https://github.com/mentasystems/fragua/blob/master/ARCHITECTURE.md" data-i18n="footer.architecture">architecture</a>
+    <a href="https://github.com/kidandcat/fragua/blob/master/ARCHITECTURE.md" data-i18n="footer.architecture">architecture</a>
   </div>
 </footer>
 
@@ -336,7 +336,7 @@ curl -s http://127.0.0.1:7878/script \
     "install.p3": "Las respuestas son <code>text/plain</code>: resultados línea a línea, más un aviso de sesión sin guardar si el proyecto aún no está ligado a un fichero.",
 
     "status.h2": "Estado",
-    "status.lead": "<strong>v1.1.x</strong>. Cada punto de abajo funciona en la <a href=\"https://github.com/mentasystems/fragua\">master</a> actual; la lista de «qué viene» es en lo que es más probable que trabajen los mantenedores, no un compromiso.",
+    "status.lead": "<strong>v1.1.x</strong>. Cada punto de abajo funciona en la <a href=\"https://github.com/kidandcat/fragua\">master</a> actual; la lista de «qué viene» es en lo que es más probable que trabajen los mantenedores, no un compromiso.",
     "status.today": "Hoy",
     "today.1": "Esquemático con símbolos, pines (roles eléctricos), redes, clases de red y puertos multi-hoja.",
     "today.2": "Librería de footprints con fotos, datasheets, IDs de LCSC, MPNs, edge-mount y cuerpos elevated.",
@@ -356,7 +356,7 @@ curl -s http://127.0.0.1:7878/script \
     "next.6": "Frontend: clic en una red para resaltarla, salto desde la lista de violaciones de DRC.",
 
     "oss.h2": "Código abierto",
-    "oss.p1": "Con licencia MIT. Consulta <a href=\"https://github.com/mentasystems/fragua/blob/master/CONTRIBUTING.md\">CONTRIBUTING.md</a> para ver qué entra en el alcance. Issues y PRs bienvenidos — especialmente añadir proveedores de fabricación, piezas de librería y arreglos de bugs de diseños reales.",
+    "oss.p1": "Con licencia MIT. Consulta <a href=\"https://github.com/kidandcat/fragua/blob/master/CONTRIBUTING.md\">CONTRIBUTING.md</a> para ver qué entra en el alcance. Issues y PRs bienvenidos — especialmente añadir proveedores de fabricación, piezas de librería y arreglos de bugs de diseños reales.",
     "oss.p2": "Construido en Go. Sin <code>kicad-cli</code>, sin envoltorio de FreeRouting, sin shell-out. Cada formato de fichero leído o escrito está implementado en este repo.",
 
     "footer.license": "licencia MIT",
