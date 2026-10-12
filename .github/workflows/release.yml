@@ -41,7 +41,7 @@ jobs:
             bin: fragua.exe
             archive: zip
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:
@@ -86,7 +86,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v5
         with:
