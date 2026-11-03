@@ -225,7 +225,7 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 		return "cleared traces and vias", nil
 	case "drc":
 		p.RLock()
-		rep := drc.Check(p.Board(), p.Schematic(), drc.DefaultOptions())
+		rep := drc.Check(p.Board(), p.Schematic(), drc.OptionsForBoard(p.Board()))
 		p.RUnlock()
 		return rep.Detail(), nil
 	case "erc":
@@ -1541,6 +1541,35 @@ func parseRuleMM(tok string) (float64, error) {
 	return v, nil
 }
 
+// copperUses counts footprints, pads, traces and pours sitting on layer.
+func copperUses(b *core.Board, target core.Layer) int {
+	uses := 0
+	for _, fp := range b.Footprints {
+		if fp == nil {
+			continue
+		}
+		if fp.Layer == target {
+			uses++
+		}
+		for _, pad := range fp.Pads {
+			if pad.Layer == target {
+				uses++
+			}
+		}
+	}
+	for _, tr := range b.Traces {
+		if tr.Layer == target {
+			uses++
+		}
+	}
+	for _, pour := range b.Pours {
+		if pour.Layer == target {
+			uses++
+		}
+	}
+	return uses
+}
+
 // ─── layer ───────────────────────────────────────────────────────────
 
 func layerCmd(p *core.Project, args string) (string, error) {
@@ -1646,7 +1675,17 @@ func layerCmd(p *core.Project, args string) (string, error) {
 			return "", fmt.Errorf("layer remove NAME")
 		}
 		name := fields[1]
+		force := false
+		for _, t := range fields[2:] {
+			switch strings.ToLower(t) {
+			case "force", "force=1", "allow_single", "allow_single=1":
+				force = true
+			default:
+				return "", fmt.Errorf("layer remove: unknown option %q", t)
+			}
+		}
 		var err error
+		var left int
 		p.MutateBoard(func(b *core.Board) {
 			s := b.StackupOrDefault()
 			target, ok := s.FindLayerByName(name)
@@ -1654,44 +1693,57 @@ func layerCmd(p *core.Project, args string) (string, error) {
 				err = fmt.Errorf("layer.remove: no layer named `%s`", name)
 				return
 			}
-			uses := 0
-			for _, fp := range b.Footprints {
-				if fp == nil {
-					continue
-				}
-				if fp.Layer == target {
-					uses++
-				}
-				for _, pad := range fp.Pads {
-					if pad.Layer == target {
-						uses++
-					}
-				}
-			}
-			for _, tr := range b.Traces {
-				if tr.Layer == target {
-					uses++
-				}
-			}
-			for _, pour := range b.Pours {
-				if pour.Layer == target {
-					uses++
-				}
-			}
-			if uses > 0 {
+			if uses := copperUses(b, target); uses > 0 {
 				err = fmt.Errorf("layer.remove: %d item(s) still on layer `%s`", uses, name)
 				return
 			}
-			if !s.RemoveNamed(name) {
-				err = fmt.Errorf("layer.remove: refused to remove `%s` (would leave fewer than 2 layers)", name)
+			removed := s.RemoveNamed(name)
+			if !removed && force {
+				removed = s.RemoveNamedAllowSingle(name)
+			}
+			if !removed {
+				err = fmt.Errorf("layer.remove: refused to remove `%s` (would leave fewer than 2 layers; pass force to allow a 1-layer board)", name)
 				return
 			}
 			b.Stackup = &s
+			left = s.CopperCount()
 		})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("removed layer `%s`", name), nil
+		msg := fmt.Sprintf("removed layer `%s`", name)
+		if left == 1 {
+			msg += "; warning: 1 copper layer left, a via has no second layer"
+		}
+		return msg, nil
+	case "1", "1l", "single":
+		var err error
+		var name string
+		p.MutateBoard(func(b *core.Board) {
+			s := b.StackupOrDefault()
+			for s.CopperCount() > 1 {
+				last := s.Layers[len(s.Layers)-1]
+				target, ok := s.FindLayerByName(last.Name)
+				if !ok {
+					err = fmt.Errorf("layer 1: cannot resolve `%s`", last.Name)
+					return
+				}
+				if uses := copperUses(b, target); uses > 0 {
+					err = fmt.Errorf("layer 1: %d item(s) still on `%s`", uses, last.Name)
+					return
+				}
+				if !s.RemoveNamedAllowSingle(last.Name) {
+					err = fmt.Errorf("layer 1: cannot remove `%s`", last.Name)
+					return
+				}
+			}
+			b.Stackup = &s
+			name = s.LayerName(0)
+		})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("warning: 1 copper layer (%s); a via has no second layer", name), nil
 	case "rename":
 		if len(fields) < 3 {
 			return "", fmt.Errorf("layer rename OLD NEW")

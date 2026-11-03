@@ -117,9 +117,10 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
 ```
 
 - **`route: N/M nets ok`** — `N < M` means nets are still open. Re-run `route`; it only
-  attacks what is unrouted, so repeated bounded calls are cheap. If `N` stops improving,
-  the geometry is the problem: give the board more room, move the blocking part, or add a
-  layer (`layer add`) — not more seconds.
+  attacks what is unrouted, and it will not keep a worse board than the one it started
+  with (`kept previous`). If `N` stops improving, the geometry is the problem: give the
+  board more room, move the blocking part, or add a layer (`layer 4` for a GND plane and
+  a power plane, `layer add` for one more signal layer) — not more seconds.
 - **`erc`/`drc` report counts, not locations.** Errors must be zero; warnings are usually
   fine (unused pins, conservative power checks). To see *where* a violation is, look at the
   UI canvas or `fragua_screenshot` — it highlights them.
@@ -166,6 +167,10 @@ ok status: name="untitled" footprints=3 traces=3 vias=78 nets=3 symbols=3 palett
   `fab-rules body_gap=0.8 module_gap=1.5 courtyard=0.25`.
 - **Pours go after routing.** `auto-pour` then `stitch`. Re-routing means `clear-pour`,
   `route`, `auto-pour`, `stitch` again.
+- **One copper layer is explicit.** `layer remove B.Cu` refuses to leave a single layer.
+  `layer 1` or `layer remove B.Cu force` does it and warns that a via has nowhere to go.
+- **`auto-place` does not stack parts.** If the outline cannot hold them it stops and
+  names the refs. `bottom_passives=on` puts 2–4 pad SMD parts on the bottom face.
 - **A memory-only session loses everything.** `save /abs/path.fragua` early.
 
 ### When you are stuck

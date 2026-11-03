@@ -49,6 +49,144 @@ func addTrace(b *core.Board, net string, x0, y0, x1, y1, widthMM float64) {
 	})
 }
 
+func finePad(num string, offX, offY, size float64, net string) core.Pad {
+	p := pad(num, offX, offY, net)
+	p.Size = [2]core.Length{core.FromMM(size), core.FromMM(size)}
+	return p
+}
+
+func TestSameFootprintPadGapUsesFabFloor(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// 0.28 mm pads whose edges are 0.163 mm apart: under the 0.20 mm design
+	// rule, over the 0.127 mm JLCPCB floor. The part cannot be spread.
+	b.AddFootprint(fp("U1", 10, 10, []core.Pad{
+		finePad("1", 0, 0, 0.28, "A"),
+		finePad("2", 0, 0.443, 0.28, "B"),
+	}))
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindPadPadClearance) != 0 || countKind(rep, KindFootprintPadGap) != 0 {
+		t.Fatalf("0.163 mm inside one footprint is manufacturable, got %+v", rep.Violations)
+	}
+
+	// 0.05 mm inside the same footprint is below the fab floor.
+	b = core.NewBoard()
+	b.Outline = &o
+	b.AddFootprint(fp("U1", 10, 10, []core.Pad{
+		finePad("1", 0, 0, 0.28, "A"),
+		finePad("2", 0, 0.33, 0.28, "B"),
+	}))
+	rep = Check(b, nil, DefaultOptions())
+	if countKind(rep, KindFootprintPadGap) == 0 {
+		t.Fatalf("expected footprint_pad_gap, got %+v", rep.Violations)
+	}
+	if countKind(rep, KindPadPadClearance) != 0 {
+		t.Fatalf("same-footprint gap must not be reported as pad_pad, got %+v", rep.Violations)
+	}
+}
+
+func TestInterPartClearanceIsNotMaskedByTheFootprintRule(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	// 1.0 mm pads. Centres 1.15 mm apart in x → 0.15 mm edge gap.
+	b.AddFootprint(fp("R1", 10, 10, []core.Pad{pad("1", 0, 0, "A")}))
+	b.AddFootprint(fp("R2", 11.15, 10, []core.Pad{pad("1", 0, 0, "B")}))
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindPadPadClearance) == 0 {
+		t.Fatalf("0.15 mm between two parts must fail the 0.20 mm rule, got %+v", rep.Violations)
+	}
+
+	b.FabRules = core.FabRulesPreset("jlcpcb")
+	rep = Check(b, nil, OptionsForBoard(b))
+	if countKind(rep, KindPadPadClearance) != 0 {
+		t.Fatalf("0.15 mm passes JLCPCB 0.127, got %+v", rep.Violations)
+	}
+
+	b = core.NewBoard()
+	b.Outline = &o
+	b.FabRules = core.FabRulesPreset("jlcpcb")
+	b.AddFootprint(fp("R1", 10, 10, []core.Pad{pad("1", 0, 0, "A")}))
+	b.AddFootprint(fp("R2", 11.05, 10, []core.Pad{pad("1", 0, 0, "B")})) // 0.05 mm gap (centres 1.05 mm, pads 1.0 mm wide)
+	rep = Check(b, nil, OptionsForBoard(b))
+	if countKind(rep, KindPadPadClearance) == 0 {
+		t.Fatalf("0.05 mm between two parts must fail JLCPCB, got %+v", rep.Violations)
+	}
+}
+
+func TestNetClassClearanceCanLoosenToTheFabFloor(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.AddFootprint(fp("R1", 10, 10, []core.Pad{pad("1", 0, 0, "A")}))
+	b.AddFootprint(fp("R2", 11.16, 10, []core.Pad{pad("1", 0, 0, "B")})) // ~0.16 mm
+	sch := core.NewSchematic()
+	sch.NetClasses["signal"] = &core.NetClass{Name: "signal", ClearanceMM: 0.15}
+	sch.NetToClass["A"] = "signal"
+	sch.NetToClass["B"] = "signal"
+	rep := Check(b, sch, DefaultOptions())
+	if countKind(rep, KindPadPadClearance) != 0 {
+		t.Fatalf("both nets in a 0.15 mm class should accept 0.16 mm, got %+v", rep.Violations)
+	}
+
+	// The stricter class wins, so a power net beside a signal net stays fat.
+	sch.NetClasses["power"] = &core.NetClass{Name: "power", ClearanceMM: 0.40}
+	sch.NetToClass["A"] = "power"
+	rep = Check(b, sch, DefaultOptions())
+	if countKind(rep, KindPadPadClearance) == 0 {
+		t.Fatalf("power 0.40 vs signal 0.15 must still flag 0.16 mm, got %+v", rep.Violations)
+	}
+
+	// A class below the fab floor does not hide a short.
+	sch = core.NewSchematic()
+	sch.NetClasses["hair"] = &core.NetClass{Name: "hair", ClearanceMM: 0.05}
+	sch.NetToClass["A"] = "hair"
+	sch.NetToClass["B"] = "hair"
+	b.FabRules = core.FabRulesPreset("jlcpcb")
+	b2 := core.NewBoard()
+	b2.Outline = &o
+	b2.FabRules = b.FabRules
+	b2.AddFootprint(fp("R1", 10, 10, []core.Pad{pad("1", 0, 0, "A")}))
+	b2.AddFootprint(fp("R2", 11.10, 10, []core.Pad{pad("1", 0, 0, "B")})) // 0.10 mm
+	rep = Check(b2, sch, OptionsForBoard(b2))
+	if countKind(rep, KindPadPadClearance) == 0 {
+		t.Fatalf("class 0.05 mm must not hide a 0.10 mm gap under the fab floor, got %+v", rep.Violations)
+	}
+}
+
+func TestHoleToHolePositiveAndNegative(t *testing.T) {
+	b := core.NewBoard()
+	o := outline(40, 20)
+	b.Outline = &o
+	b.Vias = []core.Via{
+		{Net: "A", Drill: core.FromMM(0.3), Diameter: core.FromMM(0.6), Position: core.NewPoint(core.FromMM(10), core.FromMM(10))},
+		{Net: "B", Drill: core.FromMM(0.3), Diameter: core.FromMM(0.6), Position: core.NewPoint(core.FromMM(10.5), core.FromMM(10))},
+	}
+	rep := Check(b, nil, DefaultOptions())
+	if countKind(rep, KindHoleToHole) == 0 {
+		t.Fatalf("vias 0.2 mm apart edge-to-edge must fail, got %+v", rep.Violations)
+	}
+	b.Vias[1].Position = core.NewPoint(core.FromMM(12.5), core.FromMM(10))
+	rep = Check(b, nil, DefaultOptions())
+	if countKind(rep, KindHoleToHole) != 0 {
+		t.Fatalf("vias 2.2 mm apart must pass, got %+v", rep.Violations)
+	}
+
+	// A footprint's own drills are not exempt: 0.10 mm between them is real.
+	b = core.NewBoard()
+	b.Outline = &o
+	d := core.FromMM(0.6)
+	b.AddFootprint(fp("J3", 10, 10, []core.Pad{
+		{Number: "1", Offset: core.NewPoint(core.FromMM(0), core.FromMM(0)), Size: [2]core.Length{core.FromMM(1), core.FromMM(1)}, Layer: core.LayerTop, Drill: &d, Net: netPtr("A")},
+		{Number: "2", Offset: core.NewPoint(core.FromMM(0.7), core.FromMM(0)), Size: [2]core.Length{core.FromMM(1), core.FromMM(1)}, Layer: core.LayerTop, Drill: &d, Net: netPtr("B")},
+	}))
+	rep = Check(b, nil, DefaultOptions())
+	if countKind(rep, KindHoleToHole) == 0 {
+		t.Fatalf("same-footprint holes 0.1 mm apart must still be an error, got %+v", rep.Violations)
+	}
+}
+
 func TestPadPadClearanceFires(t *testing.T) {
 	b := core.NewBoard()
 	o := outline(50, 20)

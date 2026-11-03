@@ -116,6 +116,10 @@ type RuleResolver struct {
 	Areas      []RuleArea
 	NetClass   map[string]NetClass // name → class
 	NetToClass map[string]string   // net → class name
+	// FabFloorMM is the manufacturing clearance. A net class may loosen the
+	// design default down to this floor, and no further: a class of 0.05 mm
+	// must not hide a 0.10 mm short the fab will reject.
+	FabFloorMM float64
 }
 
 // ClearanceAt returns the required clearance at p for the given net
@@ -156,34 +160,60 @@ func (r *RuleResolver) ClearanceBetween(p Point, netA, netB string) Length {
 		return best.cl
 	}
 	cl := r.Defaults.Clearance
-	for _, net := range []string{netA, netB} {
-		if net == "" || r.NetClass == nil {
-			continue
+	// A class states the clearance for its own nets, so it can be looser
+	// than the board default (a 0.15 mm signal class on a 0.20 mm board)
+	// or tighter (a 0.40 mm power class). The pair takes the stricter of
+	// the two. A net with no class keeps the default, so putting one side
+	// in a loose class does not pull the other side down with it.
+	a, aok := r.netClearance(netA)
+	b, bok := r.netClearance(netB)
+	if aok || bok {
+		if !aok {
+			a = cl
 		}
-		cn := net
-		if r.NetToClass != nil {
-			if mapped, ok := r.NetToClass[net]; ok {
-				cn = mapped
-			}
+		if !bok {
+			b = cl
 		}
-		// also: class name might equal net's class field — look up by class map key
-		if c, ok := r.NetClass[cn]; ok && c.ClearanceMM > 0 {
-			cc := FromMM(c.ClearanceMM)
-			if cc > cl {
-				cl = cc
-			}
+		cl = a
+		if b > cl {
+			cl = b
 		}
-		// try net class names from schematic: match class whose name is used
-		for _, c := range r.NetClass {
-			if c.ClearanceMM > 0 && (c.Name == cn || c.Name == net) {
-				cc := FromMM(c.ClearanceMM)
-				if cc > cl {
-					cl = cc
-				}
-			}
+	}
+	if r.FabFloorMM > 0 {
+		floor := FromMM(r.FabFloorMM)
+		if cl < floor {
+			cl = floor
 		}
 	}
 	return cl
+}
+
+// netClearance is the class clearance for net, when the net has one.
+func (r *RuleResolver) netClearance(net string) (Length, bool) {
+	if net == "" || r.NetClass == nil {
+		return 0, false
+	}
+	cn := net
+	if r.NetToClass != nil {
+		if mapped, ok := r.NetToClass[net]; ok && mapped != "" {
+			cn = mapped
+		}
+	}
+	if c, ok := r.NetClass[cn]; ok && c.ClearanceMM > 0 {
+		return FromMM(c.ClearanceMM), true
+	}
+	var best Length
+	found := false
+	for _, c := range r.NetClass {
+		if c.ClearanceMM <= 0 || (c.Name != cn && c.Name != net) {
+			continue
+		}
+		cc := FromMM(c.ClearanceMM)
+		if !found || cc > best {
+			best, found = cc, true
+		}
+	}
+	return best, found
 }
 
 // TraceWidthAt returns the trace width for net at p.

@@ -33,6 +33,11 @@ type Options struct {
 	MaxStepMM       float64
 	MinStepMM       float64
 	Decouple        bool
+	// BottomPassives controls SMD passives on the back of the board.
+	// 0 keeps the face they were bound on. 1 moves every 2–4 pad SMD
+	// passive to the bottom before the fit check. 2 (the default) does
+	// that only when the top side would otherwise be left overlapping.
+	BottomPassives int
 	// GlobalIterations is the Nesterov ceiling for ePlace (Rust default 600).
 	// The loop exits early once overflow is legal and HPWL plateaus.
 	GlobalIterations int
@@ -73,6 +78,7 @@ func DefaultOptions() Options {
 		MaxStepMM:        20.0,
 		MinStepMM:        0.5,
 		Decouple:         true,
+		BottomPassives:   bottomAuto,
 		GlobalIterations: 600,
 		DensityBins:      64,
 		TargetDensity:    1.0,
@@ -100,6 +106,15 @@ func ParseOptions(o Options, args string) Options {
 			o.GlobalStage = x != 0
 		case "decouple":
 			o.Decouple = x != 0
+		case "bottom_passives", "bottom":
+			switch strings.ToLower(kv[1]) {
+			case "0", "off", "false", "top":
+				o.BottomPassives = bottomOff
+			case "1", "on", "true", "passives":
+				o.BottomPassives = bottomOn
+			default:
+				o.BottomPassives = bottomAuto
+			}
 		case "iters":
 			o.Iterations = int(x)
 		case "global_iterations":
@@ -121,6 +136,8 @@ type Report struct {
 	FinalHPWLMM   float64  `json:"final_hpwl_mm"`
 	Moved         []string `json:"moved"`
 	Iterations    int      `json:"iterations"`
+	// Bottom is how many SMD passives were moved to the bottom copper.
+	Bottom int `json:"bottom,omitempty"`
 	// Seated counts parts the caller materialised on the board for this run.
 	// Place only moves footprints that already exist; the palette lives on the
 	// project, so the script layer seats them and reports the count here.
@@ -135,8 +152,12 @@ func (r Report) Summary() string {
 	if r.Seated > 0 {
 		seated = fmt.Sprintf("seated %d new, ", r.Seated)
 	}
-	return fmt.Sprintf("place: %sHPWL %.2f → %.2f mm, moved %d parts, %d iters",
-		seated, r.InitialHPWLMM, r.FinalHPWLMM, len(r.Moved), r.Iterations)
+	bottom := ""
+	if r.Bottom > 0 {
+		bottom = fmt.Sprintf(", %d on bottom", r.Bottom)
+	}
+	return fmt.Sprintf("place: %sHPWL %.2f → %.2f mm, moved %d parts%s, %d iters",
+		seated, r.InitialHPWLMM, r.FinalHPWLMM, len(r.Moved), bottom, r.Iterations)
 }
 
 type pos struct {
@@ -310,6 +331,7 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 	if opts.Decouple {
 		PullPassivesToAnchors(board, fps, opts)
 	}
+	bottom, unfitted := finishPlacement(board, fps, opts)
 
 	// Count what moved against the final positions, not against the
 	// annealer's best: the decouple pass moves parts too, and reporting
@@ -324,13 +346,18 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 		}
 	}
 
-	return Report{
+	rep := Report{
 		InitialHPWLMM: initHPWL,
 		FinalHPWLMM:   rawHPWL(board),
 		Moved:         moved,
 		Iterations:    ranIter,
 		Global:        global,
-	}, nil
+		Bottom:        bottom,
+	}
+	if len(unfitted) > 0 {
+		return rep, fitError(board, unfitted, bottom)
+	}
+	return rep, nil
 }
 
 // globalForce is the pre-ePlace cheap attraction/repulsion stand-in.

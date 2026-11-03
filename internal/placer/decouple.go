@@ -74,6 +74,18 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	if len(cands) == 0 {
 		return
 	}
+	// Remember where SA left each passive. Parking is only so an inductor
+	// can claim its pads; a passive that never finds a seat used to stay
+	// in the overflow pile (every leftover stacked on one corner, 0.2 mm
+	// apart). Those go back to the pose they had, which the annealer had
+	// already kept clear.
+	parkedFrom := map[string]pos{}
+	for _, c := range cands {
+		if c.fp == nil {
+			continue
+		}
+		parkedFrom[c.fp.Reference] = pos{c.fp.Position.X, c.fp.Position.Y, c.fp.Rotation}
+	}
 	// SA leaves passives scattered on the island. Park them on the outline
 	// edge so a high-priority inductor can claim LX/IN without colliding
 	// with a Cin that still sits where the annealer dumped it.
@@ -195,6 +207,21 @@ func PullPassivesToAnchors(board *core.Board, movable []*core.Footprint, opts Op
 	for i := range as {
 		if !as[i].ok {
 			pullToCentroid(board, as[i].fp, as[i].nets, movableSet, hard, opts)
+		}
+	}
+	for i := range as {
+		if as[i].ok || as[i].fp == nil {
+			continue
+		}
+		// pullToCentroid returns without moving when it cannot seat. A part
+		// still in the park pile is not a placement. Edge clearance is not
+		// the test: the park sits near the outline on purpose, and pulling
+		// a close pair back apart just to honour it undoes the wirelength.
+		if badlyPlaced(board, as[i].fp) {
+			if p, ok := parkedFrom[as[i].fp.Reference]; ok {
+				as[i].fp.Position = core.NewPoint(p.x, p.y)
+				as[i].fp.Rotation = p.rot
+			}
 		}
 	}
 }

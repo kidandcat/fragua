@@ -334,11 +334,12 @@ func (s LayerStackup) CopperThicknessMM() float64 {
 	return 0.035
 }
 
-// BottomLayer returns the bottom copper layer handle.
+// BottomLayer returns the bottom copper layer handle. A one-layer board's
+// only copper is index 0; index 1 would be off the stack.
 func (s LayerStackup) BottomLayer() Layer {
 	n := s.CopperCount()
-	if n < 2 {
-		return LayerBottom
+	if n <= 1 {
+		return LayerTop
 	}
 	return Layer{Index: uint8(n - 1)}
 }
