@@ -25,3 +25,48 @@ jobs:
         run: go vet ./...
       - name: go build
         run: go build -o fragua ./cmd/fragua
+
+  # Proved geometry. The jobs above do not install Lean and do not pass -tags lean.
+  lean:
+    name: lean geometry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-lean-4.35.0-${{ runner.os }}
+      - name: install elan
+        run: |
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: no sorry or axiom declarations
+        run: |
+          set -eu
+          if grep -RInE '(^|[^A-Za-z0-9_])sorry([^A-Za-z0-9_]|$)' lean --include='*.lean'; then
+            echo "Lean sources must not use sorry"
+            exit 1
+          fi
+          if grep -RInE '^[[:space:]]*axiom[[:space:]]' lean --include='*.lean'; then
+            echo "Lean sources must not declare axioms"
+            exit 1
+          fi
+      - name: lake build
+        working-directory: lean
+        run: lake build
+      - name: differential tests
+        run: |
+          set -eu
+          export FRAGUA_GEOM_BIN="$PWD/lean/.lake/build/bin/fragua-geom"
+          go test -tags lean -count=1 ./internal/leanbridge/ ./internal/drc/
+      - name: tag still builds the whole module
+        run: |
+          set -eu
+          export FRAGUA_GEOM_BIN="$PWD/lean/.lake/build/bin/fragua-geom"
+          go build -tags lean -o /tmp/fragua-lean ./cmd/fragua
+          go vet -tags lean ./...

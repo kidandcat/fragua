@@ -1,0 +1,13 @@
+name = "fragua-geom"
+version = "0.1.0"
+defaultTargets = ["FraguaGeom", "fragua-geom", "AxiomAudit"]
+
+[[lean_lib]]
+name = "FraguaGeom"
+
+[[lean_exe]]
+name = "fragua-geom"
+root = "Main"
+
+[[lean_lib]]
+name = "AxiomAudit"

@@ -386,7 +386,7 @@ func checkTraceTrace(board *core.Board, res *core.RuleResolver, rep *Report) {
 			b0, b1 := ptMM(b.Start), ptMM(b.End)
 			halfA := a.Width.ToMM() / 2
 			halfB := b.Width.ToMM() / 2
-			center := segmentSegmentDistance(a0, a1, b0, b1)
+			center := traceCenterMM(a.Start, a.End, b.Start, b.End)
 			gap := center - halfA - halfB
 			sx, sy := segSegClosestSite(a0, a1, b0, b1)
 			clr := clearanceMM(res, a.Net, b.Net, sx, sy)

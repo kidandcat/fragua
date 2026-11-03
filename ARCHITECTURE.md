@@ -50,6 +50,7 @@ pcb/   (repo: kidandcat/fragua)
 ├── scripts/install.sh
 ├── stress/                RP2040 open-hardware stress campaign
 ├── docs/                  GitHub Pages landing
+├── lean/                  optional Lean 4 geometry kernel (see docs/lean.md)
 ├── VISION.md
 ├── ARCHITECTURE.md
 └── README.md
@@ -120,6 +121,20 @@ ePlace global stage (Poisson/DCT electrostatics + Nesterov, ported from
 rust `global.rs`) then simulated-annealing legalisation, decoupling-ring
 seating for passives, edge-mount snap. The SA-only path (`global=0`) is
 deterministic for a fixed seed; ePlace itself has no RNG.
+
+### `lean/` and `internal/leanbridge`
+
+First slice of a port whose end state is one Lean binary and no Go. The
+module in the tree today is exact integer geometry (squared point distance,
+point-to-segment, segment-to-segment, clearance predicate) in `lean/`,
+pinned by `lean/lean-toolchain` and built with `lake`. `internal/leanbridge`
+has the same operations in pure Go. `go build` and `go test` do not need a
+Lean toolchain. `go build -tags lean` talks to the `fragua-geom` helper over
+length-prefixed JSON; trace/trace clearance in `internal/drc` is the first
+call site. The release binary and `scripts/install.sh` stay the pure-Go
+static build (`CGO_ENABLED=0`) until the last phase. The package order, the
+bridge each phase uses, when Go is deleted, and the phase-0 timing are in
+[docs/lean.md](docs/lean.md).
 
 ### `internal/drc` / `internal/erc`
 Geometric DRC (clearance, drill, edge, net split, unconnected pads) and

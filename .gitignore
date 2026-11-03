@@ -16,3 +16,6 @@
 # also hides the committed BENCH.md.
 /bench.json
 *.kicad_pcb
+
+# Lean build tree. The pin is lean/lean-toolchain; artifacts are not source.
+lean/.lake/
