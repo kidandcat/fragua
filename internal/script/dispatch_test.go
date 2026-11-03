@@ -338,6 +338,42 @@ layer list
 	}
 }
 
+func TestLayerOneIsExplicit(t *testing.T) {
+	p := core.NewProject("t-1l")
+	rs := RunScript(p, "outline 20 20\nlayer remove B.Cu\n")
+	if rs[1].OK || !strings.Contains(rs[1].Result, "fewer than 2") {
+		t.Fatalf("bare remove should refuse, got %+v", rs[1])
+	}
+	p.RLock()
+	if p.Board().StackupOrDefault().CopperCount() != 2 {
+		p.RUnlock()
+		t.Fatal("refused remove still changed the stack")
+	}
+	p.RUnlock()
+
+	rs = RunScript(p, "layer 1\nlayer list\n")
+	if !rs[0].OK || !strings.Contains(rs[0].Result, "warning") || !strings.Contains(rs[0].Result, "1 copper layer") {
+		t.Fatalf("layer 1: %+v", rs[0])
+	}
+	p.RLock()
+	if p.Board().StackupOrDefault().CopperCount() != 1 {
+		p.RUnlock()
+		t.Fatal("layer 1 did not leave one copper layer")
+	}
+	p.RUnlock()
+
+	q := core.NewProject("t-1l-force")
+	rs = RunScript(q, "outline 20 20\nlayer remove B.Cu force\n")
+	if !rs[1].OK || !strings.Contains(rs[1].Result, "warning") {
+		t.Fatalf("force remove: %+v", rs[1])
+	}
+	q.RLock()
+	defer q.RUnlock()
+	if q.Board().StackupOrDefault().CopperCount() != 1 {
+		t.Fatal("force remove left more than one layer")
+	}
+}
+
 func TestLayerAddInsertsBeforeBottom(t *testing.T) {
 	p := core.NewProject("t5b")
 	rs := RunScript(p, "outline 20 20\nlayer add In1.Cu signal\nlayer add In2.Cu plane\nlayer list\n")

@@ -23,7 +23,11 @@ const (
 type Kind string
 
 const (
-	KindPadPadClearance        Kind = "pad_pad_clearance"
+	KindPadPadClearance Kind = "pad_pad_clearance"
+	// KindFootprintPadGap is a pad-to-pad gap inside one footprint that is
+	// below the fab floor. The design clearance does not apply here: the
+	// pads cannot be moved apart. A gap the fab can build is not an error.
+	KindFootprintPadGap        Kind = "footprint_pad_gap"
 	KindTraceTraceClearance    Kind = "trace_trace_clearance"
 	KindTracePadClearance      Kind = "trace_pad_clearance"
 	KindEdgeClearance          Kind = "edge_clearance"
@@ -91,6 +95,40 @@ func DefaultOptions() Options {
 		MinSliver:               core.FromMM(0.15),
 		RoutingInefficientRatio: 1.5,
 	}
+}
+
+// OptionsForBoard is DefaultOptions with an explicit fab preset copied in.
+// A board that never called `fab-rules` keeps the 0.2 mm design clearance.
+// A board that did gets that preset's clearance, drill, ring and hole gap,
+// which is what `drc` and the HTTP check report.
+func OptionsForBoard(board *core.Board) Options {
+	o := DefaultOptions()
+	if board == nil || board.FabRules == nil {
+		return o
+	}
+	f := board.FabRules
+	if f.MinClearanceMM > 0 {
+		o.MinClearance = core.FromMM(f.MinClearanceMM)
+	}
+	if f.MinTraceWidthMM > 0 {
+		o.MinTraceWidth = core.FromMM(f.MinTraceWidthMM)
+	}
+	if f.MinViaDrillMM > 0 {
+		o.MinDrill = core.FromMM(f.MinViaDrillMM)
+	}
+	if f.MinAnnularRingMM > 0 {
+		o.MinAnnularRing = core.FromMM(f.MinAnnularRingMM)
+	}
+	if f.MinEdgeClearanceMM > 0 {
+		o.EdgeClearance = core.FromMM(f.MinEdgeClearanceMM)
+	}
+	if f.MinHoleToHoleMM > 0 {
+		o.MinHoleToHole = core.FromMM(f.MinHoleToHoleMM)
+	}
+	if f.MinSliverMM > 0 {
+		o.MinSliver = core.FromMM(f.MinSliverMM)
+	}
+	return o
 }
 
 // Report is the full DRC result.
@@ -269,7 +307,7 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 		minDrillMM = board.FabRules.MinViaDrillMM
 	}
 
-	checkPadPad(pads, resolver, &rep)
+	checkPadPad(board, pads, resolver, &rep)
 	checkTraceTrace(board, resolver, &rep)
 	checkTracePad(board, pads, resolver, &rep)
 	checkViaPad(board, pads, resolver, &rep)
@@ -320,7 +358,8 @@ func buildResolver(board *core.Board, sch *core.Schematic, opts Options) *core.R
 			Clearance:  opts.MinClearance,
 			TraceWidth: opts.MinTraceWidth,
 		},
-		Areas: append([]core.RuleArea(nil), board.RuleAreas...),
+		Areas:      append([]core.RuleArea(nil), board.RuleAreas...),
+		FabFloorMM: core.ActiveFabRules(board).MinClearanceMM,
 	}
 	if sch != nil {
 		r.NetClass = map[string]core.NetClass{}
@@ -350,7 +389,13 @@ func clearanceMM(res *core.RuleResolver, netA, netB string, siteX, siteY float64
 	return res.ClearanceBetween(p, netA, netB).ToMM()
 }
 
-func checkPadPad(pads []padGeom, res *core.RuleResolver, rep *Report) {
+func checkPadPad(board *core.Board, pads []padGeom, res *core.RuleResolver, rep *Report) {
+	// Same-footprint copper is the part, not the layout. Check it against
+	// the fab floor only, and under its own kind, so a 0.16 mm QFN pitch
+	// is not a board error on a 0.20 mm design rule, while a 0.10 mm pitch
+	// the fab cannot etch still is. A loose footprint does not change the
+	// clearance between two different parts, or between a pad and a trace.
+	floor := core.ActiveFabRules(board).MinClearanceMM
 	for i := 0; i < len(pads); i++ {
 		for j := i + 1; j < len(pads); j++ {
 			a, b := pads[i], pads[j]
@@ -362,6 +407,16 @@ func checkPadPad(pads []padGeom, res *core.RuleResolver, rep *Report) {
 			}
 			gap := aabbGapMM(a.rect, b.rect)
 			sx, sy := rectRectClosestSite(a.rect, b.rect)
+			if a.ref != "" && a.ref == b.ref {
+				if floor > 0 && gap+0.001 < floor {
+					rep.add(Violation{
+						Kind: KindFootprintPadGap, Severity: SeverityError,
+						Message: fmt.Sprintf("footprint %s pad %s – pad %s: %.3f mm < fab %.3f mm", a.ref, a.number, b.number, gap, floor),
+						Net:     a.net, XMM: sx, YMM: sy,
+					})
+				}
+				continue
+			}
 			clr := clearanceMM(res, a.net, b.net, sx, sy)
 			if gap+0.001 < clr {
 				rep.add(Violation{

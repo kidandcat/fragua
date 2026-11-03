@@ -3,6 +3,7 @@ package placer
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -690,5 +691,118 @@ func TestPullPassivesLeavesPinnedFootprintsAlone(t *testing.T) {
 	PullPassivesToAnchors(b, []*core.Footprint{l2}, DefaultOptions())
 	if l2.Position != want {
 		t.Fatalf("pinned L2 moved: %v → %v", want, l2.Position)
+	}
+}
+
+// Passives that never find an anchor used to be left in the park pile:
+// every leftover stacked on one corner, 0.2 mm apart. They go back to the
+// pose they had, which is not a pile.
+func TestUnseatedPassivesAreNotLeftStacked(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(80), core.FromMM(50)))
+	b.Outline = &o
+	var fps []*core.Footprint
+	for i := 0; i < 24; i++ {
+		fp := footprint(fmt.Sprintf("C%d", i+1), 4+float64(i%8)*8, 6+float64(i/8)*12, []core.Pad{
+			pad("1", -0.6, 0, "N"),
+			pad("2", 0.6, 0, "GND"),
+		})
+		b.AddFootprint(fp)
+		fps = append(fps, fp)
+	}
+	opts := DefaultOptions()
+	opts.SolderGapMM = 0.4
+	PullPassivesToAnchors(b, fps, opts)
+	rules := b.ComponentRules()
+	for i := 0; i < len(fps); i++ {
+		for j := i + 1; j < len(fps); j++ {
+			if hits := core.ComponentHits(fps[i], fps[j], rules); len(hits) > 0 {
+				t.Fatalf("%s and %s overlap after a failed seat: %s at (%.2f,%.2f) %s at (%.2f,%.2f)",
+					fps[i].Reference, fps[j].Reference, fps[i].Reference,
+					fps[i].Position.X.ToMM(), fps[i].Position.Y.ToMM(),
+					fps[j].Reference, fps[j].Position.X.ToMM(), fps[j].Position.Y.ToMM())
+			}
+		}
+	}
+}
+
+func TestPlaceSaysWhenTheOutlineIsTooSmall(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(12), core.FromMM(12)))
+	b.Outline = &o
+	ic := footprint("U1", 6, 6, []core.Pad{
+		pad("1", -3, 1, "A"), pad("2", -3, -1, "B"),
+		pad("3", 3, 1, "C"), pad("4", 3, -1, "D"),
+		pad("5", 0, 3, "E"), pad("6", 0, -3, "F"),
+	})
+	ic.Pinned = true
+	ic.BodyRect = &core.BodyRect{MinXMM: -4.2, MinYMM: -4.2, MaxXMM: 4.2, MaxYMM: 4.2}
+	b.AddFootprint(ic)
+	var refs []string
+	for i := 0; i < 4; i++ {
+		ref := fmt.Sprintf("C%d", i+1)
+		refs = append(refs, ref)
+		b.AddFootprint(footprint(ref, 6, 6, []core.Pad{
+			pad("1", -0.7, 0, "A"),
+			pad("2", 0.7, 0, "GND"),
+		}))
+	}
+	opts := DefaultOptions()
+	opts.BottomPassives = bottomOff
+	opts.GlobalStage = false
+	opts.Decouple = false
+	opts.Iterations = 30
+	opts.Seed = 1
+	_, err := Place(b, refs, opts)
+	if err == nil || !strings.Contains(err.Error(), "do not fit") {
+		t.Fatalf("expected a fit error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "12.00x12.00") {
+		t.Fatalf("error should name the outline: %v", err)
+	}
+}
+
+func TestBottomPassivesFitUnderAnIC(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(14), core.FromMM(14)))
+	b.Outline = &o
+	ic := footprint("U1", 7, 7, []core.Pad{
+		pad("1", -3, 1, "A"), pad("2", -3, -1, "B"),
+		pad("3", 3, 1, "C"), pad("4", 3, -1, "D"),
+		pad("5", 0, 3, "E"), pad("6", 0, -3, "F"),
+	})
+	ic.Pinned = true
+	ic.BodyRect = &core.BodyRect{MinXMM: -4.5, MinYMM: -4.5, MaxXMM: 4.5, MaxYMM: 4.5}
+	b.AddFootprint(ic)
+	var movable []*core.Footprint
+	for i := 0; i < 4; i++ {
+		fp := footprint(fmt.Sprintf("C%d", i+1), 7, 7, []core.Pad{
+			pad("1", -0.7, 0, "A"),
+			pad("2", 0.7, 0, "GND"),
+		})
+		b.AddFootprint(fp)
+		movable = append(movable, fp)
+	}
+	opts := DefaultOptions()
+	opts.BottomPassives = bottomOn
+	bottom, left := finishPlacement(b, movable, opts)
+	if len(left) != 0 {
+		t.Fatalf("bottom passives still unfitted: %v", left)
+	}
+	if bottom != 4 {
+		t.Fatalf("bottom = %d, want 4", bottom)
+	}
+	bot := b.StackupOrDefault().BottomLayer()
+	rules := b.ComponentRules()
+	fps := footprintsAll(b)
+	for i := 0; i < len(fps); i++ {
+		if fps[i].Reference != "U1" && fps[i].Layer != bot {
+			t.Fatalf("%s stayed on layer %d", fps[i].Reference, fps[i].Layer.Index)
+		}
+		for j := i + 1; j < len(fps); j++ {
+			if len(core.ComponentHits(fps[i], fps[j], rules)) > 0 {
+				t.Fatalf("overlap %s %s", fps[i].Reference, fps[j].Reference)
+			}
+		}
 	}
 }

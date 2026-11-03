@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mentasystems/fragua/internal/core"
+	"github.com/mentasystems/fragua/internal/drc"
 )
 
 // Options configures a route run.
@@ -289,6 +290,10 @@ type Report struct {
 	TotalLowerBound float64     `json:"total_lower_bound_mm"`
 	Failed          int         `json:"failed"`
 	ElapsedMS       int64       `json:"elapsed_ms"`
+	// KeptPrevious is set when this call would have finished with fewer
+	// complete nets, fewer connected pads, or more vias than it started
+	// with, and the copper was put back.
+	KeptPrevious bool `json:"kept_previous,omitempty"`
 }
 
 // NetResult pairs a net name with its outcome.
@@ -326,8 +331,12 @@ func (r Report) Summary() string {
 	if len(notes) > 0 {
 		widths = " (" + strings.Join(notes, ", ") + ")"
 	}
-	return fmt.Sprintf("route: %d/%d nets ok%s, %d traces, %d vias, %.1f mm copper, %d ms",
-		ok, len(r.PerNet), widths, r.TraceCount, r.ViaCount, r.TotalLengthMM, r.ElapsedMS)
+	kept := ""
+	if r.KeptPrevious {
+		kept = ", kept previous"
+	}
+	return fmt.Sprintf("route: %d/%d nets ok%s%s, %d traces, %d vias, %.1f mm copper, %d ms",
+		ok, len(r.PerNet), kept, widths, r.TraceCount, r.ViaCount, r.TotalLengthMM, r.ElapsedMS)
 }
 
 type padLoc struct {
@@ -345,6 +354,19 @@ type padLoc struct {
 func Route(board *core.Board, opts Options) Report {
 	if opts.TeardropsSet && board != nil {
 		board.Teardrops = opts.Teardrops
+	}
+	// Remember the copper we were handed. A second call must not replace
+	// a finished net with a worse one: rip-up that fails to come back, or
+	// a search that cannot see the copper already on the board and reports
+	// the net open, used to drop a 96/191 board to 90/191.
+	var snapT []core.Trace
+	var snapV []core.Via
+	var before drc.ConnectStats
+	already := map[string]bool{}
+	if board != nil {
+		snapT = append([]core.Trace(nil), board.Traces...)
+		snapV = append([]core.Via(nil), board.Vias...)
+		before, already = drc.Connectivity(board)
 	}
 	start := time.Now()
 	// Every run is bounded: max_seconds=0 is "the default budget", not
@@ -443,7 +465,7 @@ func Route(board *core.Board, opts Options) Report {
 	routableLeft := 0
 	pending := map[string]bool{}
 	for _, name := range names {
-		if !pourNets[name] && len(nets[name]) >= 2 {
+		if !pourNets[name] && len(nets[name]) >= 2 && !already[name] {
 			routableLeft++
 			pending[name] = true
 		}
@@ -464,6 +486,14 @@ func Route(board *core.Board, opts Options) Report {
 		if pourNets[name] || len(pads) < 2 {
 			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{
 				Status: "ok", Reason: "pour_or_single",
+			}})
+			continue
+		}
+		if already[name] {
+			// The pads are already one island. Leave that copper alone and
+			// spend the budget on nets that are still open.
+			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{
+				Status: "ok", Reason: "already",
 			}})
 			continue
 		}
@@ -673,6 +703,18 @@ func Route(board *core.Board, opts Options) Report {
 	// ships the same hole ordered twice.
 	dropDuplicateVias(board)
 
+	after, done := drc.Connectivity(board)
+	if connDelta(after, before) < 0 {
+		board.Traces = snapT
+		board.Vias = snapV
+		rep.KeptPrevious = true
+		_, done = drc.Connectivity(board)
+	}
+	reconcileRoute(&rep, done)
+	if rep.KeptPrevious {
+		refreshReportLengths(board, &rep)
+	}
+
 	// Via count for nets that finished ok.
 	okNets := map[string]bool{}
 	for _, n := range rep.PerNet {
@@ -698,6 +740,45 @@ func Route(board *core.Board, opts Options) Report {
 
 	rep.ElapsedMS = time.Since(start).Milliseconds()
 	return rep
+}
+
+// connDelta is positive when a is a better board than b: more finished
+// nets, then more pads that touch copper, then fewer vias.
+func connDelta(a, b drc.ConnectStats) int {
+	if a.CompleteNets != b.CompleteNets {
+		return a.CompleteNets - b.CompleteNets
+	}
+	if a.ConnectedPads != b.ConnectedPads {
+		return a.ConnectedPads - b.ConnectedPads
+	}
+	return b.Vias - a.Vias
+}
+
+// reconcileRoute counts a net as routed when its pads are one island, even
+// if this attempt gave up and the copper it kept is from an earlier pass.
+func reconcileRoute(rep *Report, done map[string]bool) {
+	if done == nil {
+		done = map[string]bool{}
+	}
+	failed := 0
+	for i := range rep.PerNet {
+		n := &rep.PerNet[i]
+		if n.Outcome.Reason == "pour_or_single" {
+			n.Outcome.Status = "ok"
+			continue
+		}
+		if done[n.Net] {
+			if n.Outcome.Status != "ok" {
+				n.Outcome.Status = "ok"
+				n.Outcome.Reason = "kept"
+			}
+			continue
+		}
+		if n.Outcome.Status != "ok" {
+			failed++
+		}
+	}
+	rep.Failed = failed
 }
 
 func refreshReportLengths(board *core.Board, rep *Report) {
@@ -3209,8 +3290,8 @@ func newGrid(board *core.Board, opts Options) *grid {
 		gh = 2
 	}
 	layers := board.StackupOrDefault().CopperCount()
-	if layers < 2 {
-		layers = 2
+	if layers < 1 {
+		layers = 1
 	}
 	g := &grid{
 		originX: minX, originY: minY, cell: cell, cellMM: cellMM,

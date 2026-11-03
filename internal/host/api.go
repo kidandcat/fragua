@@ -64,7 +64,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func runDRC(p *core.Project) CheckReport {
 	p.RLock()
-	rep := drc.Check(p.Board(), p.Schematic(), drc.DefaultOptions())
+	rep := drc.Check(p.Board(), p.Schematic(), drc.OptionsForBoard(p.Board()))
 	p.RUnlock()
 	out := CheckReport{Source: "drc", Errors: rep.Errors, Warnings: rep.Warnings, Summary: rep.Summary()}
 	out.Violations = make([]Violation, 0, len(rep.Violations))

@@ -293,9 +293,20 @@ func (s *LayerStackup) PushLayer(spec LayerSpec, slab Dielectric) {
 	s.Dielectrics = append(s.Dielectrics, slab)
 }
 
-// RemoveNamed removes a copper layer by name. Returns false if not found or would leave <2 layers.
+// RemoveNamed removes a copper layer by name. Returns false if not found
+// or if the board would be left with fewer than 2 copper layers.
 func (s *LayerStackup) RemoveNamed(name string) bool {
-	if len(s.Layers) <= 2 {
+	return s.removeNamed(name, 2)
+}
+
+// RemoveNamedAllowSingle is RemoveNamed that may leave a one-layer board.
+// The caller has to say so: a single copper layer cannot host a via.
+func (s *LayerStackup) RemoveNamedAllowSingle(name string) bool {
+	return s.removeNamed(name, 1)
+}
+
+func (s *LayerStackup) removeNamed(name string, minKeep int) bool {
+	if len(s.Layers) <= minKeep {
 		return false
 	}
 	idx := -1

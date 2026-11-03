@@ -62,6 +62,105 @@ func TestSinglePadAndPourNetsAreOk(t *testing.T) {
 	}
 }
 
+func TestSecondRouteKeepsFinishedCopper(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{
+		pad("1", -1, 0, "OUT"),
+		pad("2", 1, 0, "GND"),
+	}))
+	b.AddFootprint(footprint("R2", 22, 10, []core.Pad{
+		pad("1", -1, 0, "OUT"),
+		pad("2", 1, 0, "GND"),
+	}))
+	opts := DefaultOptions()
+	opts.MaxSeconds = 8
+	rep1 := Route(b, opts)
+	ok1 := 0
+	for _, n := range rep1.PerNet {
+		if n.Outcome.Status == "ok" {
+			ok1++
+		}
+	}
+	traces, vias := len(b.Traces), len(b.Vias)
+	if ok1 == 0 || traces == 0 {
+		t.Fatalf("first pass routed nothing: %s", rep1.Summary())
+	}
+	rep2 := Route(b, opts)
+	ok2 := 0
+	for _, n := range rep2.PerNet {
+		if n.Outcome.Status == "ok" {
+			ok2++
+		}
+	}
+	if ok2 < ok1 {
+		t.Fatalf("second pass dropped nets: %s then %s", rep1.Summary(), rep2.Summary())
+	}
+	if len(b.Vias) > vias {
+		t.Fatalf("second pass added vias %d → %d without a better board", vias, len(b.Vias))
+	}
+	if len(b.Traces) > traces {
+		t.Fatalf("second pass duplicated copper %d → %d traces", traces, len(b.Traces))
+	}
+}
+
+func TestAlreadyRoutedNetIsLeftAlone(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	b.AddFootprint(footprint("R2", 24, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	b.Traces = []core.Trace{{
+		Net: "SIG", Layer: core.LayerTop, Width: core.FromMM(0.25),
+		Start: core.NewPoint(core.FromMM(10), core.FromMM(10)),
+		End:   core.NewPoint(core.FromMM(24), core.FromMM(10)),
+	}}
+	opts := DefaultOptions()
+	opts.MaxSeconds = 5
+	rep := Route(b, opts)
+	if len(b.Traces) != 1 {
+		t.Fatalf("a finished net was re-laid: %d traces, %s", len(b.Traces), rep.Summary())
+	}
+	for _, n := range rep.PerNet {
+		if n.Net == "SIG" && (n.Outcome.Status != "ok" || n.Outcome.Reason != "already") {
+			t.Fatalf("SIG outcome %+v", n.Outcome)
+		}
+	}
+}
+
+func TestOneCopperLayerRoutesWithoutVias(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))
+	b.Outline = &o
+	s := b.StackupOrDefault()
+	if !s.RemoveNamedAllowSingle("B.Cu") {
+		t.Fatal("could not drop to 1 layer")
+	}
+	b.Stackup = &s
+	b.AddFootprint(footprint("R1", 10, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	b.AddFootprint(footprint("R2", 22, 10, []core.Pad{pad("1", 0, 0, "SIG")}))
+	opts := DefaultOptions()
+	opts.MaxSeconds = 5
+	rep := Route(b, opts)
+	if len(b.Vias) != 0 {
+		t.Fatalf("1-layer board drilled %d vias", len(b.Vias))
+	}
+	ok := false
+	for _, n := range rep.PerNet {
+		if n.Net == "SIG" && n.Outcome.Status == "ok" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("SIG did not route on one layer: %s", rep.Summary())
+	}
+	g := newGrid(b, opts)
+	if g.layers != 1 {
+		t.Fatalf("grid layers = %d, want 1", g.layers)
+	}
+}
+
 func TestRoutesTwoResistors(t *testing.T) {
 	b := core.NewBoard()
 	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(20)))

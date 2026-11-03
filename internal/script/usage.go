@@ -114,11 +114,12 @@ var Verbs = []VerbHelp{
 		Examples: []string{"net GND U1.GND C1.2 R1.2 class=ground", "net +3V3 U1.3V3 C1.1 class=power"},
 	},
 	{
-		Name:     "class",
-		Aliases:  []string{"net-class", "net_class"},
-		Usage:    "class NAME [clearance=N] [width=N] [impedance=Z]",
-		Notes:    []string{"  net-class NET CLASS"},
-		Describe: "Define a net class (trace width, clearance, target impedance in ohms, `pour=both|top|bottom`). `net-class NET CLASS` assigns an existing class to a net.",
+		Name:    "class",
+		Aliases: []string{"net-class", "net_class"},
+		Usage:   "class NAME [clearance=N] [width=N] [impedance=Z]",
+		Notes:   []string{"  net-class NET CLASS"},
+		Describe: "Define a net class (trace width, clearance, target impedance in ohms, `pour=both|top|bottom`). `net-class NET CLASS` assigns an existing class to a net. " +
+			"`clearance=` replaces the board default for nets in that class: it can be looser or tighter. The gap between two nets is the stricter of the two, and it cannot go below the fab floor.",
 		Examples: []string{"class ground pour=both", "class power width=0.4", "class rf impedance=50", "net-class USB_DP rf"},
 	},
 	{
@@ -182,21 +183,25 @@ var Verbs = []VerbHelp{
 	{
 		Name:    "auto-place",
 		Aliases: []string{"auto_place"},
-		Usage:   "auto-place [REF...] [seed=N] [iters=N]",
+		Usage:   "auto-place [REF...] [seed=N] [iters=N] [bottom_passives=auto|on|off]",
 		Describe: "ePlace global placement (Poisson/DCT + Nesterov) plus simulated-annealing legalisation over the listed parts (all movable parts if none listed). " +
 			"Parts bound by `palette` / `part` / `lib-gen` but never placed are seated on the board first (reported as `seated N new`), so you do not have to `place` them by hand. " +
 			"Anything you `place`d or `edge-place`d stays put and is routed around; name it as a REF to move it anyway. Pass a `seed` to make the result reproducible. Needs an outline. " +
-			"Legalisation keeps the same component clearance DRC enforces: courtyards do not overlap, and bodies stay at least the body gap apart (the module gap only when both parts are modules, so a decap may sit on the body gap next to a module).",
-		Examples: []string{"auto-place", "auto-place R1 C1 C2 seed=42", "auto-place seed=7 iters=4000"},
+			"Legalisation keeps the same component clearance DRC enforces: courtyards do not overlap, and bodies stay at least the body gap apart (the module gap only when both parts are modules, so a decap may sit on the body gap next to a module). " +
+			"A passive that cannot be seated is not left stacked on a corner. If the outline cannot hold the parts without overlapping, auto-place stops and says so (courtyard demand against the outline). " +
+			"`bottom_passives=on` moves 2–4 pad SMD parts to the bottom copper; `auto` (the default) does that only when the top side does not fit.",
+		Examples: []string{"auto-place", "auto-place R1 C1 C2 seed=42", "auto-place seed=7 iters=4000", "auto-place bottom_passives=on"},
 	},
 	{
 		Name:  "route",
 		Usage: "route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true] [engine=grid|topo]",
 		Notes: []string{"        (max_seconds: default 600, max 3600; clearance: extra air, fab min is the floor; engine=topo is experimental)"},
 		Describe: "Auto-route every unrouted net: Theta* any-angle search with rip-up-and-reroute, fanout escapes and pour stitching. " +
+			"Nets whose pads are already one copper island are left alone. A re-run that would finish with fewer complete nets, fewer connected pads, or more vias puts the previous copper back (`kept previous`). " +
 			"`engine=topo` opts into the Delaunay homotopy / rubber-band engine (clears existing copper and re-routes the board). " +
 			"Default is the grid engine — keep it for the agent path until you have a reason to try topo. " +
-			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open.",
+			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open. " +
+			"Power width comes from `class power width=N`: the trace keeps that width and necks at a pad escape when the fat copper does not fit.",
 		Examples: []string{"route", "route max_seconds=120", "route max_seconds=300 organic=true teardrop=true", "route engine=topo max_seconds=60"},
 	},
 	{
@@ -315,16 +320,19 @@ var Verbs = []VerbHelp{
 		Examples: []string{"escape list", "escape via-in-pad U1.EP", "escape via-in-pad-stranded on"},
 	},
 	{
-		Name:     "layer",
-		Usage:    "layer list|add|remove|rename|dielectric",
-		Describe: "Inspect and edit the stackup. Default is 2-layer (Top/Bottom); `layer add` grows it, `layer dielectric` sets thickness and Er, which feed the impedance model.",
-		Examples: []string{"layer list", "layer add GND plane", "layer dielectric 1 0.2 4.3"},
+		Name:  "layer",
+		Usage: "layer list|add|remove|rename|dielectric|4|1",
+		Describe: "Inspect and edit the stackup. Default is 2-layer (F.Cu/B.Cu). `layer add` grows it. `layer 4` (also `stackup 4`) installs F.Cu / In1.Cu / In2.Cu / B.Cu, pours GND on In1 and an existing power rail on In2. `layer dielectric` sets thickness and Er, which feed the impedance model. " +
+			"`layer remove` refuses to leave fewer than 2 copper layers. `layer 1`, or `layer remove B.Cu force`, does it anyway and warns: a via then has no second layer.",
+		Examples: []string{"layer list", "layer add GND plane", "layer 4", "layer 1", "layer remove B.Cu force", "layer dielectric 1 0.2 4.3"},
 	},
 	{
-		Name:     "drc",
-		Aliases:  []string{"erc"},
-		Usage:    "drc / erc",
-		Describe: "`erc` checks the schematic (floating pins, unconnected nets, power conflicts); `drc` checks the geometry (clearance, shorts, annular ring, board edge, component courtyard overlap and body-to-body gap). Both print violations. `pack` refuses on ERC errors and reports DRC errors, including `courtyard_overlap` and `body_clearance`, in `drc_err`. A `body_clearance` line names the two references and the measured gap.",
+		Name:    "drc",
+		Aliases: []string{"erc"},
+		Usage:   "drc / erc",
+		Describe: "`erc` checks the schematic (floating pins, unconnected nets, power conflicts); `drc` checks the geometry (clearance, shorts, annular ring, board edge, component courtyard overlap and body-to-body gap). Both print violations. After `fab-rules`, `drc` uses that preset's clearance, drill, ring and hole gap. " +
+			"A footprint's own pad gap is checked against the fab floor (`footprint_pad_gap`), not the design clearance: the pads cannot be moved, and a gap the fab can etch is not a board error. A gap below the fab floor still is, including holes of the same footprint. A net class does not loosen the gap between two different parts below the stricter of the two classes, or below the fab floor. " +
+			"`pack` refuses on ERC errors and reports DRC errors, including `courtyard_overlap` and `body_clearance`, in `drc_err`. A `body_clearance` line names the two references and the measured gap.",
 		Examples: []string{"erc", "drc"},
 	},
 	{
