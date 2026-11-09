@@ -521,7 +521,7 @@ func placeOne(p *core.Project, args string) (string, error) {
 		return fmt.Sprintf("placed %s at %.2f,%.2f rot=%.0f", ref, x, y, rot), nil
 	}
 	// Else take from palette.
-	fp, ok := p.PaletteTake(ref)
+	fp, ok := takeFromPalette(p, ref)
 	if !ok {
 		return "", fmt.Errorf("place: unknown ref %q (not on board or palette)", ref)
 	}
@@ -643,13 +643,10 @@ func seatPending(p *core.Project, verb string, refs []string) (int, error) {
 		if !bindPalette(p, ref) {
 			continue
 		}
-		fp, ok := p.PaletteTake(ref)
+		fp, ok := takeFromPalette(p, ref)
 		if !ok {
 			continue
 		}
-		p.RLock()
-		stampNets(p.Schematic(), fp)
-		p.RUnlock()
 		fp.Position = core.NewPoint(
 			core.FromMM(o.Min.X.ToMM()+mx+(float64(i%cols)+0.5)*cw),
 			core.FromMM(o.Min.Y.ToMM()+my+(float64(i/cols)+0.5)*ch),
@@ -1106,6 +1103,22 @@ func paletteCmd(p *core.Project, args string) (string, error) {
 	stampNets(sch, fp)
 	p.PaletteAdd(*fp)
 	return fmt.Sprintf("Spawned %s from %s", ref, key), nil
+}
+
+// takeFromPalette removes ref's footprint from the palette with its pads
+// tagged by the current schematic nets. Every path that moves a palette
+// footprint onto the board must go through here: the nets stamped at palette
+// time are stale for any `net` line that ran after the part was bound, and
+// `place` used to seat those pads with no net at all.
+func takeFromPalette(p *core.Project, ref string) (*core.Footprint, bool) {
+	fp, ok := p.PaletteTake(ref)
+	if !ok {
+		return nil, false
+	}
+	p.RLock()
+	stampNets(p.Schematic(), fp)
+	p.RUnlock()
+	return fp, true
 }
 
 // stampNets tags fp's pads with the nets its schematic symbol sits on, by pad

@@ -370,3 +370,27 @@ func TestUsageMentionsPartsVerbs(t *testing.T) {
 		}
 	}
 }
+
+// TestPartNetsDeclaredBeforePlace: palette stamps nets when it binds, and a
+// `net` line only reaches footprints already on the board, so `part` → `net`
+// → `place` seated the pads with no net and the router saw nothing to do.
+func TestPartNetsDeclaredBeforePlace(t *testing.T) {
+	for verb, line := range map[string]string{
+		"place":       "place R1 10 10",
+		"edge-place":  "edge-place R1 left",
+		"place-legal": "place-legal R1",
+	} {
+		p, _ := partsProject(t, "parts-nets-"+verb)
+		run(t, p, "outline 20 20\npart C25804 as=R1\nnet A R1.1\nnet B R1.2\n"+line+"\n")
+		fp := p.Board().FootprintByRef("R1")
+		if fp == nil {
+			t.Fatalf("%s: R1 not on the board", verb)
+		}
+		want := map[string]string{"1": "A", "2": "B"}
+		for _, pd := range fp.Pads {
+			if pd.Net == nil || *pd.Net != want[pd.Number] {
+				t.Fatalf("%s: pad %s net %v, want %s", verb, pd.Number, pd.Net, want[pd.Number])
+			}
+		}
+	}
+}

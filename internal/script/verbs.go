@@ -629,7 +629,7 @@ func cmdEdgePlace(p *core.Project, args string) (string, error) {
 	if v, ok := kvFloat(strings.Join(fields[2:], " "), "along"); ok {
 		along = &v
 	}
-	fromPal, palOK := p.PaletteTake(ref)
+	fromPal, palOK := takeFromPalette(p, ref)
 	var msg string
 	err := error(nil)
 	p.MutateBoard(func(b *core.Board) {
@@ -689,7 +689,7 @@ func cmdPlaceLegal(p *core.Project, args string) (string, error) {
 	}
 	// A symbol carrying key= is bound but has no palette entry yet.
 	bindPalette(p, ref)
-	fp, fromPal := p.PaletteTake(ref)
+	fp, fromPal := takeFromPalette(p, ref)
 	var msg string
 	err := error(nil)
 	p.MutateBoard(func(b *core.Board) {
