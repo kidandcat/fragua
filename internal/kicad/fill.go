@@ -322,6 +322,13 @@ func (e *exporter) pourShapes(pour *core.Pour) (shapes []shape, keeps []shape) {
 			rad:  v.Diameter.ToMM()/2 + pourClearanceMM,
 		})
 	}
+	for _, h := range e.board.NPTHHoles() {
+		shapes = append(shapes, shape{
+			kind: voidDisc,
+			a:    [2]float64{h.Center.X.ToMM(), h.Center.Y.ToMM()},
+			rad:  h.CopperClearRadiusMM(),
+		})
+	}
 	for i := range e.board.Cutouts {
 		if r, ok := core.PolygonBBox(e.board.Cutouts[i].Polygon); ok {
 			shapes = append(shapes, rectShape(r, pourEdgeClearanceMM, false))

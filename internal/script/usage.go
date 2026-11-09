@@ -34,14 +34,14 @@ var Verbs = []VerbHelp{
 		Name:     "cutout",
 		Aliases:  []string{"clear-cutouts", "clear_cutouts"},
 		Usage:    "cutout x1 y1 ... [label=NAME] | clear-cutouts",
-		Describe: "Add a milled interior cutout as a polygon of mm vertices. `clear-cutouts` removes them all.",
+		Describe: "Add a milled interior cutout as a polygon of mm vertices. It is board edge: the router, pour and DRC keep copper 0.3 mm off it. `clear-cutouts` removes them all.",
 		Examples: []string{"cutout 10 10 20 10 20 18 10 18 label=window", "clear-cutouts"},
 	},
 	{
 		Name:     "hole",
 		Aliases:  []string{"clear-holes", "clear_holes"},
 		Usage:    "hole X Y D [label=NAME] | clear-holes",
-		Describe: "Add a non-plated mounting hole of diameter D mm at X,Y. `clear-holes` removes them all.",
+		Describe: "Add a non-plated mounting hole of diameter D mm at X,Y. The router, pour and DRC (`copper_to_hole`) keep copper 0.5 mm off the drill wall; no keepout needed. `clear-holes` removes them all.",
 		Examples: []string{"hole 3 3 3.2 label=M3", "clear-holes"},
 	},
 	{

@@ -2692,6 +2692,31 @@ func collectObstacles(board *core.Board, net string, layer uint8, opts Options) 
 			clrMM: 0,
 		})
 	}
+	// Non-plated holes: the drill disc, with the copper-to-drill margin.
+	for _, h := range board.NPTHHoles() {
+		r := h.Diameter.ToMM() / 2
+		os.items = append(os.items, obstacle{
+			kind:  2,
+			c:     ptMM(h.Center),
+			r:     r,
+			clrMM: h.CopperClearRadiusMM() - r,
+		})
+	}
+	// Milled cutouts are board edge: every side keeps the edge setback.
+	for _, cut := range board.Cutouts {
+		n := len(cut.Polygon)
+		if n < 3 {
+			continue
+		}
+		for i := 0; i < n; i++ {
+			os.items = append(os.items, obstacle{
+				kind:  1,
+				a:     ptMM(cut.Polygon[i]),
+				b:     ptMM(cut.Polygon[(i+1)%n]),
+				clrMM: routerEdgeClearanceMM,
+			})
+		}
+	}
 	return os
 }
 
@@ -3239,6 +3264,7 @@ func newGrid(board *core.Board, opts Options) *grid {
 		}
 		g.stampRectObstacle(*k.Rect)
 	}
+	stampNPTHObstacles(g, board)
 
 	stampInductorBodies(g, board)
 
@@ -3388,6 +3414,70 @@ func inductorFootprint(fp *core.Footprint) bool {
 
 func isAlpha(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+// routerEdgeClearanceMM is the copper setback from a board edge or a milled
+// cutout (matches obstacleSet.edgeMM and the pour edge clearance).
+const routerEdgeClearanceMM = 0.3
+
+// stampNPTHObstacles blocks non-plated holes and milled cutouts on every
+// layer. The search keeps copper opts.ClearanceMM away from a stamped cell, so
+// the stamp is grown by whatever the hole or edge needs beyond that, plus half
+// a cell so grid quantisation never lets copper creep inside the margin.
+func stampNPTHObstacles(g *grid, board *core.Board) {
+	clr := g.opts.ClearanceMM
+	for _, h := range board.NPTHHoles() {
+		r := math.Max(h.Diameter.ToMM()/2, h.CopperClearRadiusMM()-clr) + g.cellMM/2
+		c := ptMM(h.Center)
+		g.stampWhere(c[0]-r, c[1]-r, c[0]+r, c[1]+r, func(x, y float64) bool {
+			return math.Hypot(x-c[0], y-c[1]) <= r
+		})
+	}
+	grow := math.Max(0, routerEdgeClearanceMM-clr) + g.cellMM/2
+	for _, cut := range board.Cutouts {
+		poly := cut.Polygon
+		if len(poly) < 3 {
+			continue
+		}
+		pts := make([]p2, len(poly))
+		for i, p := range poly {
+			pts[i] = ptMM(p)
+		}
+		bb, ok := core.PolygonBBox(poly)
+		if !ok {
+			continue
+		}
+		g.stampWhere(bb.Min.X.ToMM()-grow, bb.Min.Y.ToMM()-grow, bb.Max.X.ToMM()+grow, bb.Max.Y.ToMM()+grow,
+			func(x, y float64) bool {
+				if core.PointInPolygon(core.NewPoint(core.FromMM(x), core.FromMM(y)), poly) {
+					return true
+				}
+				for i := range pts {
+					if pointSegDist(p2{x, y}, pts[i], pts[(i+1)%len(pts)]) <= grow {
+						return true
+					}
+				}
+				return false
+			})
+	}
+}
+
+// stampWhere marks "*" on every layer for the cells inside the mm box whose
+// centre satisfies in.
+func (g *grid) stampWhere(x0, y0, x1, y1 float64, in func(x, y float64) bool) {
+	c0x, c0y := clampCell(core.NewPoint(core.FromMM(x0), core.FromMM(y0)), g)
+	c1x, c1y := clampCell(core.NewPoint(core.FromMM(x1), core.FromMM(y1)), g)
+	for y := c0y; y <= c1y; y++ {
+		for x := c0x; x <= c1x; x++ {
+			wx, wy := g.cellToWorld(x, y)
+			if !in(wx.ToMM(), wy.ToMM()) {
+				continue
+			}
+			for L := 0; L < g.layers; L++ {
+				g.blocked[L][y*g.w+x] = "*"
+			}
+		}
+	}
 }
 
 func (g *grid) stampRectObstacle(r core.Rect) {

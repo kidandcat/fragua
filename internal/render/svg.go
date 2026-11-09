@@ -218,10 +218,7 @@ func writeEdge(b *strings.Builder, board *core.Board) {
 }
 
 func boardHoles(board *core.Board) []core.MountHole {
-	if len(board.MountHoles) > 0 {
-		return board.MountHoles
-	}
-	return board.Holes
+	return board.NPTHHoles()
 }
 
 func writePours(b *strings.Builder, board *core.Board, stack core.LayerStackup) {

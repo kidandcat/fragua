@@ -75,14 +75,5 @@ func writeExcellon(board *core.Board, plated bool) string {
 
 // allMountHoles merges MountHoles with the legacy Holes alias.
 func allMountHoles(board *core.Board) []core.MountHole {
-	if len(board.MountHoles) == 0 {
-		return board.Holes
-	}
-	if len(board.Holes) == 0 {
-		return board.MountHoles
-	}
-	out := make([]core.MountHole, 0, len(board.MountHoles)+len(board.Holes))
-	out = append(out, board.MountHoles...)
-	out = append(out, board.Holes...)
-	return out
+	return board.NPTHHoles()
 }

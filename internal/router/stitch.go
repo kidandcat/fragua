@@ -371,6 +371,11 @@ func pointInPourVoidMargin(board *core.Board, x, y, marginMM float64) bool {
 			return true
 		}
 	}
+	for _, h := range board.NPTHHoles() {
+		if math.Hypot(x-h.Center.X.ToMM(), y-h.Center.Y.ToMM()) <= h.CopperClearRadiusMM()+marginMM {
+			return true
+		}
+	}
 	for i := range board.Keepouts {
 		k := &board.Keepouts[i]
 		if !k.NoCopper {

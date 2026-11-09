@@ -7,12 +7,9 @@ import (
 	"github.com/mentasystems/fragua/internal/core"
 )
 
-// mountHoles returns the NPTH list under either field name.
+// mountHoles returns the NPTH list under both field names.
 func (e *exporter) mountHoles() []core.MountHole {
-	if len(e.board.MountHoles) > 0 {
-		return e.board.MountHoles
-	}
-	return e.board.Holes
+	return e.board.NPTHHoles()
 }
 
 // emitHoles writes each NPTH mount hole as its own footprint with one

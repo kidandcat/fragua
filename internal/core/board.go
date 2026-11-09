@@ -203,6 +203,30 @@ type MountHole struct {
 	KeepoutDiameter *Length `json:"keepout_diameter,omitempty"`
 }
 
+// CopperClearRadiusMM is the radius around the hole centre that copper must
+// stay out of: the drill radius plus MountHoleClearanceMM, or half the
+// explicit KeepoutDiameter when that is larger.
+func (h MountHole) CopperClearRadiusMM() float64 {
+	r := h.Diameter.ToMM()/2 + MountHoleClearanceMM
+	if h.KeepoutDiameter != nil {
+		if k := h.KeepoutDiameter.ToMM() / 2; k > r {
+			r = k
+		}
+	}
+	return r
+}
+
+// NPTHHoles returns every non-plated board hole: MountHoles plus the legacy
+// Holes alias. Copper checks, the router and the pour all need both.
+func (b *Board) NPTHHoles() []MountHole {
+	if len(b.Holes) == 0 {
+		return b.MountHoles
+	}
+	out := make([]MountHole, 0, len(b.MountHoles)+len(b.Holes))
+	out = append(out, b.MountHoles...)
+	return append(out, b.Holes...)
+}
+
 // Board is the physical layout model.
 type Board struct {
 	Outline             *Rect                 `json:"outline"`

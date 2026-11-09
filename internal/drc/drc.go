@@ -48,6 +48,7 @@ const (
 	KindImpedanceMismatch      Kind = "impedance_mismatch"
 	KindTeardropClearance      Kind = "teardrop_clearance"
 	KindCopperInKeepout        Kind = "copper_in_keepout"
+	KindCopperToHole           Kind = "copper_to_hole"
 )
 
 // SMALL_COMPONENT_PAD_LIMIT matches Rust.
@@ -279,6 +280,7 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 		checkBodyOffBoard(board, *board.Outline, &rep)
 	}
 	checkCopperInKeepout(board, pads, &rep)
+	checkCopperToNPTH(board, pads, edgeClMM, &rep)
 	checkCourtyardOverlap(board, &rep)
 	checkUnconnectedPads(board, pads, &rep)
 	checkSmallComponentDangling(board, sch, pads, &rep)
@@ -692,6 +694,81 @@ func checkCopperInKeepout(board *core.Board, pads []padGeom, rep *Report) {
 				Message: fmt.Sprintf("via %s is inside a no-copper keepout", v.Net),
 				Net:     v.Net, XMM: c[0], YMM: c[1],
 			})
+		}
+	}
+}
+
+// checkCopperToNPTH reports pads, traces and vias too close to a non-plated
+// hole (closer than core.MountHoleClearanceMM to the drill wall, or inside its
+// keepout diameter) or to a milled cutout (closer than the edge clearance, or
+// inside it). Only hole-to-hole spacing used to be checked, so a trace routed
+// straight across a mounting hole passed DRC and was cut in two by the drill.
+func checkCopperToNPTH(board *core.Board, pads []padGeom, edgeClMM float64, rep *Report) {
+	holes := board.NPTHHoles()
+	for _, h := range holes {
+		c := ptMM(h.Center)
+		clear := h.CopperClearRadiusMM()
+		need := clear - h.Diameter.ToMM()/2
+		report := func(what, net string, dist float64, x, y float64) {
+			rep.add(Violation{
+				Kind: KindCopperToHole, Severity: SeverityError,
+				Message: fmt.Sprintf("%s is %.3f mm from NPTH hole @%.2f,%.2f (need %.3f mm)",
+					what, dist-h.Diameter.ToMM()/2, c[0], c[1], need),
+				Net: net, XMM: x, YMM: y,
+			})
+		}
+		for _, pad := range pads {
+			if d := pointRectDistance(c, pad.rect); d+TouchTolMM < clear {
+				cx, cy := rectCenterMM(pad.rect)
+				report("pad "+pad.label(), pad.net, d, cx, cy)
+			}
+		}
+		for _, tr := range board.Traces {
+			a, b := ptMM(tr.Start), ptMM(tr.End)
+			if d := pointSegmentDistance(c, a, b) - tr.Width.ToMM()/2; d+TouchTolMM < clear {
+				p := closestPointOnSegment(c, a, b)
+				report("trace "+tr.Net, tr.Net, d, p[0], p[1])
+			}
+		}
+		for _, v := range board.Vias {
+			p := ptMM(v.Position)
+			if d := math.Hypot(p[0]-c[0], p[1]-c[1]) - v.Diameter.ToMM()/2; d+TouchTolMM < clear {
+				report("via "+v.Net, v.Net, d, p[0], p[1])
+			}
+		}
+	}
+	for _, cut := range board.Cutouts {
+		poly := cut.Polygon
+		if len(poly) < 3 {
+			continue
+		}
+		report := func(what, net string, gap float64, x, y float64) {
+			rep.add(Violation{
+				Kind: KindEdgeClearance, Severity: SeverityError,
+				Message: fmt.Sprintf("%s is %.3f mm from cutout %s (need %.3f mm)", what, math.Max(gap, 0), cut.ID, edgeClMM),
+				Net:     net, XMM: x, YMM: y,
+			})
+		}
+		for _, pad := range pads {
+			if pad.edgeMounted {
+				continue
+			}
+			if gap := polyRectGapFull(poly, pad.rect); gap+1e-6 < edgeClMM {
+				cx, cy := rectCenterMM(pad.rect)
+				report("pad "+pad.label(), pad.net, gap, cx, cy)
+			}
+		}
+		for _, tr := range board.Traces {
+			a, b := ptMM(tr.Start), ptMM(tr.End)
+			if gap := polySegGap(poly, a, b) - tr.Width.ToMM()/2; gap+1e-6 < edgeClMM {
+				report("trace "+tr.Net, tr.Net, gap, (a[0]+b[0])/2, (a[1]+b[1])/2)
+			}
+		}
+		for _, v := range board.Vias {
+			p := ptMM(v.Position)
+			if gap := polyCircleGap(poly, p, v.Diameter.ToMM()/2); gap+1e-6 < edgeClMM {
+				report("via "+v.Net, v.Net, gap, p[0], p[1])
+			}
 		}
 	}
 }

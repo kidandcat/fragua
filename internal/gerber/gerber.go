@@ -473,11 +473,15 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 }
 
 // pourShapeVoids returns the polygons a pour must be cleared out of on every
-// layer: internal cutouts and no-copper keepouts. A cutout is a board edge, so
-// it gets the same setback the outline gets; a keepout is the designer saying
-// "no copper here", so it is honoured exactly as declared.
+// layer: non-plated holes, internal cutouts and no-copper keepouts. A hole
+// keeps core.MountHoleClearanceMM of copper off its drill wall; a cutout is a
+// board edge, so it gets the same setback the outline gets; a keepout is the
+// designer saying "no copper here", so it is honoured exactly as declared.
 func pourShapeVoids(board *core.Board) [][]core.Point {
 	var out [][]core.Point
+	for _, h := range board.NPTHHoles() {
+		out = append(out, discPoly(h.Center, h.CopperClearRadiusMM()))
+	}
 	for i := range board.Cutouts {
 		poly := board.Cutouts[i].Polygon
 		if len(poly) < 3 {
@@ -497,6 +501,20 @@ func pourShapeVoids(board *core.Board) [][]core.Point {
 		if k.Rect != nil {
 			out = append(out, rectPoly(*k.Rect))
 		}
+	}
+	return out
+}
+
+// discPoly is a 32-gon circumscribing the circle, so the void it cuts is
+// never smaller than the disc.
+func discPoly(c core.Point, radiusMM float64) []core.Point {
+	const n = 32
+	rr := radiusMM / math.Cos(math.Pi/n)
+	cx, cy := c.X.ToMM(), c.Y.ToMM()
+	out := make([]core.Point, n)
+	for i := range out {
+		a := 2 * math.Pi * float64(i) / n
+		out[i] = core.NewPoint(core.FromMM(cx+rr*math.Cos(a)), core.FromMM(cy+rr*math.Sin(a)))
 	}
 	return out
 }
