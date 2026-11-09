@@ -41,6 +41,11 @@ type Options struct {
 	// (Delaunay homotopy, rust 4e20ae0 port). Empty means grid. Topo is
 	// opt-in so the default agent path cannot regress.
 	Engine string
+	// Nets, when set, limits a grid run to these nets, routed in this
+	// order and ahead of everything else. Long nets that lose the channel
+	// to short ones go first this way; a plain route then finishes the
+	// rest around them.
+	Nets []string
 	// ClearanceSet marks an explicit clearance= from the script args. The
 	// fab floor still wins when the request is tighter than the process
 	// allows, but a caller asking for more air than the fab minimum gets it
@@ -219,6 +224,14 @@ func ParseOptions(o Options, args string) Options {
 		case "teardrop", "teardrops":
 			o.Teardrops = v == "true" || v == "1" || v == "on"
 			o.TeardropsSet = true
+			continue
+		case "nets", "net":
+			o.Nets = nil
+			for _, n := range strings.Split(v, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					o.Nets = append(o.Nets, n)
+				}
+			}
 			continue
 		case "engine":
 			switch strings.ToLower(v) {
@@ -432,6 +445,15 @@ func Route(board *core.Board, opts Options) Report {
 	pourNets := map[string]bool{}
 	for _, p := range board.Pours {
 		pourNets[p.Net] = true
+	}
+
+	if len(opts.Nets) > 0 {
+		var missing []string
+		names, missing = onlyNets(names, opts.Nets)
+		for _, n := range missing {
+			rep.PerNet = append(rep.PerNet, NetResult{Net: n, Outcome: Outcome{Status: "failed", Reason: "unknown_net"}})
+			rep.Failed++
+		}
 	}
 
 	// 2. Fine-pitch: tighten cell/trace/via so a 0.4 mm QFN can escape,
@@ -740,6 +762,28 @@ func refreshReportLengths(board *core.Board, rep *Report) {
 }
 
 // footprintsStable returns footprints in deterministic order (FootprintOrder, then ref).
+// onlyNets keeps the requested nets that exist, in the requested order, and
+// returns the requested names no pad carries.
+func onlyNets(names, want []string) (out, missing []string) {
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	seen := map[string]bool{}
+	for _, n := range want {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		if have[n] {
+			out = append(out, n)
+		} else {
+			missing = append(missing, n)
+		}
+	}
+	return out, missing
+}
+
 // alreadyRouted lists nets whose pads existing copper already joins into one
 // island. A re-run of route keeps them as they are; it used to lay a second
 // copy on top of the first. Nets with only partial copper still route as

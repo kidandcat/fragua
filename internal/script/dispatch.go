@@ -236,6 +236,9 @@ func dispatch(p *core.Project, tool, args string) (string, error) {
 	case "route":
 		opts := router.DefaultOptions()
 		opts = router.ParseOptions(opts, args)
+		if len(opts.Nets) > 0 && opts.Engine == router.EngineTopo {
+			return "", fmt.Errorf("route: nets= works with the grid engine only (topo re-routes the whole board)")
+		}
 		var rep router.Report
 		runOp(p, "route", func() {
 			emit := progressEmitter(p, "route")

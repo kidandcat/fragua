@@ -191,13 +191,14 @@ var Verbs = []VerbHelp{
 	},
 	{
 		Name:  "route",
-		Usage: "route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true] [engine=grid|topo]",
+		Usage: "route [max_seconds=N] [clearance=MM] [organic=true] [teardrop=true] [engine=grid|topo] [nets=A,B,…]",
 		Notes: []string{"        (max_seconds: default 600, max 3600; clearance: extra air, fab min is the floor; engine=topo is experimental)"},
 		Describe: "Auto-route every unrouted net: Theta* any-angle search with rip-up-and-reroute, fanout escapes and pour stitching. " +
 			"`engine=topo` opts into the Delaunay homotopy / rubber-band engine (clears existing copper and re-routes the board). " +
 			"Default is the grid engine — keep it for the agent path until you have a reason to try topo. " +
-			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open: nets already joined by copper are kept as they are.",
-		Examples: []string{"route", "route max_seconds=120", "route max_seconds=300 organic=true teardrop=true", "route engine=topo max_seconds=60"},
+			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open: nets already joined by copper are kept as they are. " +
+			"`nets=A,B` routes only those nets, in that order (grid engine): use it when a long net loses the channel to short ones, then run a plain `route` to finish the rest around it.",
+		Examples: []string{"route", "route max_seconds=120", "route max_seconds=300 organic=true teardrop=true", "route engine=topo max_seconds=60", "route nets=MOSI,MISO max_seconds=120"},
 	},
 	{
 		Name:     "clear-route",
