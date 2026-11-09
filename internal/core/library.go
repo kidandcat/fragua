@@ -430,12 +430,99 @@ type libraryIndex struct {
 }
 
 // Library is the process-local, disk-backed component store.
-// Thread-safe; every mutation rewrites index.json.
+// Thread-safe; every mutation rewrites index.json. Several fragua processes
+// may share one library (~/.pcb-library): a mutation takes a lock file,
+// re-reads index.json and applies itself to what is on disk, so one process
+// never overwrites the entries another one just added.
 type Library struct {
 	indexPath      string
 	attachmentsDir string
 	mu             sync.RWMutex
 	index          libraryIndex
+	// loaded is the index.json stamp the in-memory index matches.
+	loaded fileStamp
+}
+
+// fileStamp identifies one version of index.json.
+type fileStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func statStamp(path string) (fileStamp, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, false
+	}
+	return fileStamp{mod: fi.ModTime(), size: fi.Size()}, true
+}
+
+// libraryLockStale is how old a lock file may get before it is taken to be
+// left behind by a crashed process. A mutation holds it for milliseconds.
+const libraryLockStale = 10 * time.Second
+
+// lockDisk takes <index>.lock, a file created with O_EXCL (portable, unlike
+// flock), and returns its release func.
+func (l *Library) lockDisk() (func(), error) {
+	path := l.indexPath + ".lock"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+			f.Close()
+			return func() { _ = os.Remove(path) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("library: lock %s: %w", path, err)
+		}
+		if fi, serr := os.Stat(path); serr == nil && time.Since(fi.ModTime()) > libraryLockStale {
+			_ = os.Remove(path)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("library: %s is held by another fragua process", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// reloadLocked re-reads index.json into memory. A missing file is an empty
+// library. Callers hold l.mu for writing.
+func (l *Library) reloadLocked() error {
+	data, err := os.ReadFile(l.indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			l.index = libraryIndex{}
+			l.loaded = fileStamp{}
+			return nil
+		}
+		return fmt.Errorf("library: read %s: %w", l.indexPath, err)
+	}
+	var idx libraryIndex
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return fmt.Errorf("library: parse %s: %w", l.indexPath, err)
+	}
+	l.index = idx
+	l.loaded, _ = statStamp(l.indexPath)
+	return nil
+}
+
+// mutateLocked applies fn to the on-disk index under the cross-process lock
+// and writes the result back. Callers hold l.mu for writing.
+func (l *Library) mutateLocked(fn func() error) error {
+	unlock, err := l.lockDisk()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := l.reloadLocked(); err != nil {
+		return err
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return l.saveLocked()
 }
 
 // DefaultRoot returns ~/.pcb-library (or ./ .pcb-library if HOME is unset).
@@ -463,15 +550,8 @@ func OpenAt(root string) (*Library, error) {
 		indexPath:      indexPath,
 		attachmentsDir: attachmentsDir,
 	}
-	data, err := os.ReadFile(indexPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return lib, nil
-		}
-		return nil, fmt.Errorf("library: read %s: %w", indexPath, err)
-	}
-	if err := json.Unmarshal(data, &lib.index); err != nil {
-		return nil, fmt.Errorf("library: parse %s: %w", indexPath, err)
+	if err := lib.reloadLocked(); err != nil {
+		return nil, err
 	}
 	return lib, nil
 }
@@ -483,18 +563,46 @@ func (l *Library) saveLocked() error {
 		return fmt.Errorf("library: serialise: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := l.indexPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// A per-write temp name: a fixed index.json.tmp let two processes rename
+	// each other's file away ("rename …: no such file or directory").
+	f, err := os.CreateTemp(filepath.Dir(l.indexPath), "index-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("library: write temp: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("library: write %s: %w", tmp, err)
 	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("library: write %s: %w", tmp, err)
+	}
+	_ = os.Chmod(tmp, 0o644)
 	if err := os.Rename(tmp, l.indexPath); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("library: rename %s: %w", l.indexPath, err)
 	}
+	l.loaded, _ = statStamp(l.indexPath)
 	return nil
 }
 
 // Get returns a copy of the entry with the given key, or false if missing.
 func (l *Library) Get(key string) (LibraryEntry, bool) {
+	if e, ok := l.get(key); ok {
+		return e, true
+	}
+	// Another fragua process may have added it since we last read the file.
+	l.mu.Lock()
+	if st, ok := statStamp(l.indexPath); ok && st != l.loaded {
+		_ = l.reloadLocked()
+	}
+	l.mu.Unlock()
+	return l.get(key)
+}
+
+func (l *Library) get(key string) (LibraryEntry, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	for i := range l.index.Entries {
@@ -528,22 +636,25 @@ func (l *Library) Put(entry LibraryEntry) (LibraryEntry, error) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	found := -1
-	for i := range l.index.Entries {
-		if l.index.Entries[i].Key == entry.Key {
-			found = i
-			break
+	err := l.mutateLocked(func() error {
+		found := -1
+		for i := range l.index.Entries {
+			if l.index.Entries[i].Key == entry.Key {
+				found = i
+				break
+			}
 		}
-	}
-	if found >= 0 {
-		if len(entry.Attachments) == 0 {
-			entry.Attachments = append([]Attachment(nil), l.index.Entries[found].Attachments...)
+		if found >= 0 {
+			if len(entry.Attachments) == 0 {
+				entry.Attachments = append([]Attachment(nil), l.index.Entries[found].Attachments...)
+			}
+			l.index.Entries[found] = entry
+		} else {
+			l.index.Entries = append(l.index.Entries, entry)
 		}
-		l.index.Entries[found] = entry
-	} else {
-		l.index.Entries = append(l.index.Entries, entry)
-	}
-	if err := l.saveLocked(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return LibraryEntry{}, err
 	}
 	return cloneEntry(entry), nil
@@ -576,24 +687,29 @@ func (l *Library) ListEntries() []LibraryEntry {
 func (l *Library) Delete(key string) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	pos := -1
-	for i := range l.index.Entries {
-		if l.index.Entries[i].Key == key {
-			pos = i
-			break
+	removed := false
+	err := l.mutateLocked(func() error {
+		pos := -1
+		for i := range l.index.Entries {
+			if l.index.Entries[i].Key == key {
+				pos = i
+				break
+			}
 		}
-	}
-	if pos < 0 {
-		return false, nil
-	}
-	for _, att := range l.index.Entries[pos].Attachments {
-		_ = os.Remove(l.attachmentPath(att))
-	}
-	l.index.Entries = append(l.index.Entries[:pos], l.index.Entries[pos+1:]...)
-	if err := l.saveLocked(); err != nil {
+		if pos < 0 {
+			return nil
+		}
+		for _, att := range l.index.Entries[pos].Attachments {
+			_ = os.Remove(l.attachmentPath(att))
+		}
+		l.index.Entries = append(l.index.Entries[:pos], l.index.Entries[pos+1:]...)
+		removed = true
+		return nil
+	})
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return removed, nil
 }
 
 // Root returns the library root directory (parent of index.json).
