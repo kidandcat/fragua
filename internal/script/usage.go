@@ -196,7 +196,7 @@ var Verbs = []VerbHelp{
 		Describe: "Auto-route every unrouted net: Theta* any-angle search with rip-up-and-reroute, fanout escapes and pour stitching. " +
 			"`engine=topo` opts into the Delaunay homotopy / rubber-band engine (clears existing copper and re-routes the board). " +
 			"Default is the grid engine — keep it for the agent path until you have a reason to try topo. " +
-			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open.",
+			"Report lines say how many nets routed and which failed. Re-running the grid engine is cheap and only attacks what is still open: nets already joined by copper are kept as they are.",
 		Examples: []string{"route", "route max_seconds=120", "route max_seconds=300 organic=true teardrop=true", "route engine=topo max_seconds=60"},
 	},
 	{

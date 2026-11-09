@@ -289,6 +289,8 @@ type Report struct {
 	TotalLowerBound float64     `json:"total_lower_bound_mm"`
 	Failed          int         `json:"failed"`
 	ElapsedMS       int64       `json:"elapsed_ms"`
+	// Kept counts nets already joined by copper before this run, left as is.
+	Kept int `json:"kept,omitempty"`
 }
 
 // NetResult pairs a net name with its outcome.
@@ -322,6 +324,9 @@ func (r Report) Summary() string {
 	if reduced > 0 {
 		notes = append(notes, fmt.Sprintf("%d at reduced width", reduced))
 	}
+	if r.Kept > 0 {
+		notes = append(notes, fmt.Sprintf("%d already routed, kept", r.Kept))
+	}
 	widths := ""
 	if len(notes) > 0 {
 		widths = " (" + strings.Join(notes, ", ") + ")"
@@ -340,8 +345,8 @@ type padLoc struct {
 	through bool
 }
 
-// Route autoroutes all multi-pad nets on the board. Mutates board traces/vias
-// (appends to existing copper unless caller cleared first).
+// Route autoroutes all multi-pad nets on the board. Mutates board traces/vias.
+// Nets already joined by existing copper are kept as they are.
 func Route(board *core.Board, opts Options) Report {
 	if opts.TeardropsSet && board != nil {
 		board.Teardrops = opts.Teardrops
@@ -423,27 +428,31 @@ func Route(board *core.Board, opts Options) Report {
 		return names[i] < names[j]
 	})
 
-	// 2. Fine-pitch: tighten cell/trace/via so a 0.4 mm QFN can escape,
-	// then staggered dogbone fanout, then grid with all copper stamped.
-	opts = applyFabCeiling(board, opts)
-	// Per-net width comes from the class after the fab ceiling: the fab
-	// floor is a floor for class widths too, never a ceiling.
-	opts.widths = newNetWidths(board, opts)
-	_ = planFanout(board, opts)
-	g := newGrid(board, opts)
-
 	// Pour-only nets: the pour is the connection (Rust route_one_net).
 	pourNets := map[string]bool{}
 	for _, p := range board.Pours {
 		pourNets[p.Net] = true
 	}
 
+	// 2. Fine-pitch: tighten cell/trace/via so a 0.4 mm QFN can escape,
+	// then staggered dogbone fanout, then grid with all copper stamped.
+	opts = applyFabCeiling(board, opts)
+	// Per-net width comes from the class after the fab ceiling: the fab
+	// floor is a floor for class widths too, never a ceiling.
+	opts.widths = newNetWidths(board, opts)
+	done := alreadyRouted(board, nets, pourNets)
+	rep.Kept = len(done)
+	snapT, snapV := len(board.Traces), len(board.Vias)
+	_ = planFanout(board, opts)
+	dropFanoutFor(board, done, snapT, snapV)
+	g := newGrid(board, opts)
+
 	// Nets that actually cost search time, for the per-net budget share,
 	// and the same set as the initial "still to route" toll list.
 	routableLeft := 0
 	pending := map[string]bool{}
 	for _, name := range names {
-		if !pourNets[name] && len(nets[name]) >= 2 {
+		if !pourNets[name] && len(nets[name]) >= 2 && !done[name] {
 			routableLeft++
 			pending[name] = true
 		}
@@ -464,6 +473,12 @@ func Route(board *core.Board, opts Options) Report {
 		if pourNets[name] || len(pads) < 2 {
 			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{
 				Status: "ok", Reason: "pour_or_single",
+			}})
+			continue
+		}
+		if done[name] {
+			rep.PerNet = append(rep.PerNet, NetResult{Net: name, Outcome: Outcome{
+				Status: "ok", Reason: "already_routed",
 			}})
 			continue
 		}
@@ -725,6 +740,52 @@ func refreshReportLengths(board *core.Board, rep *Report) {
 }
 
 // footprintsStable returns footprints in deterministic order (FootprintOrder, then ref).
+// alreadyRouted lists nets whose pads existing copper already joins into one
+// island. A re-run of route keeps them as they are; it used to lay a second
+// copy on top of the first. Nets with only partial copper still route as
+// before: that copper may be hand-laid, and there is no lock flag to tell.
+func alreadyRouted(board *core.Board, nets map[string][]padLoc, pourNets map[string]bool) map[string]bool {
+	done := map[string]bool{}
+	has := map[string]bool{}
+	for _, t := range board.Traces {
+		has[t.Net] = true
+	}
+	for _, v := range board.Vias {
+		has[v.Net] = true
+	}
+	for name, pads := range nets {
+		if pourNets[name] || len(pads) < 2 || !has[name] {
+			continue
+		}
+		if padIslands(board, name, pads) == 1 {
+			done[name] = true
+		}
+	}
+	return done
+}
+
+// dropFanoutFor removes fanout copper planFanout added (past the snapshot)
+// for nets that were already routed.
+func dropFanoutFor(board *core.Board, done map[string]bool, snapT, snapV int) {
+	if len(done) == 0 {
+		return
+	}
+	kt := board.Traces[:snapT]
+	for _, t := range board.Traces[snapT:] {
+		if !done[t.Net] {
+			kt = append(kt, t)
+		}
+	}
+	board.Traces = kt
+	kv := board.Vias[:snapV]
+	for _, v := range board.Vias[snapV:] {
+		if !done[v.Net] {
+			kv = append(kv, v)
+		}
+	}
+	board.Vias = kv
+}
+
 func ripNetCopper(board *core.Board, net string) (tr []core.Trace, vias []core.Via) {
 	keptT := board.Traces[:0]
 	for _, t := range board.Traces {
