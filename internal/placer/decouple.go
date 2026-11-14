@@ -439,7 +439,7 @@ func ringPlace(board *core.Board, fp *core.Footprint, pin *anchorPin, net string
 				cy := pin.centre[1] + uy*d + vy*l*latStep
 				fp.Position = core.NewPoint(core.FromMM(cx-bbOff[0]), core.FromMM(cy-bbOff[1]))
 				fp.Rotation = bestRot
-				if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
+				if !padsInside(fp, board, opts.EdgeClearanceMM) {
 					continue
 				}
 				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {
@@ -500,7 +500,7 @@ func pullToCentroid(board *core.Board, fp *core.Footprint, nets []string, movabl
 	offsets := [][2]float64{{0, 0}, {1.2, 0}, {-1.2, 0}, {0, 1.2}, {0, -1.2}, {1.2, 1.2}, {-1.2, 1.2}}
 	for _, o := range offsets {
 		fp.Position = core.NewPoint(core.FromMM(ax+o[0]), core.FromMM(ay+o[1]))
-		if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
+		if !padsInside(fp, board, opts.EdgeClearanceMM) {
 			continue
 		}
 		if minGapAgainstOthers(board, fp) < hard+seatSlackMM ||
@@ -617,7 +617,7 @@ func seatInductorBridge(board *core.Board, fp *core.Footprint, pins map[string][
 				ty := sy + outY*d + alongY*lat
 				fp.Position = core.NewPoint(core.FromMM(tx-offSX), core.FromMM(ty-offSY))
 				fp.Rotation = rot
-				if !padsInside(fp, board.Outline, opts.EdgeClearanceMM) {
+				if !padsInside(fp, board, opts.EdgeClearanceMM) {
 					continue
 				}
 				if minGapAgainstOthers(board, fp) < hard+seatSlackMM {

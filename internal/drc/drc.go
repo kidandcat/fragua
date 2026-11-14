@@ -275,7 +275,10 @@ func Check(board *core.Board, sch *core.Schematic, opts Options) Report {
 	checkTracePad(board, pads, resolver, &rep)
 	checkViaPad(board, pads, resolver, &rep)
 	checkViaTrace(board, resolver, &rep)
-	if board.Outline != nil {
+	if poly := board.OutlinePoly; len(poly) >= 3 {
+		checkEdgePoly(board, pads, poly, edgeClMM, &rep)
+		checkBodyOffBoardPoly(board, poly, &rep)
+	} else if board.Outline != nil {
 		checkEdge(board, pads, *board.Outline, edgeClMM, &rep)
 		checkBodyOffBoard(board, *board.Outline, &rep)
 	}
@@ -877,6 +880,102 @@ func checkBodyOffBoard(board *core.Board, outline core.Rect, rep *Report) {
 	}
 }
 
+// checkEdgePoly is checkEdge for a polygon outline. The bounding box hid
+// every concave side: copper in the milled bays of an X-frame passed DRC.
+func checkEdgePoly(board *core.Board, pads []padGeom, poly []core.Point, edgeClMM float64, rep *Report) {
+	for _, pad := range pads {
+		if pad.edgeMounted {
+			continue
+		}
+		if gap := outlineRectGap(poly, pad.rect); gap+1e-6 < edgeClMM {
+			cx, cy := rectCenterMM(pad.rect)
+			rep.add(Violation{
+				Kind: KindEdgeClearance, Severity: SeverityError,
+				Message: fmt.Sprintf("pad %s touches edge: %.3f mm < %.3f mm", pad.label(), gap, edgeClMM),
+				Net:     pad.net, XMM: cx, YMM: cy,
+			})
+		}
+	}
+	for _, tr := range board.Traces {
+		a, b := ptMM(tr.Start), ptMM(tr.End)
+		if gap := outlineSegGap(poly, a, b) - tr.Width.ToMM()/2; gap+1e-6 < edgeClMM {
+			rep.add(Violation{
+				Kind: KindEdgeClearance, Severity: SeverityError,
+				Message: fmt.Sprintf("trace %s touches edge: %.3f mm < %.3f mm", tr.Net, math.Max(gap, 0), edgeClMM),
+				Net:     tr.Net, XMM: (a[0] + b[0]) / 2, YMM: (a[1] + b[1]) / 2,
+			})
+		}
+	}
+	for _, v := range board.Vias {
+		c := ptMM(v.Position)
+		if gap := outlineSegGap(poly, c, c) - v.Diameter.ToMM()/2; gap+1e-6 < edgeClMM {
+			rep.add(Violation{
+				Kind: KindEdgeClearance, Severity: SeverityError,
+				Message: fmt.Sprintf("via %s touches edge: %.3f mm < %.3f mm", v.Net, math.Max(gap, 0), edgeClMM),
+				Net:     v.Net, XMM: c[0], YMM: c[1],
+			})
+		}
+	}
+}
+
+// checkBodyOffBoardPoly is checkBodyOffBoard for a polygon outline.
+func checkBodyOffBoardPoly(board *core.Board, poly []core.Point, rep *Report) {
+	for _, id := range board.FootprintOrder {
+		fp := board.Footprints[id]
+		if fp == nil || len(fp.Pads) == 0 {
+			continue
+		}
+		body := core.PadWorldAABB(fp, &fp.Pads[0])
+		for i := 1; i < len(fp.Pads); i++ {
+			body = body.Union(core.PadWorldAABB(fp, &fp.Pads[i]))
+		}
+		if outlineRectGap(poly, body) > 0 {
+			continue
+		}
+		cx, cy := rectCenterMM(body)
+		rep.add(Violation{
+			Kind: KindBodyOffBoard, Severity: SeverityError,
+			Message: fmt.Sprintf("%s body extends past board outline", fp.Reference),
+			XMM:     cx, YMM: cy,
+		})
+	}
+}
+
+// outlineSegGap is how far segment a-b stays inside the board polygon: the
+// distance to the nearest edge, or 0 when an end lies outside.
+func outlineSegGap(poly []core.Point, a, b [2]float64) float64 {
+	if !pointInPolygonMM(poly, a[0], a[1]) || !pointInPolygonMM(poly, b[0], b[1]) {
+		return 0
+	}
+	best := math.Inf(1)
+	for i := range poly {
+		if d := segmentSegmentDistance(ptMM(poly[i]), ptMM(poly[(i+1)%len(poly)]), a, b); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// outlineRectGap is how far r stays inside the board polygon: the distance
+// to the nearest edge, or 0 when a corner lies outside or an edge cuts in.
+func outlineRectGap(poly []core.Point, r core.Rect) float64 {
+	for _, c := range [][2]float64{
+		{r.Min.X.ToMM(), r.Min.Y.ToMM()}, {r.Max.X.ToMM(), r.Min.Y.ToMM()},
+		{r.Max.X.ToMM(), r.Max.Y.ToMM()}, {r.Min.X.ToMM(), r.Max.Y.ToMM()},
+	} {
+		if !pointInPolygonMM(poly, c[0], c[1]) {
+			return 0
+		}
+	}
+	best := math.Inf(1)
+	for i := range poly {
+		if d := segmentAABBDistance(ptMM(poly[i]), ptMM(poly[(i+1)%len(poly)]), r); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
 func rectInsideOutline(r, outline core.Rect) bool {
 	return r.Min.X >= outline.Min.X && r.Min.Y >= outline.Min.Y &&
 		r.Max.X <= outline.Max.X && r.Max.Y <= outline.Max.Y
@@ -1372,6 +1471,10 @@ const pourEdgeInsetMM = 0.3
 func pointInPour(board *core.Board, p core.Pour, x, y float64) bool {
 	if len(p.Polygon) >= 3 {
 		return pointInPolygonMM(p.Polygon, x, y)
+	}
+	if poly := board.OutlinePoly; len(poly) >= 3 {
+		c := [2]float64{x, y}
+		return outlineSegGap(poly, c, c) >= pourEdgeInsetMM
 	}
 	if board.Outline == nil {
 		return false

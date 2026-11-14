@@ -79,7 +79,7 @@ func stitchIsolatedPads(board *core.Board, opts Options) int {
 			placed := false
 			for _, s := range sites {
 				vx, vy := s[0], s[1]
-				if !outlineContains(board.Outline, vx, vy, 0.4) {
+				if !boardContains(board, vx, vy, 0.4) {
 					continue
 				}
 				if stubHitsForeignPad(board, cx, cy, vx, vy, net, need, fp, i) {
@@ -182,7 +182,7 @@ func stitchPourGrid(board *core.Board, opts Options, onlyRequested bool) int {
 					if pointInPourVoidMargin(board, x, y, dia/2) {
 						continue
 					}
-					if !outlineContains(board.Outline, x, y, 0.4) {
+					if !boardContains(board, x, y, 0.4) {
 						continue
 					}
 					if fanoutHitsPad(board, x, y, dia/2+0.15, nil, -1) {
@@ -337,6 +337,9 @@ func pointInPourRegion(board *core.Board, pr *core.Pour, x, y float64) bool {
 	}
 	if len(pr.Polygon) >= 3 {
 		return pointInPoly(pr.Polygon, x, y)
+	}
+	if len(board.OutlinePoly) >= 3 {
+		return boardContains(board, x, y, 0.3)
 	}
 	if board.Outline == nil {
 		return false

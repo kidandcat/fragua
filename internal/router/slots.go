@@ -309,7 +309,7 @@ func assignSide(board *core.Board, fp *core.Footprint, targets []slotTarget, gro
 			if fanoutHitsSite(*placed, s.x, s.y, minViaPitch) ||
 				fanoutHitsPad(board, s.x, s.y, keepR, fp, -1) ||
 				fanoutHitsInductor(board, s.x, s.y, keepR) ||
-				!outlineContains(board.Outline, s.x, s.y, 0.55) {
+				!boardContains(board, s.x, s.y, 0.55) {
 				taken[i] = true
 			}
 		}
@@ -353,7 +353,7 @@ func generateSlots(targets []slotTarget, group []int, viaR float64, board *core.
 				reach := ext + base + float64(k)*step
 				x := t.cx + t.ux*reach + px*lat
 				y := t.cy + t.uy*reach + py*lat
-				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
+				if !boardContains(board, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
 					fanoutHitsInductor(board, x, y, keepR) {
 					continue
 				}
@@ -364,7 +364,7 @@ func generateSlots(targets []slotTarget, group []int, viaR float64, board *core.
 				reach := ext + base + float64(k)*step
 				x := t.cx - t.ux*reach + px*lat
 				y := t.cy - t.uy*reach + py*lat
-				if !outlineContains(board.Outline, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
+				if !boardContains(board, x, y, 0.55) || fanoutHitsPad(board, x, y, keepR, fp, t.idx) ||
 					fanoutHitsInductor(board, x, y, keepR) {
 					continue
 				}
@@ -427,7 +427,7 @@ func buildSlotEdges(targets []slotTarget, pending []int, slots []escSlot, taken 
 			if length > maxReach+1e-9 || length < 0.15 {
 				continue
 			}
-			if !outlineContains(board.Outline, s.x, s.y, 0.55) {
+			if !boardContains(board, s.x, s.y, 0.55) {
 				continue
 			}
 			if fanoutHitsPad(board, s.x, s.y, keepR, fp, t.idx) || fanoutHitsInductor(board, s.x, s.y, keepR) {
@@ -827,7 +827,7 @@ func fanoutHitsInductor(board *core.Board, x, y, r float64) bool {
 }
 
 func escapeSiteOK(board *core.Board, fp *core.Footprint, t slotTarget, x, y, viaDrill, stubW, keepR, minViaPitch float64, placed *[]fanoutXY) bool {
-	if !outlineContains(board.Outline, x, y, 0.55) {
+	if !boardContains(board, x, y, 0.55) {
 		return false
 	}
 	if fanoutHitsPad(board, x, y, keepR, fp, t.idx) || fanoutHitsSite(*placed, x, y, minViaPitch) {

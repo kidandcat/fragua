@@ -36,6 +36,29 @@ func TestBoardSVGOutlineVisible(t *testing.T) {
 	}
 }
 
+// outline-poly is the real edge (Gerber, DXF and 3D use it). The 2D view used
+// to draw only its bounding box, so an X-frame showed as a square board.
+func TestBoardSVGDrawsOutlinePoly(t *testing.T) {
+	b := core.NewBoard()
+	mm := core.FromMM
+	r := core.RectFromCorners(core.Origin, core.NewPoint(mm(40), mm(30)))
+	b.Outline = &r
+	b.OutlinePoly = []core.Point{
+		core.NewPoint(0, 0), core.NewPoint(mm(40), 0), core.NewPoint(mm(20), mm(30)),
+	}
+	svg := BoardSVG(b)
+	tri := "M0.000,0.000 L40.000,0.000 L20.000,30.000 Z"
+	if strings.Count(svg, tri) != 2 {
+		t.Fatalf("substrate and edge must both follow outline-poly (%q): %s", tri, clip(svg, 400))
+	}
+	if strings.Contains(svg, `<rect x="0.000" y="0.000" width="40.000" height="30.000" rx=`) {
+		t.Fatal("the bounding box must not be drawn as the board edge")
+	}
+	if !strings.Contains(svg, "40.0 mm") {
+		t.Fatal("dimension labels still come from the bounding box")
+	}
+}
+
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -80,5 +103,24 @@ func TestSmallPadNetLabelEmitted(t *testing.T) {
 	}
 	if !strings.Contains(chunk, `fill="#f0e68c"`) {
 		t.Fatalf("small-pad offset label should use light fill: %s", clip(chunk, 300))
+	}
+}
+
+// The pour preview was the outline rect even on a polygon board, so copper
+// appeared to fill the milled-away area.
+func TestPourPreviewFollowsPolygonOutline(t *testing.T) {
+	b := core.NewBoard()
+	o := core.RectFromCorners(core.Origin, core.NewPoint(core.FromMM(40), core.FromMM(30)))
+	b.Outline = &o
+	b.OutlinePoly = []core.Point{core.NewPoint(0, 0), core.NewPoint(core.FromMM(40), 0), core.NewPoint(core.FromMM(20), core.FromMM(30))}
+	b.Pours = append(b.Pours, core.Pour{Net: "GND", Layer: core.LayerTop})
+	var sb strings.Builder
+	writePours(&sb, b, b.StackupOrDefault())
+	got := sb.String()
+	if !strings.Contains(got, `d="M0.000,0.000 L40.000,0.000 L20.000,30.000 Z`) {
+		t.Fatalf("pour preview does not follow the polygon:\n%s", got)
+	}
+	if strings.Contains(got, "M0.300,0.300 h39.400") {
+		t.Fatalf("pour preview still fills the bounding rect:\n%s", got)
 	}
 }

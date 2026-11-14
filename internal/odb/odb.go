@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mentasystems/fragua/internal/core"
@@ -29,7 +30,9 @@ func Export(board *core.Board, path string) error {
 		"misc/info":          fmt.Sprintf("JOB_NAME=fragua\nUNITS=MM\nGENERATED=%s\n", time.Now().UTC().Format(time.RFC3339)),
 		"steps/pcb/eda/data": "UNITS=MM\n",
 	}
-	if board != nil && board.Outline != nil {
+	if board != nil && len(board.OutlinePoly) >= 3 {
+		files["steps/pcb/profile"] = profilePoly(board.OutlinePoly)
+	} else if board != nil && board.Outline != nil {
 		files["steps/pcb/profile"] = fmt.Sprintf(
 			"OB %.6f %.6f\nOS %.6f %.6f\nOS %.6f %.6f\nOS %.6f %.6f\nOS %.6f %.6f\nOE\n",
 			board.Outline.Min.X.ToMM(), board.Outline.Min.Y.ToMM(),
@@ -54,4 +57,17 @@ func Export(board *core.Board, path string) error {
 		}
 	}
 	return nil
+}
+
+// profilePoly writes a polygon outline as a closed ODB++ profile contour
+// (OB start, OS per vertex, back to the start, OE).
+func profilePoly(poly []core.Point) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "OB %.6f %.6f\n", poly[0].X.ToMM(), poly[0].Y.ToMM())
+	for i := 1; i <= len(poly); i++ {
+		p := poly[i%len(poly)]
+		fmt.Fprintf(&b, "OS %.6f %.6f\n", p.X.ToMM(), p.Y.ToMM())
+	}
+	b.WriteString("OE\n")
+	return b.String()
 }

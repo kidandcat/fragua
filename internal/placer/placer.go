@@ -267,7 +267,7 @@ func Place(board *core.Board, refs []string, opts Options) (Report, error) {
 			fp.Position = core.NewPoint(old.x+core.FromMM(dx), old.y+core.FromMM(dy))
 		}
 
-		if !padsInside(fp, o, opts.EdgeClearanceMM) ||
+		if !padsInside(fp, board, opts.EdgeClearanceMM) ||
 			firstOverlapperGap(board, fp, opts.SolderGapMM) || hitsNoPlace(board, fp) ||
 			componentClash(board, fp) {
 			fp.Position = core.NewPoint(old.x, old.y)
@@ -469,7 +469,11 @@ func footprintBounds(fp *core.Footprint) (core.Rect, bool) {
 	return r, true
 }
 
-func padsInside(fp *core.Footprint, o *core.Rect, edgeMM float64) bool {
+func padsInside(fp *core.Footprint, board *core.Board, edgeMM float64) bool {
+	if board == nil {
+		return false
+	}
+	o := board.Outline
 	b, ok := footprintBounds(fp)
 	if !ok || o == nil {
 		return false
@@ -478,8 +482,74 @@ func padsInside(fp *core.Footprint, o *core.Rect, edgeMM float64) bool {
 	if fp.EdgeMounted {
 		e = 0
 	}
-	return b.Min.X >= o.Min.X+e && b.Min.Y >= o.Min.Y+e &&
-		b.Max.X <= o.Max.X-e && b.Max.Y <= o.Max.Y-e
+	if !(b.Min.X >= o.Min.X+e && b.Min.Y >= o.Min.Y+e &&
+		b.Max.X <= o.Max.X-e && b.Max.Y <= o.Max.Y-e) {
+		return false
+	}
+	return insidePolyOutline(b, board.OutlinePoly, e.ToMM())
+}
+
+// insidePolyOutline reports whether r lies inside a polygon outline with at
+// least edgeMM to every edge. The bounding-box test above let parts land in
+// the milled bays of an X-frame. No polygon means no extra constraint.
+func insidePolyOutline(r core.Rect, poly []core.Point, edgeMM float64) bool {
+	if len(poly) < 3 {
+		return true
+	}
+	corners := []core.Point{r.Min, {X: r.Max.X, Y: r.Min.Y}, r.Max, {X: r.Min.X, Y: r.Max.Y}}
+	for _, c := range corners {
+		if !core.PointInPolygon(c, poly) {
+			return false
+		}
+	}
+	for i := range poly {
+		if rectSegDistMM(r, poly[i], poly[(i+1)%len(poly)]) < edgeMM {
+			return false
+		}
+	}
+	return true
+}
+
+// rectSegDistMM is the distance in mm between r and segment a-b (0 when they
+// touch or cross).
+func rectSegDistMM(r core.Rect, a, b core.Point) float64 {
+	if r.ContainsPoint(a) || r.ContainsPoint(b) {
+		return 0
+	}
+	corners := [4][2]float64{
+		{r.Min.X.ToMM(), r.Min.Y.ToMM()}, {r.Max.X.ToMM(), r.Min.Y.ToMM()},
+		{r.Max.X.ToMM(), r.Max.Y.ToMM()}, {r.Min.X.ToMM(), r.Max.Y.ToMM()},
+	}
+	pa, pb := [2]float64{a.X.ToMM(), a.Y.ToMM()}, [2]float64{b.X.ToMM(), b.Y.ToMM()}
+	best := math.Inf(1)
+	for i := range corners {
+		c0, c1 := corners[i], corners[(i+1)%4]
+		if segsCross(pa, pb, c0, c1) {
+			return 0
+		}
+		best = math.Min(best, ptSegDistMM(c0, pa, pb))
+		best = math.Min(best, ptSegDistMM(pa, c0, c1))
+		best = math.Min(best, ptSegDistMM(pb, c0, c1))
+	}
+	return best
+}
+
+func ptSegDistMM(p, a, b [2]float64) float64 {
+	dx, dy := b[0]-a[0], b[1]-a[1]
+	t := 0.0
+	if l2 := dx*dx + dy*dy; l2 > 0 {
+		t = math.Max(0, math.Min(1, ((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l2))
+	}
+	return math.Hypot(p[0]-(a[0]+t*dx), p[1]-(a[1]+t*dy))
+}
+
+func segsCross(a, b, c, d [2]float64) bool {
+	orient := func(p, q, r [2]float64) float64 {
+		return (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])
+	}
+	d1, d2 := orient(c, d, a), orient(c, d, b)
+	d3, d4 := orient(a, b, c), orient(a, b, d)
+	return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))
 }
 
 // noPlaceRects collects the placement exclusions declared on the board: every
@@ -1016,7 +1086,7 @@ func LegalAt(board *core.Board, fp *core.Footprint) bool {
 	if board.Outline == nil {
 		return false
 	}
-	if !padsInside(fp, board.Outline, 0.8) {
+	if !padsInside(fp, board, 0.8) {
 		return false
 	}
 	if hitsNoPlace(board, fp) {

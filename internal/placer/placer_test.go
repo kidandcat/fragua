@@ -142,7 +142,7 @@ func TestPlacerStaysOutOfNoPlaceKeepout(t *testing.T) {
 	}
 	// It must still be a real placement, not a refusal to move at all: inside
 	// the outline and clear of the other parts at the gap this run asked for.
-	if !padsInside(c1, b.Outline, opts.EdgeClearanceMM) ||
+	if !padsInside(c1, b, opts.EdgeClearanceMM) ||
 		firstOverlapperGap(b, c1, opts.SolderGapMM) {
 		t.Fatalf("C1 ended in an illegal pose at (%.2f, %.2f)",
 			c1.Position.X.ToMM(), c1.Position.Y.ToMM())

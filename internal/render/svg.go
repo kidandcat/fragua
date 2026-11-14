@@ -175,6 +175,13 @@ func writeSubstrate(b *strings.Builder, board *core.Board) {
 	}
 	rad := board.OutlineCornerRadius.ToMM()
 	b.WriteString(`<g data-layer="substrate" pointer-events="none">`)
+	if poly := board.OutlinePoly; len(poly) >= 3 {
+		// outline-poly is the real board edge (Gerber Edge.Cuts and the 3D
+		// render use it); Outline is only its bounding box.
+		fmt.Fprintf(b, `<path d="%s" fill="#5a3a1f" fill-opacity="0.72"/>`, polyPath(poly))
+		b.WriteString(`</g>`)
+		return
+	}
 	fmt.Fprintf(b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="%.3f" ry="%.3f" fill="#5a3a1f" fill-opacity="0.72"/>`,
 		o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM(), rad, rad)
 	b.WriteString(`</g>`)
@@ -184,11 +191,15 @@ func writeEdge(b *strings.Builder, board *core.Board) {
 	o := board.Outline
 	b.WriteString(`<g data-layer="edge" pointer-events="none">`)
 	if o != nil {
-		rad := board.OutlineCornerRadius.ToMM()
-		fmt.Fprintf(b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="%.3f" ry="%.3f" fill="none" stroke="#d6905b" stroke-width="0.4"/>`,
-			o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM(), rad, rad)
-		fmt.Fprintf(b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" fill="none" stroke="#e8a86a" stroke-width="0.35"/>`,
-			o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM())
+		if poly := board.OutlinePoly; len(poly) >= 3 {
+			fmt.Fprintf(b, `<path data-edge="outline-poly" d="%s" fill="none" stroke="#d6905b" stroke-width="0.4"/>`, polyPath(poly))
+		} else {
+			rad := board.OutlineCornerRadius.ToMM()
+			fmt.Fprintf(b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" rx="%.3f" ry="%.3f" fill="none" stroke="#d6905b" stroke-width="0.4"/>`,
+				o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM(), rad, rad)
+			fmt.Fprintf(b, `<rect x="%.3f" y="%.3f" width="%.3f" height="%.3f" fill="none" stroke="#e8a86a" stroke-width="0.35"/>`,
+				o.Min.X.ToMM(), o.Min.Y.ToMM(), o.Width().ToMM(), o.Height().ToMM())
+		}
 		cx := (o.Min.X.ToMM() + o.Max.X.ToMM()) / 2
 		cy := (o.Min.Y.ToMM() + o.Max.Y.ToMM()) / 2
 		fmt.Fprintf(b, `<g transform="translate(%.3f,%.3f) scale(1,-1)"><text x="0" y="0" text-anchor="middle" font-family="ui-monospace, monospace" font-size="1.4" fill="#d6905b">%.1f mm</text></g>`,
@@ -215,6 +226,20 @@ func writeEdge(b *strings.Builder, board *core.Board) {
 			h.Center.X.ToMM(), h.Center.Y.ToMM(), h.Diameter.ToMM()/2)
 	}
 	b.WriteString(`</g>`)
+}
+
+// polyPath is a closed SVG path through pts (mm).
+func polyPath(pts []core.Point) string {
+	var b strings.Builder
+	for i, p := range pts {
+		cmd := "L"
+		if i == 0 {
+			cmd = "M"
+		}
+		fmt.Fprintf(&b, "%s%.3f,%.3f ", cmd, p.X.ToMM(), p.Y.ToMM())
+	}
+	b.WriteString("Z")
+	return b.String()
 }
 
 func boardHoles(board *core.Board) []core.MountHole {
@@ -294,15 +319,26 @@ func writeMask(b *strings.Builder, board *core.Board, stack core.LayerStackup) {
 }
 
 func writePour(b *strings.Builder, board *core.Board, pour core.Pour, outline core.Rect, stack core.LayerStackup) {
-	inset := 0.3
-	x := outline.Min.X.ToMM() + inset
-	y := outline.Min.Y.ToMM() + inset
-	w := outline.Width().ToMM() - 2*inset
-	h := outline.Height().ToMM() - 2*inset
 	fill := padFill(pour.Layer)
-	// evenodd: board rect minus clearance holes around foreign pads
-	fmt.Fprintf(b, `<path data-net="%s" data-layer="%s" fill="%s" fill-opacity="0.45" fill-rule="evenodd" d="M%.3f,%.3f h%.3f v%.3f h%.3f z`,
-		escape(pour.Net), escape(stack.LayerName(int(pour.Layer.Index))), fill, x, y, w, h, -w)
+	// The fill shape: the pour's own polygon, else the board polygon, else
+	// the outline rect inset like the Gerber pour.
+	var outer string
+	switch {
+	case len(pour.Polygon) >= 3:
+		outer = polyPath(pour.Polygon)
+	case len(board.OutlinePoly) >= 3:
+		outer = polyPath(board.OutlinePoly)
+	default:
+		inset := 0.3
+		x := outline.Min.X.ToMM() + inset
+		y := outline.Min.Y.ToMM() + inset
+		w := outline.Width().ToMM() - 2*inset
+		h := outline.Height().ToMM() - 2*inset
+		outer = fmt.Sprintf("M%.3f,%.3f h%.3f v%.3f h%.3f z", x, y, w, h, -w)
+	}
+	// evenodd: the fill shape minus clearance holes around foreign pads
+	fmt.Fprintf(b, `<path data-net="%s" data-layer="%s" fill="%s" fill-opacity="0.45" fill-rule="evenodd" d="%s`,
+		escape(pour.Net), escape(stack.LayerName(int(pour.Layer.Index))), fill, outer)
 	halo := 0.55
 	for _, fp := range footprintsStable(board) {
 		for i := range fp.Pads {

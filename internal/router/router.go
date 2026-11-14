@@ -1736,7 +1736,7 @@ func routeViaJumper(board *core.Board, g *grid, name string, pads []padLoc, opts
 		px, py := p.p.X.ToMM(), p.p.Y.ToMM()
 		for _, d := range dirs {
 			x, y := px+d[0], py+d[1]
-			if board.Outline != nil && !outlineContains(board.Outline, x, y, 0.35) {
+			if board.Outline != nil && !boardContains(board, x, y, 0.35) {
 				continue
 			}
 			if !g.holes.ok(x, y, opts.ViaDrillMM) {
@@ -2807,6 +2807,18 @@ func collectObstacles(board *core.Board, net string, layer uint8, opts Options) 
 			clrMM: h.CopperClearRadiusMM() - r,
 		})
 	}
+	// A polygon outline's sides are board edge too; the rect band above
+	// only covers its bounding box.
+	if poly := board.OutlinePoly; len(poly) >= 3 {
+		for i := range poly {
+			os.items = append(os.items, obstacle{
+				kind:  1,
+				a:     ptMM(poly[i]),
+				b:     ptMM(poly[(i+1)%len(poly)]),
+				clrMM: routerEdgeClearanceMM,
+			})
+		}
+	}
 	// Milled cutouts are board edge: every side keeps the edge setback.
 	for _, cut := range board.Cutouts {
 		n := len(cut.Polygon)
@@ -3370,6 +3382,7 @@ func newGrid(board *core.Board, opts Options) *grid {
 		g.stampRectObstacle(*k.Rect)
 	}
 	stampNPTHObstacles(g, board)
+	stampOutsideOutline(g, board)
 
 	stampInductorBodies(g, board)
 
@@ -3565,6 +3578,35 @@ func stampNPTHObstacles(g *grid, board *core.Board) {
 				return false
 			})
 	}
+}
+
+// stampOutsideOutline blocks the cells of a polygon outline's bounding box
+// that lie off the board (an X-frame's bays). The edge setback itself is
+// left to passable, which lets a net reach its own edge-mounted pads.
+func stampOutsideOutline(g *grid, board *core.Board) {
+	poly := board.OutlinePoly
+	if len(poly) < 3 {
+		return
+	}
+	bb, ok := core.PolygonBBox(poly)
+	if !ok {
+		return
+	}
+	half := g.cellMM / 2
+	g.stampWhere(bb.Min.X.ToMM(), bb.Min.Y.ToMM(), bb.Max.X.ToMM(), bb.Max.Y.ToMM(),
+		func(x, y float64) bool {
+			if pointInPoly(poly, x, y) {
+				return false
+			}
+			// Keep cells whose centre is just outside but within half a cell
+			// of an edge: they still overlap the board.
+			for i := range poly {
+				if pointSegDist(p2{x, y}, ptMM(poly[i]), ptMM(poly[(i+1)%len(poly)])) < half {
+					return false
+				}
+			}
+			return true
+		})
 }
 
 // stampWhere marks "*" on every layer for the cells inside the mm box whose
@@ -3899,7 +3941,7 @@ func (g *grid) passable(cx, cy int, layer uint8, net string) bool {
 	if cur != net && g.board != nil && g.board.Outline != nil {
 		wx, wy := g.cellToWorld(cx, cy)
 		m := 0.30 + g.opts.TraceWidthMM/2
-		if !outlineContains(g.board.Outline, wx.ToMM(), wy.ToMM(), m) {
+		if !boardContains(g.board, wx.ToMM(), wy.ToMM(), m) {
 			return false
 		}
 	}

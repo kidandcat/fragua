@@ -94,6 +94,31 @@ func outlineContains(o *core.Rect, x, y, margin float64) bool {
 		x <= o.Max.X.ToMM()-margin && y <= o.Max.Y.ToMM()-margin
 }
 
+// boardContains is outlineContains for the real board shape: with a polygon
+// outline the point must also lie inside the polygon and margin away from
+// each of its edges, not just inside the bounding box.
+func boardContains(board *core.Board, x, y, margin float64) bool {
+	if board == nil {
+		return true
+	}
+	if !outlineContains(board.Outline, x, y, margin) {
+		return false
+	}
+	poly := board.OutlinePoly
+	if len(poly) < 3 {
+		return true
+	}
+	if !pointInPoly(poly, x, y) {
+		return false
+	}
+	for i := range poly {
+		if pointSegDist(p2{x, y}, ptMM(poly[i]), ptMM(poly[(i+1)%len(poly)])) < margin {
+			return false
+		}
+	}
+	return true
+}
+
 func fanoutHitsPad(board *core.Board, x, y, r float64, skip *core.Footprint, skipPad int) bool {
 	pt := core.NewPoint(core.FromMM(x), core.FromMM(y))
 	disk := core.RectFromCenter(pt, core.FromMM(r*2), core.FromMM(r*2))

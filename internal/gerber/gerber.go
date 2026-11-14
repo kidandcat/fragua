@@ -343,6 +343,15 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 			id := table.intern(roundAp(v.Diameter + cl + cl))
 			voidFlashes = append(voidFlashes, flashOp{id, v.Position})
 		}
+		// A polygon outline is filled as itself (below); clearing a round
+		// stroke along every edge keeps the pour pourEdgeClearance inside it,
+		// the same setback the rectangular inset gives.
+		if poly := board.OutlinePoly; len(poly) >= 3 {
+			id := table.intern(roundAp(2 * pourEdgeClearance))
+			for i := range poly {
+				voidDraws = append(voidDraws, drawOp{id, poly[i], poly[(i+1)%len(poly)]})
+			}
+		}
 	}
 
 	var tearVoids [][]core.Point
@@ -396,12 +405,20 @@ func writeCopper(board *core.Board, layer core.Layer, label, fileFn string) stri
 
 	b.WriteString(writeApertures(&table))
 
-	if hasPour && board.Outline != nil {
-		inset := pourEdgeClearance
-		x0, y0 := board.Outline.Min.X+inset, board.Outline.Min.Y+inset
-		x1, y1 := board.Outline.Max.X-inset, board.Outline.Max.Y-inset
-		fmt.Fprintf(&b, "G36*\nX%dY%dD02*\nX%dY%dD01*\nX%dY%dD01*\nX%dY%dD01*\nX%dY%dD01*\nG37*\n",
-			coord(x0), coord(y0), coord(x1), coord(y0), coord(x1), coord(y1), coord(x0), coord(y1), coord(x0), coord(y0))
+	if hasPour && (board.Outline != nil || len(board.OutlinePoly) >= 3) {
+		if poly := board.OutlinePoly; len(poly) >= 3 {
+			// The real edge, not its bounding box: an X-frame's bays are
+			// milled away, and a rect pour ran copper right up to them.
+			b.WriteString("G36*\n")
+			writeClosedPoly(&b, poly)
+			b.WriteString("G37*\n")
+		} else {
+			inset := pourEdgeClearance
+			x0, y0 := board.Outline.Min.X+inset, board.Outline.Min.Y+inset
+			x1, y1 := board.Outline.Max.X-inset, board.Outline.Max.Y-inset
+			fmt.Fprintf(&b, "G36*\nX%dY%dD02*\nX%dY%dD01*\nX%dY%dD01*\nX%dY%dD01*\nX%dY%dD01*\nG37*\n",
+				coord(x0), coord(y0), coord(x1), coord(y0), coord(x1), coord(y1), coord(x0), coord(y1), coord(x0), coord(y0))
+		}
 		b.WriteString("%LPC*%\n")
 		var cur uint32
 		for _, f := range voidFlashes {
