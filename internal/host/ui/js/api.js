@@ -3,7 +3,8 @@
 export async function runScript(body) {
   const r = await fetch('/script', {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
+    // 'ui' keeps the host from echoing our own lines back as agent activity.
+    headers: { 'Content-Type': 'text/plain', 'X-Fragua-Client': 'ui' },
     body,
   });
   const text = await r.text();

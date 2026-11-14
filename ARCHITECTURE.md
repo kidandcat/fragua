@@ -22,7 +22,9 @@ One process. One static binary (`cmd/fragua`). Inside it:
   Every mutation emits a change event consumed by the UI; long operations
   stream progress events of their own.
 
-CLI: **`fragua run [file.fragua]`** starts the server and opens the browser.
+CLI: **`fragua run [file.fragua] [--control PORT]`** starts the server and opens the browser;
+**`fragua mcp --connect PORT`** attaches an MCP agent to that session (control mode), and its
+script lines reach the UI log as `activity` events on `/events`.
 Bare `fragua` (or `fragua help`) prints usage + the full script reference
 and exits so agents can discover the surface without starting the server.
 

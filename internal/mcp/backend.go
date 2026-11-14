@@ -46,7 +46,9 @@ func (l *Local) Addr() string { return l.APIAddr }
 func (l *Local) Mode() string { return "in-process" }
 
 func (l *Local) Script(_ context.Context, src string) (string, error) {
-	return script.FormatResults(script.RunScript(l.Project, src)), nil
+	rs := script.RunScript(l.Project, src)
+	script.PublishActivity(l.Project, "mcp", src, rs)
+	return script.FormatResults(rs), nil
 }
 
 func (l *Local) State(_ context.Context) ([]byte, error) {
@@ -123,6 +125,7 @@ func (p *Proxy) do(ctx context.Context, method, path string, body []byte) ([]byt
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set(script.ClientHeader, "mcp")
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fragua at %s: %w", p.APIAddr, err)

@@ -117,8 +117,24 @@ fragua mcp /path/to/project.fragua
 ```
 
 The browser opens at `http://127.0.0.1:7878/ui/` and the HTTP API listens
-on `127.0.0.1:7878` (override: `FRAGUA_API_ADDR`). Set `FRAGUA_NO_BROWSER=1`
-to skip the browser.
+on `127.0.0.1:7878` (override: `--control PORT`, `--addr HOST:PORT` or
+`FRAGUA_API_ADDR`). Set `FRAGUA_NO_BROWSER=1` to skip the browser.
+
+### Control mode
+
+Open the board yourself, then let an agent attach to that session:
+
+```sh
+fragua run board.fragua --control 7878   # you, with the UI
+fragua mcp --connect 7878                # the agent's MCP server (in .mcp.json)
+```
+
+`--connect` never starts its own host: if nothing answers on that port it
+fails with a clear error. Whatever the agent runs (over MCP or a plain
+`POST /script`) appears in the UI log, tagged with its source (`mcp>`,
+`http>`), next to your own commands; the UI's own lines carry
+`X-Fragua-Client: ui` so they are not echoed twice. Without `--connect`,
+`fragua mcp` still attaches to a fragua that already owns the address.
 
 The UI is where the human watches the agent work and steps in. The board is
 live inline SVG — pan, zoom, per-layer visibility, top/bottom view, ratsnest

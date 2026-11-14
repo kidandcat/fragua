@@ -435,6 +435,7 @@ connectEvents(
       case 'progress': updateOp(ev); break;
       case 'op_end': endOp(ev); break;
       case 'saved': ui.log.sys(`saved ${ev.path}`); scheduleRefresh(0); break;
+      case 'activity': ui.log.agent(ev.source, ev.message, ev.detail); break;
       case 'hello': break;
       default:
         ui.stateStale = true;

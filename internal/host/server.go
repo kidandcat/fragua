@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,15 +42,40 @@ type Server struct {
 	Shutdown func(context.Context) error
 }
 
-// Start loads path, serves the API in the background and opens the browser.
-// Progress notes go to logw (stderr when stdout is a protocol channel).
-// A failure to bind usually means another fragua already owns the address.
+// ControlAddr turns a --control / --addr / --connect value into a listen
+// address: a bare port means 127.0.0.1:PORT, ":PORT" means every interface.
+func ControlAddr(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", fmt.Errorf("empty address")
+	}
+	if !strings.Contains(v, ":") {
+		v = "127.0.0.1:" + v
+	}
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return "", fmt.Errorf("bad address %q: %w", v, err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("bad port %q", port)
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+// Start loads path, serves the API on Addr() in the background and opens the
+// browser. Progress notes go to logw (stderr when stdout is a protocol
+// channel). A failure to bind usually means another fragua owns the address.
 func Start(projectPath string, logw io.Writer) (*Server, error) {
+	return StartAt(projectPath, Addr(), logw)
+}
+
+// StartAt is Start on an explicit address (the --control flag).
+func StartAt(projectPath, addr string, logw io.Writer) (*Server, error) {
 	p, err := loadProject(projectPath)
 	if err != nil {
 		return nil, err
 	}
-	addr := Addr()
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -73,9 +99,13 @@ func Start(projectPath string, logw io.Writer) (*Server, error) {
 	return &Server{Project: p, Addr: addr, Shutdown: srv.Shutdown}, nil
 }
 
-// Run starts the HTTP API, optionally loads path, opens browser, blocks until signal.
-func Run(projectPath string) error {
-	s, err := Start(projectPath, os.Stdout)
+// Run starts the HTTP API on addr (Addr() when empty), optionally loads path,
+// opens the browser and blocks until a signal.
+func Run(projectPath, addr string) error {
+	if addr == "" {
+		addr = Addr()
+	}
+	s, err := StartAt(projectPath, addr, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -249,6 +279,11 @@ func Handler(p *core.Project) http.Handler {
 			}
 		}
 		rs := script.RunScript(p, src)
+		// The UI already echoes its own lines; everyone else (an MCP agent,
+		// curl) shows up in the human's log through the event stream.
+		if client := r.Header.Get(script.ClientHeader); !strings.EqualFold(strings.TrimSpace(client), "ui") {
+			script.PublishActivity(p, script.ClientSource(client), src, rs)
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, script.FormatResults(rs))
@@ -303,7 +338,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+script.ClientHeader)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return

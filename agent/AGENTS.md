@@ -15,7 +15,18 @@ Both host the *same* live project, so the human always sees what you are doing a
 <http://127.0.0.1:7878/ui/>. Omit the file to start in memory — then `fragua_save` with an
 absolute path early, or the work is lost on exit.
 
-Env: `FRAGUA_API_ADDR` (default `127.0.0.1:7878`), `FRAGUA_NO_BROWSER=1`.
+**Control mode** — the human already has the board open and you attach to it:
+
+```sh
+fragua run board.fragua --control 7878   # the human's session
+fragua mcp --connect 7878                # your MCP server drives that session
+```
+
+`--connect` fails if nothing answers there instead of starting a second, empty host.
+Every script line you run shows up in the human's log, tagged `mcp>`.
+
+Env: `FRAGUA_API_ADDR` (default `127.0.0.1:7878`; `--control PORT` / `--addr HOST:PORT`
+override it), `FRAGUA_NO_BROWSER=1`.
 
 ### Two ways to drive it
 

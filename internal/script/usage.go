@@ -501,7 +501,10 @@ Usage:
   fragua                 print this help and exit
   fragua help [verb]     full reference, or help for one script verb
   fragua run [file]      start local HTTP API (default 127.0.0.1:7878)
+                         [--control PORT | --addr HOST:PORT]
   fragua mcp [file]      same host, plus an MCP server on stdio (for AI agents)
+                         [--control PORT | --addr HOST:PORT]
+                         [--connect PORT|ADDR]  attach to a running fragua run
   fragua init [dir]      write agent onboarding files into a project directory
   fragua bench [dir]     run the reference boards (place → route → drc)
                          [--seed N] [--budget S] [--json f] [--md f] [--strict]
@@ -519,9 +522,10 @@ HTTP API:
   GET  /  /help          this reference (?verb=route for one verb)
   GET  /health           ok
   GET  /screenshot       PNG/SVG of current board
-  GET  /events           SSE project change stream
+  GET  /events           SSE project change stream (activity = an agent's script + results)
   GET  /state            JSON project snapshot (UI)
   POST /script           run multi-line script (text/plain body or JSON {"script":"..."})
+                         header X-Fragua-Client: NAME tags the lines in the UI log
   POST /save             save project {"path":"..."} optional
 
 First 10 minutes:

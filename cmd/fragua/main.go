@@ -2,8 +2,9 @@
 //
 //	fragua               print usage + script reference
 //	fragua help [verb]   same, or help for one script verb
-//	fragua run [file]    start HTTP API + open browser
-//	fragua mcp [file]    same host, plus an MCP server on stdio
+//	fragua run [file] [--control PORT]   start HTTP API + open browser
+//	fragua mcp [file] [--control PORT | --connect ADDR]
+//	                     MCP server on stdio; hosts the API, or attaches to one
 //	fragua init [dir]    write agent onboarding files into a directory
 //	fragua bench [dir]   run the reference bench suite (place → route → drc)
 //	fragua render FILE   3D product-shot PNG (--3d, -o, --width)
@@ -35,9 +36,15 @@ func main() {
 	var err error
 	switch args[0] {
 	case "run":
-		err = host.Run(arg(args, 1))
+		var f hostFlags
+		if f, err = parseHostFlags("run", args[1:], false); err == nil {
+			err = host.Run(f.file, f.addr)
+		}
 	case "mcp":
-		err = runMCP(arg(args, 1))
+		var f hostFlags
+		if f, err = parseHostFlags("mcp", args[1:], true); err == nil {
+			err = runMCP(f)
+		}
 	case "init":
 		err = runInit(args[1:])
 	case "bench":
@@ -52,12 +59,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fragua: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// arg returns args[i] or "".
-func arg(args []string, i int) string {
-	if len(args) > i {
-		return args[i]
-	}
-	return ""
 }

@@ -285,6 +285,14 @@ export class Log {
     this.issued.push(text);
   }
 
+  // agent shows a script another client ran on the shared project (an MCP
+  // agent, curl), tagged with its source, followed by its results.
+  agent(source, script, results) {
+    const tag = (source || 'agent') + '> ';
+    for (const l of (script || '').split('\n')) if (l.trim()) this.line(tag + l, 'l-cmd l-agent');
+    if (results) this.results(results);
+  }
+
   results(text) {
     for (const l of text.split('\n')) {
       if (!l.trim()) continue;

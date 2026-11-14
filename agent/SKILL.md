@@ -21,6 +21,7 @@ Then start it. **Bare `fragua` only prints help and exits** — you need a subco
 ```sh
 fragua mcp path/to/board.fragua    # MCP over stdio + HTTP API + UI
 fragua run path/to/board.fragua    # HTTP API + UI only
+fragua mcp --connect 7878          # attach to a session the human already opened
 ```
 
 If the `fragua` MCP server is configured in `.mcp.json`, it is already running — use the

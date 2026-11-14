@@ -12,37 +12,58 @@ import (
 	"github.com/mentasystems/fragua/internal/mcp"
 )
 
-// runMCP serves the script API over MCP on stdio, hosting the same HTTP API and
-// browser UI as `fragua run` so the human can watch. If the API address is
-// already taken by another fragua, we drive that one instead of failing.
+// runMCP serves the script API over MCP on stdio.
+//
+// With --connect ADDR it attaches to a fragua the human already runs
+// (`fragua run --control PORT`) and fails if nothing answers there. Without
+// it, it hosts the HTTP API and browser UI itself on --control/--addr (or
+// FRAGUA_API_ADDR); if that address already belongs to another fragua it
+// drives that one instead of failing.
 //
 // stdout is the MCP protocol channel: every log line goes to stderr.
-func runMCP(projectPath string) error {
-	var backend mcp.Backend
-
-	srv, err := host.Start(projectPath, os.Stderr)
-	switch {
-	case err == nil:
-		backend = &mcp.Local{Project: srv.Project, APIAddr: srv.Addr}
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = srv.Shutdown(ctx)
-		}()
-	case host.Alive(host.Addr()):
-		addr := host.Addr()
-		fmt.Fprintf(os.Stderr, "Fragua (Go) — another fragua owns http://%s, proxying to it  ·  UI http://%s/ui/\n", addr, addr)
-		if projectPath != "" {
-			fmt.Fprintf(os.Stderr, "note: %s not loaded; the running host keeps its own project\n", projectPath)
-		}
-		backend = mcp.NewProxy(addr)
-	default:
-		return fmt.Errorf("listen %s: %w", host.Addr(), err)
+func runMCP(f hostFlags) error {
+	backend, cleanup, err := mcpBackend(f)
+	if err != nil {
+		return err
 	}
+	defer cleanup()
 
 	fmt.Fprintln(os.Stderr, "MCP server ready on stdio.")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return mcp.Serve(ctx, backend)
+}
+
+func mcpBackend(f hostFlags) (mcp.Backend, func(), error) {
+	noop := func() {}
+	if f.connect != "" {
+		if !host.Alive(f.connect) {
+			return nil, noop, fmt.Errorf("no fragua host answers at %s — start one with `fragua run --control PORT` and connect to that port", f.connect)
+		}
+		fmt.Fprintf(os.Stderr, "Fragua (Go) — connected to the host at http://%s  ·  UI http://%s/ui/\n", f.connect, f.connect)
+		return mcp.NewProxy(f.connect), noop, nil
+	}
+
+	addr := f.addr
+	if addr == "" {
+		addr = host.Addr()
+	}
+	srv, err := host.StartAt(f.file, addr, os.Stderr)
+	switch {
+	case err == nil:
+		return &mcp.Local{Project: srv.Project, APIAddr: srv.Addr}, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+		}, nil
+	case host.Alive(addr):
+		fmt.Fprintf(os.Stderr, "Fragua (Go) — another fragua owns http://%s, proxying to it  ·  UI http://%s/ui/\n", addr, addr)
+		if f.file != "" {
+			fmt.Fprintf(os.Stderr, "note: %s not loaded; the running host keeps its own project\n", f.file)
+		}
+		return mcp.NewProxy(addr), noop, nil
+	default:
+		return nil, noop, fmt.Errorf("listen %s: %w", addr, err)
+	}
 }

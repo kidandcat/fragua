@@ -35,6 +35,8 @@ type Event struct {
 	Level   ActivityLevel `json:"level,omitempty"`
 	Message string        `json:"message,omitempty"`
 	Path    string        `json:"path,omitempty"`
+	// Source names who issued an activity line: "mcp", "http" or a client tag.
+	Source string `json:"source,omitempty"`
 	// Long-operation fields (op_start / progress / op_end).
 	Op        string `json:"op,omitempty"`     // route | auto-place | compact
 	Detail    string `json:"detail,omitempty"` // what it is working on now

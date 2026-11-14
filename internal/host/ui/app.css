@@ -335,6 +335,7 @@ kbd {
 .log .l-err { color: var(--error); }
 .log .l-sys { color: var(--faint); }
 .log .l-cmd { color: var(--accent); }
+.log .l-agent { color: #8ab4f8; }
 .log div { margin: 0; }
 .console-input { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line-soft); }
 textarea {
