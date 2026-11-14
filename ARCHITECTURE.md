@@ -136,6 +136,13 @@ sliver of the net is an escape neck: warning, not error.
 `pack fab=jlcpcb` writes Gerber + Excellon + BOM/CPL zip. DRC for the pack
 uses the board's `FabRules` (JLCPCB mins). ODB++ is a subset writer.
 
+### `internal/dxf`
+`pack fab=dxf` writes the mechanical view as an R12 ASCII DXF in mm, board
+coordinates (Y up, same as the Gerbers): layers `OUTLINE`, `CUTOUTS`,
+`HOLES_NPTH`, `HOLES_PTH`, `COMP_TOP` and `COMP_BOTTOM` (part bodies from
+`core.PackageOutlines`, labelled with the reference). It is the hand-off to an
+enclosure CAD tool and does not need a clean ERC.
+
 ### `internal/script`
 One verb per line. `internal/script/usage.go` is the agent-facing
 reference (also `GET /` and `fragua help`).

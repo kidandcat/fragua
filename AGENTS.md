@@ -32,7 +32,7 @@ Layout (detail in [ARCHITECTURE.md](ARCHITECTURE.md)):
 | `internal/script` | the agent DSL — `dispatch.go` (verbs), `usage.go` (help table) |
 | `internal/router` / `internal/placer` | auto-routing and placement |
 | `internal/drc` / `internal/erc` / `internal/si` | checks |
-| `internal/fab` / `internal/gerber` / `internal/odb` | manufacturing output |
+| `internal/fab` / `internal/gerber` / `internal/odb` / `internal/dxf` | manufacturing output, mechanical DXF |
 | `internal/host` | HTTP API + embedded browser UI |
 | `internal/mcp` | MCP server (stdio) over the same script API |
 | `agent/` | the onboarding docs `fragua init` writes — **the product's front door** |

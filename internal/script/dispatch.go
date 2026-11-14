@@ -667,6 +667,9 @@ func packBoard(p *core.Project, args string) (string, error) {
 		if strings.HasPrefix(f, "fab=") && IsKiCadProvider(strings.TrimPrefix(f, "fab=")) {
 			return packKiCad(p, args)
 		}
+		if strings.HasPrefix(f, "fab=") && IsDXFProvider(strings.TrimPrefix(f, "fab=")) {
+			return packDXF(p, args)
+		}
 	}
 	for _, f := range strings.Fields(args) {
 		if strings.HasPrefix(f, "fab=") {

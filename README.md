@@ -34,6 +34,7 @@ Agent loop: schematic → board → JLCPCB-ready zip.
 - `internal/drc` / `internal/erc`: geometric DRC and schematic ERC.
 - `internal/si`: signal-integrity audit (`si-check`) — impedance deviation, return-path plane gaps, diff-pair skew, via budget.
 - `internal/fab` + `internal/gerber` + `internal/odb`: JLCPCB / PCBWay / generic pack (Gerber + Excellon + BOM/CPL) and ODB++.
+- `internal/dxf`: mechanical DXF (`pack fab=dxf`) — outline, cutouts, holes and part bodies for enclosure CAD.
 - `internal/render`: board SVG (substrate, copper, silk, pad names, drills) and a static 3D product-shot PNG.
 - `internal/host` + `cmd/fragua`: HTTP API + embedded browser UI.
 

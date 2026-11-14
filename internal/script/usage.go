@@ -342,9 +342,10 @@ var Verbs = []VerbHelp{
 		Notes: []string{
 			"  pack fab=kicad [out=board.kicad_pcb] [zones=filled|outline] [grid=MM]",
 			"                              (KiCad 9 .kicad_pcb; zones ship pre-filled)",
+			"  pack fab=dxf [out=board.dxf] (mechanical DXF for enclosure CAD; no ERC needed)",
 		},
-		Describe: "Write the manufacturing bundle — Gerbers, Excellon drill, BOM, CPL, a README and the board as .kicad_pcb — as <project>-<fab>.zip in DIR. Fabs: jlcpcb, pcbway, generic. `fab=kicad` writes only the KiCad 9 board file (zones pre-filled so KiCad shows copper without refilling). Refuses to run while ERC reports errors.",
-		Examples: []string{"pack fab=jlcpcb out=/tmp", "pack fab=pcbway out=./out teardrop=true", "pack fab=kicad out=/tmp/board.kicad_pcb"},
+		Describe: "Write the manufacturing bundle — Gerbers, Excellon drill, BOM, CPL, a README and the board as .kicad_pcb — as <project>-<fab>.zip in DIR. Fabs: jlcpcb, pcbway, generic. `fab=kicad` writes only the KiCad 9 board file (zones pre-filled so KiCad shows copper without refilling). `fab=dxf` writes only a mechanical R12 DXF in millimetres, board coordinates (Y up): layers OUTLINE, CUTOUTS, HOLES_NPTH, HOLES_PTH, COMP_TOP and COMP_BOTTOM (part bodies with their reference), for designing an enclosure in a mechanical CAD tool. The fab bundle refuses to run while ERC reports errors; fab=kicad and fab=dxf do not.",
+		Examples: []string{"pack fab=jlcpcb out=/tmp", "pack fab=pcbway out=./out teardrop=true", "pack fab=kicad out=/tmp/board.kicad_pcb", "pack fab=dxf out=/tmp/board.dxf"},
 	},
 	{
 		Name:     "screenshot",

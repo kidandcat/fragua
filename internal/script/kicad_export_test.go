@@ -83,3 +83,42 @@ func TestIsKiCadProvider(t *testing.T) {
 		}
 	}
 }
+
+// `pack fab=dxf` writes the mechanical DXF without the fab profile and
+// without a clean ERC: the enclosure is often drawn first.
+func TestPackDXFWritesFile(t *testing.T) {
+	p := kicadProject(t)
+	if res := RunScript(p, "hole 3 3 3.2 label=M3\nsym U9 ic key=floating\n  pin 1 L X role=input"); !res[len(res)-1].OK {
+		t.Fatalf("setup: %+v", res)
+	}
+	if m, _ := dispatch(p, "erc", ""); strings.Contains(m, " 0 errors") {
+		t.Fatalf("setup must leave ERC errors, got %q", m)
+	}
+	dir := t.TempDir()
+	msg, err := dispatch(p, "pack", "fab=dxf out="+dir)
+	if err != nil {
+		t.Fatalf("pack fab=dxf: %v", err)
+	}
+	if !strings.Contains(msg, "DXF mm: outline 20.00x12.00") || !strings.Contains(msg, "1 npth") || !strings.Contains(msg, "2 top") {
+		t.Fatalf("unexpected message %q", msg)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "kicad-demo.dxf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"AC1009", "OUTLINE", "HOLES_NPTH", "COMP_TOP", "\nR1\n", "\nEOF\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("dxf is missing %q", want)
+		}
+	}
+	if _, err := dispatch(p, "pack", "fab=dxf zones=filled"); err == nil {
+		t.Fatalf("unknown option must fail")
+	}
+}
+
+func TestPackDXFNeedsOutline(t *testing.T) {
+	p := core.NewProject("empty")
+	if _, err := dispatch(p, "pack", "fab=dxf out="+t.TempDir()); err == nil || !strings.Contains(err.Error(), "no outline") {
+		t.Fatalf("err = %v, want a no-outline error", err)
+	}
+}
